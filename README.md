@@ -26,7 +26,8 @@ Backend (Railway):
 - Root directory: `server`
 - Build command: `npm run build`
 - Start command: `npm start`
-- Env: `CORS_ORIGIN=<your-vercel-url>`, `EXTRACTION_MODE=simulation`
+- Env: `CORS_ORIGIN=<your-vercel-url>`, `EXTRACTION_MODE=simulation` (or `puppeteer` for real extraction)
+- Optional: `MAX_PRODUCTS=50`, `PUPPETEER_CONCURRENCY=2`, `PUPPETEER_NAV_TIMEOUT_MS=30000`
 
 Frontend (Vercel):
 - Root directory: `client`

@@ -27,72 +27,96 @@ export class PuppeteerExtractor implements Extractor {
     log("info", `Initializing Puppeteer extraction for: ${input.brand}`);
     log("info", `Target: ${baseUrl}`);
 
-    // 1) Fast path: Shopify JSON feed (no browser required).
-    const shopify = await tryExtractShopify({ brand: input.brand, domain: normalizedDomain, baseUrl, maxProducts, log });
-    if (shopify) return { ...shopify, generated_at: generatedAt, logs };
+    try {
+      // 1) Fast path: Shopify JSON feed (no browser required).
+      const shopify = await tryExtractShopify({
+        brand: input.brand,
+        domain: normalizedDomain,
+        baseUrl,
+        maxProducts,
+        log,
+      });
+      if (shopify) return { ...shopify, generated_at: generatedAt, logs };
 
-    // 2) Generic path: sitemap discovery + JSON-LD parsing with Puppeteer.
-    log("info", "Shopify feed not detected. Falling back to Sitemap + JSON-LD extraction.");
-    const discovered = await discoverProductUrls({ baseUrl, maxProducts, log });
+      // 2) Generic path: sitemap discovery + JSON-LD parsing with Puppeteer.
+      log("info", "Shopify feed not detected. Falling back to Sitemap + JSON-LD extraction.");
+      const discovered = await discoverProductUrls({ baseUrl, maxProducts, log });
 
-    if (discovered.productUrls.length === 0) {
-      log("error", "No product URLs discovered (robots/sitemap).");
+      if (discovered.productUrls.length === 0) {
+        log("error", "No product URLs discovered (robots/sitemap).");
+        return {
+          brand: input.brand,
+          domain: normalizedDomain,
+          generated_at: generatedAt,
+          mode: "puppeteer",
+          platform: "Unknown",
+          sitemap: discovered.sitemapUrl,
+          products: [],
+          variants: [],
+          pricing: { currency: "USD", min: 0, max: 0, avg: 0 },
+          ad_copy: { by_variant_id: {} },
+          logs,
+        };
+      }
+
+      log("success", `Discovered ${discovered.productUrls.length} product URLs.`);
+
+      const concurrency = clampInt(process.env.PUPPETEER_CONCURRENCY, 2, 1, 6);
+      const navigationTimeoutMs = clampInt(process.env.PUPPETEER_NAV_TIMEOUT_MS, 30_000, 5_000, 120_000);
+
+      const browser = await puppeteer.launch({
+        headless: true,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+      });
+
+      try {
+        const scrapedProducts = await mapWithConcurrency(discovered.productUrls, concurrency, async (url, idx) => {
+          const verbose = idx < 3;
+          return scrapeProductPage({ browser, url, baseUrl, navigationTimeoutMs, verbose, log });
+        });
+
+        const products = scrapedProducts.filter((p): p is ExtractedProduct => Boolean(p));
+        const { variants, adCopyById } = flattenVariants({
+          brand: input.brand,
+          products,
+          simulated: false,
+        });
+
+        const pricing = computePricingStats(variants);
+        log("success", `Extraction Complete. ${variants.length} variants processed successfully.`);
+
+        return {
+          brand: input.brand,
+          domain: normalizedDomain,
+          generated_at: generatedAt,
+          mode: "puppeteer",
+          platform: "JSON-LD / Sitemap",
+          sitemap: discovered.sitemapUrl,
+          products,
+          variants,
+          pricing,
+          ad_copy: { by_variant_id: adCopyById },
+          logs,
+        };
+      } finally {
+        await browser.close();
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      log("error", `Puppeteer extraction failed: ${msg}`);
       return {
         brand: input.brand,
         domain: normalizedDomain,
         generated_at: generatedAt,
         mode: "puppeteer",
-        platform: "Unknown",
-        sitemap: discovered.sitemapUrl,
+        platform: "Error",
         products: [],
         variants: [],
         pricing: { currency: "USD", min: 0, max: 0, avg: 0 },
         ad_copy: { by_variant_id: {} },
         logs,
       };
-    }
-
-    log("success", `Discovered ${discovered.productUrls.length} product URLs.`);
-
-    const concurrency = clampInt(process.env.PUPPETEER_CONCURRENCY, 2, 1, 6);
-    const navigationTimeoutMs = clampInt(process.env.PUPPETEER_NAV_TIMEOUT_MS, 30_000, 5_000, 120_000);
-
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-    });
-
-    try {
-      const scrapedProducts = await mapWithConcurrency(discovered.productUrls, concurrency, async (url, idx) => {
-        const verbose = idx < 3;
-        return scrapeProductPage({ browser, url, baseUrl, navigationTimeoutMs, verbose, log });
-      });
-
-      const products = scrapedProducts.filter((p): p is ExtractedProduct => Boolean(p));
-      const { variants, adCopyById } = flattenVariants({
-        brand: input.brand,
-        products,
-        simulated: false,
-      });
-
-      const pricing = computePricingStats(variants);
-      log("success", `Extraction Complete. ${variants.length} variants processed successfully.`);
-
-      return {
-        brand: input.brand,
-        domain: normalizedDomain,
-        generated_at: generatedAt,
-        mode: "puppeteer",
-        platform: "JSON-LD / Sitemap",
-        sitemap: discovered.sitemapUrl,
-        products,
-        variants,
-        pricing,
-        ad_copy: { by_variant_id: adCopyById },
-        logs,
-      };
-    } finally {
-      await browser.close();
     }
   }
 }

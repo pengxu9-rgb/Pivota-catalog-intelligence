@@ -205,6 +205,25 @@ function getCollectionHandle(pathname: string): string | undefined {
   return m?.[1];
 }
 
+function splitTitleIntoBaseAndVariant(title: string):
+  | { baseTitle: string; variantLabel: string; delimiter: string }
+  | null {
+  const t = title.trim();
+  if (!t) return null;
+
+  const delimiters = [" — ", " – ", " - ", " | ", ": "];
+  for (const delimiter of delimiters) {
+    const idx = t.indexOf(delimiter);
+    if (idx <= 0) continue;
+    const baseTitle = t.slice(0, idx).trim();
+    const variantLabel = t.slice(idx + delimiter.length).trim();
+    if (!baseTitle || !variantLabel) continue;
+    return { baseTitle, variantLabel, delimiter };
+  }
+
+  return null;
+}
+
 function buildDeepLink(rawUrl: string, variantId: string) {
   try {
     const u = new URL(rawUrl);
@@ -306,6 +325,13 @@ type ShopifyImage = {
   variant_ids?: number[];
 };
 
+function isDefaultShopifyVariant(variant: ShopifyVariant): boolean {
+  const fields = [variant.title, variant.option1, variant.option2, variant.option3]
+    .map((v) => (v || "").trim().toLowerCase())
+    .filter(Boolean);
+  return fields.length > 0 && fields.every((v) => v === "default title" || v === "default");
+}
+
 async function tryExtractShopify(params: {
   brand: string;
   domain: string;
@@ -345,25 +371,65 @@ async function tryExtractShopify(params: {
   const limitedProducts = allProducts.slice(0, params.maxProducts);
   log("data", `Loaded ${limitedProducts.length} products from Shopify feed.`);
 
-  const extractedProducts: ExtractedProduct[] = [];
+  const variantDiscoverySetting = (process.env.SHOPIFY_VARIANT_DISCOVERY || "auto").toLowerCase().trim();
+  const forceDiscoveryOff = ["0", "false", "no", "off", "none"].includes(variantDiscoverySetting);
+  const forceDiscoveryOn = ["1", "true", "yes", "on", "title"].includes(variantDiscoverySetting);
+
+  const discoveryCandidates = limitedProducts
+    .map((p) => {
+      const split = splitTitleIntoBaseAndVariant(p.title);
+      const isSingleDefault = (p.variants || []).length === 1 && isDefaultShopifyVariant(p.variants[0]!);
+      return Boolean(split && isSingleDefault);
+    })
+    .filter(Boolean).length;
+
+  const discoveryRate = limitedProducts.length > 0 ? discoveryCandidates / limitedProducts.length : 0;
+  const autoDiscoveryOn = discoveryRate >= 0.2;
+
+  const enableTitleDiscovery = !forceDiscoveryOff && (forceDiscoveryOn || (variantDiscoverySetting === "auto" && autoDiscoveryOn));
+  if (enableTitleDiscovery && discoveryCandidates > 0) {
+    log(
+      "info",
+      `Variant discovery enabled (mode=${variantDiscoverySetting}). Candidates: ${discoveryCandidates}/${limitedProducts.length} (${Math.round(
+        discoveryRate * 100,
+      )}%).`,
+    );
+  } else {
+    log(
+      "info",
+      `Variant discovery disabled (mode=${variantDiscoverySetting}). Candidates: ${discoveryCandidates}/${limitedProducts.length} (${Math.round(
+        discoveryRate * 100,
+      )}%).`,
+    );
+  }
+
+  const extractedByTitle = new Map<string, ExtractedProduct>();
+
   for (const product of limitedProducts) {
     const productUrl = `${params.baseUrl}/products/${product.handle}`;
-    const optionName =
-      product.options?.map((o) => o.name).filter((n): n is string => Boolean(n && n.trim())).join(" / ") || "Variant";
+    const titleSplit = enableTitleDiscovery ? splitTitleIntoBaseAndVariant(product.title) : null;
+    const treatAsPseudoVariant =
+      Boolean(titleSplit) && (product.variants || []).length === 1 && isDefaultShopifyVariant(product.variants[0]!);
+
+    const canonicalProductTitle = treatAsPseudoVariant ? titleSplit!.baseTitle : product.title;
+    const optionName = treatAsPseudoVariant
+      ? "Variant"
+      : product.options?.map((o) => o.name).filter((n): n is string => Boolean(n && n.trim())).join(" / ") || "Variant";
     const officialText = product.body_html;
 
     const extractedVariants: ExtractedVariant[] = (product.variants || []).map((v) => {
-      const optionValue =
-        [v.option1, v.option2, v.option3].filter((x): x is string => Boolean(x && x.trim())).join(" / ") ||
-        v.title?.trim() ||
-        "Default";
+      const optionValue = treatAsPseudoVariant
+        ? titleSplit!.variantLabel
+        : [v.option1, v.option2, v.option3].filter((x): x is string => Boolean(x && x.trim())).join(" / ") ||
+          v.title?.trim() ||
+          "Default";
 
       const sku = (v.sku || "").trim() || `SHOPIFY-${v.id}`;
       const price = (v.price || "0.00").trim();
       const stock = toStockStatus(v.available, v.inventory_quantity);
       const imageUrl = resolveShopifyVariantImageUrl(product, v) || "";
-      const description = getMergedDescription(officialText, product.title, optionValue);
-      const adCopy = generateMockAdCopy(product.title, optionValue, price);
+      const description = getMergedDescription(officialText, canonicalProductTitle, optionValue);
+      const adCopy = generateMockAdCopy(canonicalProductTitle, optionValue, price);
 
       return {
         id: String(v.id),
@@ -380,12 +446,19 @@ async function tryExtractShopify(params: {
       };
     });
 
-    extractedProducts.push({
-      title: product.title,
-      url: productUrl,
-      variants: extractedVariants,
-    });
+    const existing =
+      extractedByTitle.get(canonicalProductTitle) ||
+      ({
+        title: canonicalProductTitle,
+        url: productUrl,
+        variants: [],
+      } satisfies ExtractedProduct);
+
+    existing.variants.push(...extractedVariants);
+    extractedByTitle.set(canonicalProductTitle, existing);
   }
+
+  const extractedProducts = Array.from(extractedByTitle.values());
 
   const { variants, adCopyById } = flattenVariants({
     brand: params.brand,
@@ -393,7 +466,14 @@ async function tryExtractShopify(params: {
     simulated: false,
   });
 
+  const productCount = extractedProducts.length;
+  const variantCount = variants.length;
+  const avg = productCount > 0 ? (variantCount / productCount).toFixed(2) : "0.00";
+  const multi = extractedProducts.filter((p) => p.variants.length > 1).length;
+  log("data", `Summary: products=${productCount}, variants=${variantCount}, avg=${avg}, multi=${multi}`);
+
   const pricing = computePricingStats(variants);
+  log("success", `Extraction Complete. ${variants.length} variants processed successfully.`);
 
   return {
     brand: params.brand,

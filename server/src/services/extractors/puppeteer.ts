@@ -20,19 +20,21 @@ export class PuppeteerExtractor implements Extractor {
       logs.push({ at: new Date().toISOString(), type, msg });
     };
 
-    const normalizedDomain = normalizeDomain(input.domain);
-    const baseUrl = `https://${normalizedDomain}`;
+    const target = parseTarget(input.domain);
+    const baseUrl = target.baseUrl;
     const maxProducts = clampInt(process.env.MAX_PRODUCTS, 50, 1, 5000);
 
     log("info", `Initializing Puppeteer extraction for: ${input.brand}`);
     log("info", `Target: ${baseUrl}`);
+    if (target.seedUrl) log("info", `Seed URL: ${target.seedUrl}`);
 
     try {
       // 1) Fast path: Shopify JSON feed (no browser required).
       const shopify = await tryExtractShopify({
         brand: input.brand,
-        domain: normalizedDomain,
+        domain: target.domain,
         baseUrl,
+        collectionHandle: target.collectionHandle,
         maxProducts,
         log,
       });
@@ -40,13 +42,13 @@ export class PuppeteerExtractor implements Extractor {
 
       // 2) Generic path: sitemap discovery + JSON-LD parsing with Puppeteer.
       log("info", "Shopify feed not detected. Falling back to Sitemap + JSON-LD extraction.");
-      const discovered = await discoverProductUrls({ baseUrl, maxProducts, log });
+      const discovered = await discoverProductUrls({ baseUrl, maxProducts, seedUrl: target.seedUrl, log });
 
       if (discovered.productUrls.length === 0) {
         log("error", "No product URLs discovered (robots/sitemap).");
         return {
           brand: input.brand,
-          domain: normalizedDomain,
+          domain: target.domain,
           generated_at: generatedAt,
           mode: "puppeteer",
           platform: "Unknown",
@@ -88,7 +90,7 @@ export class PuppeteerExtractor implements Extractor {
 
         return {
           brand: input.brand,
-          domain: normalizedDomain,
+          domain: target.domain,
           generated_at: generatedAt,
           mode: "puppeteer",
           platform: "JSON-LD / Sitemap",
@@ -107,7 +109,7 @@ export class PuppeteerExtractor implements Extractor {
       log("error", `Puppeteer extraction failed: ${msg}`);
       return {
         brand: input.brand,
-        domain: normalizedDomain,
+        domain: target.domain,
         generated_at: generatedAt,
         mode: "puppeteer",
         platform: "Error",
@@ -129,14 +131,27 @@ function clampInt(value: string | undefined, fallback: number, min: number, max:
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-function normalizeDomain(raw: string) {
+function parseTarget(raw: string): {
+  domain: string;
+  baseUrl: string;
+  seedUrl?: string;
+  collectionHandle?: string;
+} {
   const trimmed = raw.trim();
-  if (!trimmed) return "localhost";
+  if (!trimmed) return { domain: "localhost", baseUrl: "https://localhost" };
+
   try {
     const u = new URL(trimmed.startsWith("http://") || trimmed.startsWith("https://") ? trimmed : `https://${trimmed}`);
-    return u.host;
+    const hasPath = u.pathname !== "/" || u.search !== "" || u.hash !== "";
+    return {
+      domain: u.host,
+      baseUrl: u.origin,
+      seedUrl: hasPath ? u.toString() : undefined,
+      collectionHandle: getCollectionHandle(u.pathname),
+    };
   } catch {
-    return trimmed.replace(/^https?:\/\//i, "").split("/")[0];
+    const host = trimmed.replace(/^https?:\/\//i, "").split("/")[0];
+    return { domain: host, baseUrl: `https://${host}` };
   }
 }
 
@@ -183,6 +198,11 @@ function cleanText(text?: string) {
   if (!text) return "";
   const withoutTags = text.replace(/<[^>]*>/g, " ");
   return withoutTags.replace(/\s+/g, " ").trim();
+}
+
+function getCollectionHandle(pathname: string): string | undefined {
+  const m = pathname.match(/^\/collections\/([^/]+)/i);
+  return m?.[1];
 }
 
 function buildDeepLink(rawUrl: string, variantId: string) {
@@ -290,13 +310,18 @@ async function tryExtractShopify(params: {
   brand: string;
   domain: string;
   baseUrl: string;
+  collectionHandle?: string;
   maxProducts: number;
   log: Logger;
 }): Promise<Omit<ExtractResponse, "generated_at" | "logs"> | null> {
   const log = params.log;
 
-  log("info", "Checking /products.json (Shopify) ...");
-  const probe = await fetchJson<ShopifyProductsResponse>(`${params.baseUrl}/products.json?limit=1`);
+  const probeUrl = params.collectionHandle
+    ? `${params.baseUrl}/collections/${params.collectionHandle}/products.json?limit=1`
+    : `${params.baseUrl}/products.json?limit=1`;
+
+  log("info", `Checking Shopify feed: ${probeUrl}`);
+  const probe = await fetchJson<ShopifyProductsResponse>(probeUrl);
   if (!probe || !Array.isArray(probe.products)) {
     log("warn", "Shopify feed not found.");
     return null;
@@ -306,9 +331,10 @@ async function tryExtractShopify(params: {
 
   const allProducts: ShopifyProduct[] = [];
   const maxPages = clampInt(process.env.SHOPIFY_MAX_PAGES, 20, 1, 200);
+  const feedPrefix = params.collectionHandle ? `/collections/${params.collectionHandle}` : "";
 
   for (let page = 1; page <= maxPages; page++) {
-    const url = `${params.baseUrl}/products.json?limit=250&page=${page}`;
+    const url = `${params.baseUrl}${feedPrefix}/products.json?limit=250&page=${page}`;
     const batch = await fetchJson<ShopifyProductsResponse>(url);
     const products = batch?.products;
     if (!products || products.length === 0) break;
@@ -373,7 +399,7 @@ async function tryExtractShopify(params: {
     brand: params.brand,
     domain: params.domain,
     mode: "puppeteer",
-    platform: "Shopify",
+    platform: params.collectionHandle ? `Shopify (Collection: ${params.collectionHandle})` : "Shopify",
     products: extractedProducts,
     variants,
     pricing,
@@ -432,6 +458,17 @@ async function fetchText(url: string): Promise<string | null> {
   }
 }
 
+function extractProductUrlsFromHtml(html: string, baseUrl: string) {
+  const urls = new Set<string>();
+  for (const match of html.matchAll(/\/products\/[^"'?#\s<]+/gi)) {
+    urls.add(toAbsoluteUrl(baseUrl, match[0]));
+  }
+  for (const match of html.matchAll(/\/product\/[^"'?#\s<]+/gi)) {
+    urls.add(toAbsoluteUrl(baseUrl, match[0]));
+  }
+  return Array.from(urls);
+}
+
 function extractSitemapUrlsFromRobots(robotsText: string) {
   const urls: string[] = [];
   for (const match of robotsText.matchAll(/^sitemap:\s*(.+)$/gim)) {
@@ -452,7 +489,20 @@ function extractLocUrlsFromSitemap(xml: string) {
   return urls;
 }
 
-async function discoverProductUrls(params: { baseUrl: string; maxProducts: number; log: Logger }) {
+async function discoverProductUrls(params: { baseUrl: string; maxProducts: number; seedUrl?: string; log: Logger }) {
+  if (params.seedUrl) {
+    params.log("info", `GET ${params.seedUrl}`);
+    const seedHtml = await fetchText(params.seedUrl);
+    if (seedHtml) {
+      const seedUrls = extractProductUrlsFromHtml(seedHtml, params.baseUrl);
+      if (seedUrls.length > 0) {
+        params.log("success", `Seed page yielded ${seedUrls.length} product links.`);
+        return { sitemapUrl: undefined, productUrls: seedUrls.slice(0, params.maxProducts) };
+      }
+      params.log("warn", "Seed page did not yield product links; falling back to robots/sitemaps.");
+    }
+  }
+
   const robotsUrl = `${params.baseUrl}/robots.txt`;
   params.log("info", `GET ${robotsUrl}`);
 

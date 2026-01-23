@@ -222,7 +222,7 @@ function cleanText(text?: string) {
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p\s*>/gi, "\n")
     .replace(/<\/div\s*>/gi, "\n")
-    .replace(/<[^>]*>/g, " ");
+    .replace(/<\/?[a-z][^>]*>/g, " ");
 
   return withNewlines
     .replace(/\r\n/g, "\n")

@@ -1,12 +1,11 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Copy, ExternalLink, Sparkles, X } from "lucide-react";
+import { Sparkles } from "lucide-react";
 
 import { DashboardStats } from "./DashboardStats";
 import { ExtractionForm } from "./ExtractionForm";
 import { ResultsTable } from "./ResultsTable";
-import { AIModal } from "./AIModal";
 
 import type { ExtractResponse, ExtractedVariantRow, LogLine } from "@/lib/types";
 import { extractCatalog } from "@/lib/api";
@@ -31,24 +30,12 @@ export function CatalogIntelligenceApp() {
   const [toast, setToast] = useState<ToastState>({ message: "Notification", visible: false });
   const toastTimerRef = useRef<number | null>(null);
 
-  const [modalOpen, setModalOpen] = useState(false);
-  const [modalVariant, setModalVariant] = useState<ExtractedVariantRow | null>(null);
-
   const recordCountText = useMemo(() => `${variants.length} records found`, [variants.length]);
 
   const showToast = useCallback((message: string) => {
     setToast({ message, visible: true });
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     toastTimerRef.current = window.setTimeout(() => setToast((t) => ({ ...t, visible: false })), 3000);
-  }, []);
-
-  const openAIModal = useCallback((variant: ExtractedVariantRow) => {
-    setModalVariant(variant);
-    setModalOpen(true);
-  }, []);
-
-  const closeAIModal = useCallback(() => {
-    setModalOpen(false);
   }, []);
 
   const handleCopyLink = useCallback(
@@ -58,12 +45,6 @@ export function CatalogIntelligenceApp() {
     },
     [showToast],
   );
-
-  const handleCopyModalText = useCallback(async () => {
-    if (!modalVariant) return;
-    const ok = await copyTextToClipboard(modalVariant.ad_copy);
-    showToast(ok ? "Copied!" : "Copy failed.");
-  }, [modalVariant, showToast]);
 
   const handleCopyCsv = useCallback(async () => {
     const csv = buildCsv(variants);
@@ -178,7 +159,7 @@ export function CatalogIntelligenceApp() {
           <h2 className="text-2xl font-bold text-gray-900">Affiliate Catalog Extraction Prototype</h2>
           <p className="mt-2 text-gray-600 max-w-3xl">
             This tool simulates extracting the full product universe for Tom Ford Beauty. It handles variant discovery,
-            safe deep-link generation, and AI marketing copy creation.
+            safe deep-link generation, and export-ready descriptions.
           </p>
         </div>
 
@@ -208,24 +189,12 @@ export function CatalogIntelligenceApp() {
               recordCountText={recordCountText}
               onCopyCsv={handleCopyCsv}
               onDownloadCsv={handleDownloadCsv}
-              onOpenAdCopy={openAIModal}
               onCopyLink={handleCopyLink}
               isActionsEnabled={variants.length > 0}
             />
           </div>
         </div>
       </main>
-
-      <AIModal
-        open={modalOpen}
-        variant={modalVariant}
-        onClose={closeAIModal}
-        onCopyText={handleCopyModalText}
-        onRegenerate={() => showToast("Regeneration not configured (Gemini key not set).")}
-        CloseIcon={X}
-        CopyIcon={Copy}
-        ExternalLinkIcon={ExternalLink}
-      />
     </>
   );
 }

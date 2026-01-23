@@ -7,7 +7,7 @@ function escapeCsvField(value: string) {
 
 export function buildCsv(variants: ExtractedVariantRow[]) {
   let csv =
-    "Brand,Product Title,Product URL,Variant ID,SKU,Option Name,Option Value,Price,Currency,Availability,Variant Image URL,AI Merged Description,AI Marketing Copy,Deep Link\n";
+    "Brand,Product Title,Product URL,Variant ID,SKU,Option Name,Option Value,Price,Currency,Availability,Variant Image URL,AI Merged Description,Deep Link\n";
 
   for (const v of variants) {
     const row = [
@@ -23,7 +23,6 @@ export function buildCsv(variants: ExtractedVariantRow[]) {
       v.stock,
       v.image_url,
       escapeCsvField(v.description),
-      escapeCsvField(v.ad_copy),
       v.deep_link,
     ].join(",");
     csv += `${row}\n`;

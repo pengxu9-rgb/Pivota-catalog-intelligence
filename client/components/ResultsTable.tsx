@@ -3,7 +3,6 @@
 import { Copy, ExternalLink } from "lucide-react";
 
 import type { ExtractedVariantRow, LogLine } from "@/lib/types";
-import { getAdCopySubjectPreview } from "@/lib/utils";
 
 type Props = {
   logs: LogLine[];
@@ -12,7 +11,6 @@ type Props = {
   isActionsEnabled: boolean;
   onCopyCsv: () => void;
   onDownloadCsv: () => void;
-  onOpenAdCopy: (variant: ExtractedVariantRow) => void;
   onCopyLink: (url: string) => void;
 };
 
@@ -23,7 +21,6 @@ export function ResultsTable({
   isActionsEnabled,
   onCopyCsv,
   onDownloadCsv,
-  onOpenAdCopy,
   onCopyLink,
 }: Props) {
   return (
@@ -92,9 +89,6 @@ export function ResultsTable({
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
                   Description (AI Merged)
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50 w-48">
-                  ✨ AI Copy
-                </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
                   Price
                 </th>
@@ -106,7 +100,7 @@ export function ResultsTable({
             <tbody className="bg-white divide-y divide-gray-200">
               {variants.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-10 text-center text-gray-500 text-sm italic">
+                  <td colSpan={6} className="px-6 py-10 text-center text-gray-500 text-sm italic">
                     Run extraction to view data
                   </td>
                 </tr>
@@ -115,7 +109,6 @@ export function ResultsTable({
                   <ResultRow
                     key={`${variant.id}-${variant.sku}`}
                     variant={variant}
-                    onOpenAdCopy={onOpenAdCopy}
                     onCopyLink={onCopyLink}
                   />
                 ))
@@ -130,15 +123,11 @@ export function ResultsTable({
 
 function ResultRow({
   variant,
-  onOpenAdCopy,
   onCopyLink,
 }: {
   variant: ExtractedVariantRow;
-  onOpenAdCopy: (variant: ExtractedVariantRow) => void;
   onCopyLink: (url: string) => void;
 }) {
-  const subjectPreview = getAdCopySubjectPreview(variant.ad_copy);
-
   return (
     <tr className="hover:bg-gray-50 transition-colors fade-in group">
       <td className="px-6 py-4 whitespace-nowrap">
@@ -163,17 +152,6 @@ function ResultRow({
       </td>
       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 max-w-xs truncate" title={variant.description}>
         {variant.description}
-      </td>
-      <td
-        className="px-6 py-4 text-xs text-gray-500 cursor-pointer hover:bg-indigo-50 transition-colors"
-        onClick={() => onOpenAdCopy(variant)}
-      >
-        <div className="flex items-center gap-1">
-          <span>✨</span>
-          <span className="font-medium text-indigo-600 truncate max-w-[150px]" title={subjectPreview}>
-            {subjectPreview}
-          </span>
-        </div>
       </td>
       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${variant.price}</td>
       <td className="px-6 py-4 whitespace-nowrap text-sm flex items-center gap-3">

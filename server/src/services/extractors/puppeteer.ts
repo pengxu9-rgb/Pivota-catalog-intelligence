@@ -125,6 +125,15 @@ export class PuppeteerExtractor implements Extractor {
 
 type Logger = (type: ExtractResponse["logs"][number]["type"], msg: string) => void;
 
+type DomVariantMeta = {
+  sku: string;
+  option_name?: string;
+  option_value?: string;
+  url_path?: string;
+  image_url?: string;
+  price?: string;
+};
+
 function clampInt(value: string | undefined, fallback: number, min: number, max: number) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -227,7 +236,9 @@ function splitTitleIntoBaseAndVariant(title: string):
 function buildDeepLink(rawUrl: string, variantId: string) {
   try {
     const u = new URL(rawUrl);
-    u.searchParams.set("variant", variantId);
+    if (/\/products\//i.test(u.pathname) && /^\d+$/.test(variantId)) {
+      u.searchParams.set("variant", variantId);
+    }
     u.searchParams.set("utm_source", "pivota");
     u.searchParams.set("utm_medium", "affiliate");
     return u.toString();
@@ -540,10 +551,10 @@ async function fetchText(url: string): Promise<string | null> {
 
 function extractProductUrlsFromHtml(html: string, baseUrl: string) {
   const urls = new Set<string>();
-  for (const match of html.matchAll(/\/products\/[^"'?#\s<]+/gi)) {
+  for (const match of html.matchAll(/\/product\/[^"'?#\s<]+/gi)) {
     urls.add(toAbsoluteUrl(baseUrl, match[0]));
   }
-  for (const match of html.matchAll(/\/product\/[^"'?#\s<]+/gi)) {
+  for (const match of html.matchAll(/\/products\/[^"'?#\s<]+/gi)) {
     urls.add(toAbsoluteUrl(baseUrl, match[0]));
   }
   return Array.from(urls);
@@ -708,7 +719,74 @@ async function scrapeProductPage(params: {
         .map((s) => s.textContent || "")
         .filter(Boolean);
 
-      return { title, canonical, scripts };
+      const domVariants = (() => {
+        const el = document.querySelector("[data-product-skus-value]") as HTMLElement | null;
+        const raw = el?.getAttribute("data-product-skus-value") || "";
+        if (!raw) return [] as Array<{
+          sku: string;
+          option_name?: string;
+          option_value?: string;
+          url_path?: string;
+          image_url?: string;
+          price?: string;
+        }>;
+
+        const textarea = document.createElement("textarea");
+        textarea.innerHTML = raw;
+        const decoded = textarea.value;
+
+        try {
+          const parsed = JSON.parse(decoded) as unknown;
+          if (!Array.isArray(parsed)) return [];
+
+          return parsed
+            .map((item) => {
+              const obj = item as Record<string, unknown>;
+              const sku =
+                (typeof obj.id === "string" && obj.id.trim()) ||
+                (typeof obj.sku === "string" && obj.sku.trim()) ||
+                "";
+
+              const size = typeof obj.size === "string" ? obj.size.trim() : "";
+              const shades = Array.isArray(obj.shades) ? obj.shades : [];
+              const firstShade = shades[0] as Record<string, unknown> | undefined;
+              const shadeTitle = typeof firstShade?.title === "string" ? firstShade.title.trim() : "";
+              const multiShade = typeof obj.multi_shade_description === "string" ? obj.multi_shade_description.trim() : "";
+
+              const optionName = size ? "Size" : shadeTitle || multiShade ? "Shade" : undefined;
+              const optionValue = size || shadeTitle || multiShade || undefined;
+
+              const urlPath = typeof obj.localized_path === "string" ? obj.localized_path.trim() : "";
+
+              const images = Array.isArray(obj.images) ? obj.images : [];
+              const firstImage = images[0] as Record<string, unknown> | undefined;
+              const imageUrl = typeof firstImage?.src === "string" ? firstImage.src.trim() : "";
+
+              const price =
+                (typeof obj.price_with_discount === "number" && Number.isFinite(obj.price_with_discount)
+                  ? obj.price_with_discount.toFixed(2)
+                  : "") ||
+                (typeof obj.price === "number" && Number.isFinite(obj.price) ? obj.price.toFixed(2) : "") ||
+                (typeof obj.price_with_discount === "string" && obj.price_with_discount.trim()) ||
+                (typeof obj.price === "string" && obj.price.trim()) ||
+                "";
+
+              return {
+                sku,
+                option_name: optionName,
+                option_value: optionValue,
+                url_path: urlPath || undefined,
+                image_url: imageUrl || undefined,
+                price: price || undefined,
+              };
+            })
+            .filter((v) => Boolean(v.sku));
+        } catch {
+          return [];
+        }
+      })();
+
+      return { title, canonical, scripts, domVariants };
     });
 
     const objects: Record<string, unknown>[] = [];
@@ -747,37 +825,61 @@ async function scrapeProductPage(params: {
     const offersRaw = productObj.offers;
     const offers = normalizeJsonLdValue(offersRaw) as Array<Record<string, unknown>>;
 
+    const domMetaBySku = new Map<string, DomVariantMeta>();
+    for (const meta of extracted.domVariants || []) {
+      if (!meta.sku) continue;
+      domMetaBySku.set(meta.sku, meta);
+    }
+
     const variants: ExtractedVariant[] =
       offers.length > 0
         ? offers.map((offer, idx) => {
-            const offerUrl = toAbsoluteUrl(params.baseUrl, typeof offer.url === "string" ? offer.url : productUrl);
             const skuRaw = typeof offer.sku === "string" ? offer.sku.trim() : "";
             const sku = skuRaw || `AUTO-${stableId(`${productUrl}|${idx}`)}`;
 
+            const domMeta = domMetaBySku.get(sku);
+
+            const offerUrl = (() => {
+              if (domMeta?.url_path) return toAbsoluteUrl(params.baseUrl, domMeta.url_path);
+              return toAbsoluteUrl(params.baseUrl, typeof offer.url === "string" ? offer.url : productUrl);
+            })();
+
             const price = normalizePrice(
-              offer.price ?? (offer.priceSpecification as any)?.price ?? (offer.priceSpecification as any)?.priceSpecification?.price,
+              offer.price ??
+                (offer.priceSpecification as any)?.price ??
+                (offer.priceSpecification as any)?.priceSpecification?.price ??
+                domMeta?.price,
             );
             const stock = stockFromAvailability(offer.availability);
-            const optionValue =
-              (typeof offer.name === "string" && offer.name.trim()) ||
-              (typeof offer.description === "string" && offer.description.trim()) ||
-              sku;
+            const optionValueFromOffer =
+              (typeof offer.name === "string" && offer.name.trim()) || (typeof offer.description === "string" && offer.description.trim());
+
+            const optionValue = optionValueFromOffer || domMeta?.option_value || sku;
+            const optionName = domMeta?.option_name || "Offer";
 
             const id = stableId(`${productUrl}|${sku}|${price}`);
             const description = getMergedDescription(officialText, productTitle, optionValue);
             const adCopy = generateMockAdCopy(productTitle, optionValue, price);
 
+            const offerImageRaw = offer.image;
+            const offerImageUrl = (() => {
+              if (typeof offerImageRaw === "string" && offerImageRaw.trim()) return toAbsoluteUrl(params.baseUrl, offerImageRaw);
+              if (Array.isArray(offerImageRaw) && typeof offerImageRaw[0] === "string") return toAbsoluteUrl(params.baseUrl, offerImageRaw[0]);
+              if (domMeta?.image_url) return toAbsoluteUrl(params.baseUrl, domMeta.image_url);
+              return imageUrl;
+            })();
+
             return {
               id,
               sku,
               url: offerUrl,
-              option_name: "Offer",
+              option_name: optionName,
               option_value: optionValue,
               price,
               currency: "USD",
               stock,
               description,
-              image_url: imageUrl,
+              image_url: offerImageUrl,
               ad_copy: adCopy,
             };
           })

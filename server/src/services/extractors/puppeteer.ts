@@ -132,6 +132,7 @@ type DomVariantMeta = {
   url_path?: string;
   image_url?: string;
   price?: string;
+  ingredients?: string;
 };
 
 function clampInt(value: string | undefined, fallback: number, min: number, max: number) {
@@ -191,10 +192,22 @@ const AD_CAPTION_TEMPLATES = [
   "Run don't walk! 🏃‍♀️ {title} in {variant} is the viral product of the season. \n\n#ViralBeauty #TomFord #{variant} #MakeupHaul",
 ] as const;
 
-function getMergedDescription(officialText: string | undefined, title: string, variantValue: string) {
-  const official = cleanText(officialText) || `Experience the ultimate luxury with ${title}.`;
-  const social = pick(SOCIAL_CONTENT_TEMPLATES).replace("{variant}", variantValue);
-  return `OFFICIAL: ${official} /// SOCIAL HIGHLIGHTS: ${social}`;
+function getMergedDescription(params: {
+  title: string;
+  overview?: string;
+  howToUse?: string;
+  ingredientsAndSafety?: string;
+}) {
+  const overview = cleanText(params.overview) || `Experience the ultimate luxury with ${params.title}.`;
+  const parts = [overview];
+
+  const howToUse = cleanText(params.howToUse);
+  if (howToUse) parts.push(`How to Use: ${howToUse}`);
+
+  const ingredientsAndSafety = cleanText(params.ingredientsAndSafety);
+  if (ingredientsAndSafety) parts.push(`Ingredients and Safety: ${ingredientsAndSafety}`);
+
+  return parts.join("\n\n");
 }
 
 function generateMockAdCopy(title: string, variantValue: string, price: string) {
@@ -205,8 +218,18 @@ function generateMockAdCopy(title: string, variantValue: string, price: string) 
 
 function cleanText(text?: string) {
   if (!text) return "";
-  const withoutTags = text.replace(/<[^>]*>/g, " ");
-  return withoutTags.replace(/\s+/g, " ").trim();
+  const withNewlines = text
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p\s*>/gi, "\n")
+    .replace(/<\/div\s*>/gi, "\n")
+    .replace(/<[^>]*>/g, " ");
+
+  return withNewlines
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function getCollectionHandle(pathname: string): string | undefined {
@@ -439,7 +462,7 @@ async function tryExtractShopify(params: {
       const price = (v.price || "0.00").trim();
       const stock = toStockStatus(v.available, v.inventory_quantity);
       const imageUrl = resolveShopifyVariantImageUrl(product, v) || "";
-      const description = getMergedDescription(officialText, canonicalProductTitle, optionValue);
+      const description = getMergedDescription({ title: canonicalProductTitle, overview: officialText });
       const adCopy = generateMockAdCopy(canonicalProductTitle, optionValue, price);
 
       return {
@@ -729,6 +752,7 @@ async function scrapeProductPage(params: {
           url_path?: string;
           image_url?: string;
           price?: string;
+          ingredients?: string;
         }>;
 
         const textarea = document.createElement("textarea");
@@ -757,6 +781,7 @@ async function scrapeProductPage(params: {
               const optionValue = size || shadeTitle || multiShade || undefined;
 
               const urlPath = typeof obj.localized_path === "string" ? obj.localized_path.trim() : "";
+              const ingredients = typeof obj.ingredients === "string" ? obj.ingredients.trim() : "";
 
               const images = Array.isArray(obj.images) ? obj.images : [];
               const firstImage = images[0] as Record<string, unknown> | undefined;
@@ -778,6 +803,7 @@ async function scrapeProductPage(params: {
                 url_path: urlPath || undefined,
                 image_url: imageUrl || undefined,
                 price: price || undefined,
+                ingredients: ingredients || undefined,
               };
             })
             .filter((v) => Boolean(v.sku));
@@ -786,7 +812,39 @@ async function scrapeProductPage(params: {
         }
       })();
 
-      return { title, canonical, scripts, domVariants };
+      const getAccordionContentByTitle = (value: string) => {
+        const normalize = (s: string) => s.trim().toLowerCase();
+        const buttons = Array.from(document.querySelectorAll("button[aria-controls]")) as HTMLButtonElement[];
+        const btn = buttons.find((b) => normalize(b.getAttribute("title") || b.textContent || "") === normalize(value));
+        const id = btn?.getAttribute("aria-controls") || "";
+        if (!id) return null;
+        return document.getElementById(id);
+      };
+
+      const howToUseContent =
+        getAccordionContentByTitle("How to Use") ||
+        getAccordionContentByTitle("How to use") ||
+        document.getElementById("accordion-toggle-How to Use");
+
+      const ingredientsContent =
+        getAccordionContentByTitle("Ingredients and Safety") ||
+        getAccordionContentByTitle("Ingredients & Safety") ||
+        document.getElementById("accordion-toggle-Ingredients and Safety");
+
+      const howToUseText = howToUseContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
+      const ingredientsMarkdownText = ingredientsContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
+      const ingredientsDisclaimerText =
+        ingredientsContent?.querySelector(".product-details-accordions-ingredients-disclaimer")?.textContent?.trim() || undefined;
+
+      return {
+        title,
+        canonical,
+        scripts,
+        domVariants,
+        howToUseText,
+        ingredientsMarkdownText,
+        ingredientsDisclaimerText,
+      };
     });
 
     const objects: Record<string, unknown>[] = [];
@@ -831,6 +889,12 @@ async function scrapeProductPage(params: {
       domMetaBySku.set(meta.sku, meta);
     }
 
+    const howToUseText = typeof extracted.howToUseText === "string" ? extracted.howToUseText.trim() : undefined;
+    const ingredientsMarkdownText =
+      typeof extracted.ingredientsMarkdownText === "string" ? extracted.ingredientsMarkdownText.trim() : undefined;
+    const ingredientsDisclaimerText =
+      typeof extracted.ingredientsDisclaimerText === "string" ? extracted.ingredientsDisclaimerText.trim() : undefined;
+
     const variants: ExtractedVariant[] =
       offers.length > 0
         ? offers.map((offer, idx) => {
@@ -858,7 +922,14 @@ async function scrapeProductPage(params: {
             const optionName = domMeta?.option_name || "Offer";
 
             const id = stableId(`${productUrl}|${sku}|${price}`);
-            const description = getMergedDescription(officialText, productTitle, optionValue);
+            const ingredientsText = domMeta?.ingredients || ingredientsMarkdownText;
+            const ingredientsAndSafety = [ingredientsText, ingredientsDisclaimerText].filter(Boolean).join("\n\n") || undefined;
+            const description = getMergedDescription({
+              title: productTitle,
+              overview: officialText,
+              howToUse: howToUseText,
+              ingredientsAndSafety,
+            });
             const adCopy = generateMockAdCopy(productTitle, optionValue, price);
 
             const offerImageRaw = offer.image;
@@ -893,7 +964,13 @@ async function scrapeProductPage(params: {
               price: "0.00",
               currency: "USD",
               stock: "In Stock",
-              description: getMergedDescription(officialText, productTitle, "Default"),
+              description: getMergedDescription({
+                title: productTitle,
+                overview: officialText,
+                howToUse: howToUseText,
+                ingredientsAndSafety:
+                  [ingredientsMarkdownText, ingredientsDisclaimerText].filter(Boolean).join("\n\n") || undefined,
+              }),
               image_url: imageUrl,
               ad_copy: generateMockAdCopy(productTitle, "Default", "0.00"),
             },

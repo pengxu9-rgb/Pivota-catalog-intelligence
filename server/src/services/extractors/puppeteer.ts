@@ -677,6 +677,25 @@ function normalizeJsonLdValue(value: unknown): unknown[] {
   return [];
 }
 
+function normalizeJsonLdObjects(value: unknown): Array<Record<string, unknown>> {
+  return normalizeJsonLdValue(value).filter((obj): obj is Record<string, unknown> => Boolean(obj && typeof obj === "object"));
+}
+
+function normalizeJsonLdOffers(value: unknown): Array<Record<string, unknown>> {
+  // `Product.offers` is often an `AggregateOffer` with a nested `offers: Offer[]`.
+  // Unwrap that so we produce multiple variants instead of a single aggregated row.
+  const out: Array<Record<string, unknown>> = [];
+  for (const offerish of normalizeJsonLdObjects(value)) {
+    const nested = normalizeJsonLdObjects(offerish.offers);
+    if (nested.length > 0) {
+      out.push(...nested);
+    } else {
+      out.push(offerish);
+    }
+  }
+  return out;
+}
+
 function isType(obj: Record<string, unknown>, typeName: string) {
   const t = obj["@type"];
   if (typeof t === "string") return t === typeName;
@@ -881,7 +900,7 @@ async function scrapeProductPage(params: {
     const officialText = typeof productObj.description === "string" ? productObj.description : undefined;
 
     const offersRaw = productObj.offers;
-    const offers = normalizeJsonLdValue(offersRaw) as Array<Record<string, unknown>>;
+    const offers = normalizeJsonLdOffers(offersRaw);
 
     const domMetaBySku = new Map<string, DomVariantMeta>();
     for (const meta of extracted.domVariants || []) {

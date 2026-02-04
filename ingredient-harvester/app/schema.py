@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,12 +24,12 @@ class CandidateRowView(BaseModel):
     product_name: str
     market: str
     status: RowStatus
-    confidence: float | None = None
-    source_type: str | None = None
-    source_ref: str | None = None
-    raw_ingredient_text: str | None = None
+    confidence: Optional[float] = None
+    source_type: Optional[str] = None
+    source_ref: Optional[str] = None
+    raw_ingredient_text: Optional[str] = None
     updated_at: datetime
-    error: str | None = None
+    error: Optional[str] = None
 
 
 class ListRowsResponse(BaseModel):
@@ -40,7 +40,7 @@ class ListRowsResponse(BaseModel):
 
 class CreateTaskRequest(BaseModel):
     import_id: str
-    row_ids: list[str] | None = None
+    row_ids: Optional[list[str]] = None
     force: bool = False
 
 
@@ -57,20 +57,19 @@ class TaskProgress(BaseModel):
     status: TaskStatus
     force: bool
     created_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
     counts: dict[str, int] = Field(default_factory=dict)
 
 
 class UpdateRowRequest(BaseModel):
-    status: RowStatus | None = None
-    raw_ingredient_text: str | None = None
-    source_ref: str | None = None
-    source_type: str | None = None
-    confidence: float | None = None
-    error: str | None = None
+    status: Optional[RowStatus] = None
+    raw_ingredient_text: Optional[str] = None
+    source_ref: Optional[str] = None
+    source_type: Optional[str] = None
+    confidence: Optional[float] = None
+    error: Optional[str] = None
 
 
 class UpdateRowResponse(BaseModel):
     row: CandidateRowView
-

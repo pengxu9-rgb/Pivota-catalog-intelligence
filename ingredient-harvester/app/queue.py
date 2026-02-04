@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 from redis import Redis
 from rq import Queue
@@ -14,13 +15,13 @@ class JobRef:
     id: str
 
 
-def _redis() -> Redis | None:
+def _redis() -> Optional[Redis]:
     if not settings.redis_url:
         return None
     return Redis.from_url(settings.redis_url)
 
 
-def enqueue(function_path: str, *, kwargs: dict, job_id: str | None = None) -> JobRef | None:
+def enqueue(function_path: str, *, kwargs: dict, job_id: Optional[str] = None) -> Optional[JobRef]:
     mode = (settings.queue_mode or "").lower()
     if mode == "inline":
         return None
@@ -33,4 +34,3 @@ def enqueue(function_path: str, *, kwargs: dict, job_id: str | None = None) -> J
     q = Queue(qname, connection=redis_conn)
     job = q.enqueue(function_path, kwargs=kwargs, job_id=job_id)
     return JobRef(id=str(job.id))
-

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from app.harvester.extract import extract_ingredients
 from app.harvester.fetch import fetch_html
@@ -32,14 +32,14 @@ def classify_source_type(url: str) -> str:
 class HarvestOutcome:
     status: str
     confidence: float
-    raw_ingredient_text: str | None
-    source_ref: str | None
-    source_type: str | None
+    raw_ingredient_text: Optional[str]
+    source_ref: Optional[str]
+    source_type: Optional[str]
     debug: dict[str, Any]
 
 
 class SourceHarvester:
-    def __init__(self, search_engine: SearchEngine | None = None) -> None:
+    def __init__(self, search_engine: Optional[SearchEngine] = None) -> None:
         self.search_engine = search_engine or default_search_engine()
 
     def process(self, *, market: str, brand: str, product_name: str) -> HarvestOutcome:
@@ -91,4 +91,3 @@ class SourceHarvester:
             source_type=None,
             debug=debug,
         )
-

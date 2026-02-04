@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
@@ -124,8 +124,8 @@ async def create_import(file: UploadFile = File(...)) -> ImportResponse:
 @app.get("/v1/imports/{import_id}/rows", response_model=ListRowsResponse)
 def list_rows(
     import_id: str,
-    status: str | None = Query(default=None),
-    q: str | None = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    q: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> ListRowsResponse:
@@ -303,4 +303,3 @@ def export_import(import_id: str, format: str = Query(default="csv")):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="ingredient_harvest_{import_id}.xlsx"'},
     )
-

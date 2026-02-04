@@ -2,7 +2,13 @@ import { Router } from "express";
 import { Readable } from "stream";
 
 function normalizeBaseUrl(raw: string) {
-  return raw.trim().replace(/\/+$/g, "");
+  let url = raw.trim().replace(/\/+$/g, "");
+  if (!url) return url;
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
+    const isLocal = url.startsWith("localhost") || url.startsWith("127.0.0.1") || url.startsWith("0.0.0.0");
+    url = `${isLocal ? "http" : "https"}://${url}`;
+  }
+  return url;
 }
 
 function upstreamBaseUrl() {

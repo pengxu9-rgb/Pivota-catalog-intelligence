@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -35,12 +36,12 @@ class CandidateRow(Base):
     product_name: Mapped[str] = mapped_column(String(512), default="")
     market: Mapped[str] = mapped_column(String(16), default="")
 
-    raw_ingredient_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    raw_ingredient_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_ref: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(24), default="EMPTY", index=True)
-    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     updated_at: Mapped[datetime] = mapped_column(default=utcnow)
 
@@ -58,8 +59,8 @@ class HarvestTask(Base):
     force: Mapped[int] = mapped_column(Integer, default=0)
 
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
-    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     batch: Mapped["ImportBatch"] = relationship(back_populates="tasks")
     rows: Mapped[list["TaskRow"]] = relationship(back_populates="task", cascade="all, delete-orphan")
@@ -73,10 +74,9 @@ class TaskRow(Base):
     row_id: Mapped[str] = mapped_column(String(36), ForeignKey("candidate_rows.row_id"), index=True)
 
     status: Mapped[str] = mapped_column(String(24), default="QUEUED", index=True)
-    message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     task: Mapped["HarvestTask"] = relationship(back_populates="rows")
     row: Mapped["CandidateRow"] = relationship(back_populates="task_rows")
-

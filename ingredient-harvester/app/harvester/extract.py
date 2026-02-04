@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Optional
 
 from bs4 import BeautifulSoup
 
@@ -130,7 +131,7 @@ def _collect_candidates(soup: BeautifulSoup, keywords: list[str]) -> list[str]:
     return candidates
 
 
-def extract_ingredients(html: str, *, market: str) -> ExtractedIngredients | None:
+def extract_ingredients(html: str, *, market: str) -> Optional[ExtractedIngredients]:
     if not html:
         return None
     soup = BeautifulSoup(html, "lxml")

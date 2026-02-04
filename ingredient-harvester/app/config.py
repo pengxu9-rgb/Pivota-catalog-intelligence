@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 
 def _csv_env(name: str, default: str) -> list[str]:
@@ -13,12 +14,12 @@ def _csv_env(name: str, default: str) -> list[str]:
 class Settings:
     db_url: str = os.getenv("HARVESTER_DB_URL", "sqlite:///./harvester.sqlite3")
     cors_origins: list[str] = None  # type: ignore[assignment]
-    redis_url: str | None = os.getenv("REDIS_URL") or None
+    redis_url: Optional[str] = os.getenv("REDIS_URL") or None
     queue_mode: str = os.getenv("HARVESTER_QUEUE_MODE", "").strip().lower() or ""
 
-    serper_api_key: str | None = os.getenv("SERPER_API_KEY") or None
-    google_cse_api_key: str | None = os.getenv("GOOGLE_CSE_API_KEY") or None
-    google_cse_id: str | None = os.getenv("GOOGLE_CSE_ID") or None
+    serper_api_key: Optional[str] = os.getenv("SERPER_API_KEY") or None
+    google_cse_api_key: Optional[str] = os.getenv("GOOGLE_CSE_API_KEY") or None
+    google_cse_id: Optional[str] = os.getenv("GOOGLE_CSE_ID") or None
 
     request_timeout_s: float = float(os.getenv("HARVESTER_REQUEST_TIMEOUT_S", "20"))
 
@@ -31,4 +32,3 @@ class Settings:
 
 
 settings = Settings()
-

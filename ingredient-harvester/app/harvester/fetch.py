@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from typing import Optional
 
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
@@ -21,7 +22,7 @@ class FetchResult:
     url: str
     status_code: int
     html: str
-    content_type: str | None
+    content_type: Optional[str]
 
 
 def _headers() -> dict[str, str]:
@@ -40,4 +41,3 @@ def fetch_html(url: str) -> FetchResult:
     ctype = (r.headers.get("content-type") or "").split(";")[0].strip().lower() or None
     text = r.text if isinstance(r.text, str) else ""
     return FetchResult(url=str(r.url), status_code=int(r.status_code), html=text, content_type=ctype)
-

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { Sparkles } from "lucide-react";
 
 import { DashboardStats } from "./DashboardStats";
@@ -142,6 +143,14 @@ export function CatalogIntelligenceApp() {
             <h1 className="text-xl font-bold tracking-tight text-gray-900">
               Pivota <span className="text-gray-400 font-normal">| Catalog Intelligence</span>
             </h1>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/ingredient-harvester"
+              className="text-xs px-3 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700"
+            >
+              Ingredient Harvester →
+            </Link>
           </div>
           <div className="flex items-center gap-4 text-sm">
             <span className="px-3 py-1 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-full font-medium text-xs shadow-sm flex items-center gap-1">

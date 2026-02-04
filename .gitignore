@@ -4,6 +4,11 @@ dist/
 .turbo/
 .DS_Store
 *.log
+.venv/
+__pycache__/
+*.pyc
+*.sqlite3
+*.db
 
 .env
 .env.local

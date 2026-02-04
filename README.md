@@ -3,6 +3,7 @@
 Monorepo:
 - `client/` — Next.js 14 + Tailwind UI
 - `server/` — Express + TypeScript API (`POST /api/extract`)
+- `ingredient-harvester/` — FastAPI + RQ ingredient harvesting service
 
 ## Local dev
 
@@ -11,6 +12,20 @@ Backend:
 cd server
 npm install
 npm run dev
+```
+
+Ingredient harvester (Python):
+```bash
+cd ingredient-harvester
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+export HARVESTER_DB_URL="sqlite:///./harvester.sqlite3"
+export HARVESTER_API_CORS_ORIGINS="http://localhost:3000"
+# Optional: set SERPER_API_KEY or GOOGLE_CSE_API_KEY/GOOGLE_CSE_ID for search.
+
+uvicorn app.main:app --host 0.0.0.0 --port 8008 --reload
 ```
 
 Frontend:
@@ -31,4 +46,12 @@ Backend (Railway):
 
 Frontend (Vercel):
 - Root directory: `client`
-- Env: `NEXT_PUBLIC_API_BASE_URL=<your-railway-backend-url>`
+- Env:
+  - `NEXT_PUBLIC_API_BASE_URL=<your-railway-backend-url>`
+  - `NEXT_PUBLIC_INGREDIENT_HARVESTER_BASE_URL=<your-harvester-url>`
+
+Ingredient harvester (Railway/Docker):
+- Root directory: `ingredient-harvester`
+- Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- Env: `HARVESTER_DB_URL`, `HARVESTER_API_CORS_ORIGINS`, search keys
+- Optional async queue: set `REDIS_URL` + run a separate worker with `python -m app.worker`

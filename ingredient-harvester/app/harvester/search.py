@@ -34,6 +34,31 @@ class SerperDevSearchEngine:
 
 
 @dataclass(frozen=True)
+class SerpApiSearchEngine:
+    api_key: str
+
+    def search(self, query: str, *, top_k: int = 3) -> list[str]:
+        if not self.api_key:
+            return []
+        params = {
+            "engine": "google",
+            "q": query,
+            "api_key": self.api_key,
+            "num": max(1, min(10, int(top_k))),
+        }
+        with httpx.Client(timeout=settings.request_timeout_s) as client:
+            r = client.get("https://serpapi.com/search.json", params=params)
+            r.raise_for_status()
+            data = r.json() if r.content else {}
+        out: list[str] = []
+        for item in (data.get("organic_results") or [])[:top_k]:
+            link = (item.get("link") or "").strip()
+            if link:
+                out.append(link)
+        return out
+
+
+@dataclass(frozen=True)
 class GoogleCseSearchEngine:
     api_key: str
     cse_id: str
@@ -57,6 +82,8 @@ class GoogleCseSearchEngine:
 def default_search_engine() -> SearchEngine:
     if settings.serper_api_key:
         return SerperDevSearchEngine(settings.serper_api_key)
+    if settings.serpapi_api_key:
+        return SerpApiSearchEngine(settings.serpapi_api_key)
     if settings.google_cse_api_key and settings.google_cse_id:
         return GoogleCseSearchEngine(settings.google_cse_api_key, settings.google_cse_id)
 
@@ -66,4 +93,3 @@ def default_search_engine() -> SearchEngine:
             return []
 
     return _NoopSearch()
-

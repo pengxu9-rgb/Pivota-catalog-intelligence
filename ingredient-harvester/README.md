@@ -36,4 +36,5 @@ python -m app.worker
 - `REDIS_URL`: enable RQ queue + worker
 - `HARVESTER_QUEUE_MODE`: `rq` (default if `REDIS_URL` set) | `inline` (run jobs in API process)
 - `SERPER_API_KEY`: Serper.dev key (optional)
+- `SERPAPI_API_KEY` (or `SERP_API_KEY`): SerpAPI key (optional)
 - `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_ID`: Google Custom Search (optional)

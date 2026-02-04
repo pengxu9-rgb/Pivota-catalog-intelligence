@@ -38,6 +38,7 @@ class Settings:
     queue_mode: str = os.getenv("HARVESTER_QUEUE_MODE", "").strip().lower() or ""
 
     serper_api_key: Optional[str] = os.getenv("SERPER_API_KEY") or None
+    serpapi_api_key: Optional[str] = os.getenv("SERPAPI_API_KEY") or os.getenv("SERP_API_KEY") or None
     google_cse_api_key: Optional[str] = os.getenv("GOOGLE_CSE_API_KEY") or None
     google_cse_id: Optional[str] = os.getenv("GOOGLE_CSE_ID") or None
 

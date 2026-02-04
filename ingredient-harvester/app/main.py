@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import os
+import threading
+import time
 from typing import Any, Optional
 
 import pandas as pd
@@ -31,6 +33,9 @@ from app.schema import (
 _DB_READY = False
 _DB_ERROR: Optional[str] = None
 _DB_INIT_ATTEMPTS = int((os.getenv("HARVESTER_DB_INIT_ATTEMPTS") or "8").strip() or "8")
+_DB_RETRY_INTERVAL_S = float((os.getenv("HARVESTER_DB_RETRY_INTERVAL_S") or "10").strip() or "10")
+_DB_INIT_LOCK = threading.Lock()
+_DB_LAST_TRY_AT = 0.0
 
 
 @retry(
@@ -41,7 +46,34 @@ def _init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
 
+def _maybe_init_db() -> None:
+    global _DB_READY  # noqa: PLW0603
+    global _DB_ERROR  # noqa: PLW0603
+    global _DB_LAST_TRY_AT  # noqa: PLW0603
+
+    if _DB_READY:
+        return
+    now = time.time()
+    if now - _DB_LAST_TRY_AT < max(0.0, _DB_RETRY_INTERVAL_S):
+        return
+    if not _DB_INIT_LOCK.acquire(blocking=False):
+        return
+    try:
+        _DB_LAST_TRY_AT = now
+        Base.metadata.create_all(bind=engine)
+        _DB_READY = True
+        _DB_ERROR = None
+    except Exception as exc:  # noqa: BLE001
+        _DB_READY = False
+        _DB_ERROR = f"DB init failed: {exc!s}"[:500]
+    finally:
+        _DB_INIT_LOCK.release()
+
+
 def _require_db() -> None:
+    if _DB_READY:
+        return
+    _maybe_init_db()
     if _DB_READY:
         return
     msg = _DB_ERROR or "Database not ready."

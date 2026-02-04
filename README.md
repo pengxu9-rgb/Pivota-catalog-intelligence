@@ -53,8 +53,9 @@ Frontend (Vercel):
 Ingredient harvester (Railway/Docker):
 - Root directory: `ingredient-harvester`
 - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-- Env: `HARVESTER_DB_URL`, `HARVESTER_API_CORS_ORIGINS`, search keys
-- Optional async queue: set `REDIS_URL` + run a separate worker with `python -m app.worker`
+- Env: `HARVESTER_DB_URL` (or `DATABASE_URL`), `HARVESTER_API_CORS_ORIGINS`, search keys
+- For production (esp. with a worker), use Postgres instead of SQLite (SQLite is not shared across services).
+- Optional async queue: add Redis + set `REDIS_URL`, then run a separate worker with `python -m app.worker`
 
 Ingredient harvester proxy (Express server):
 - The `server/` app exposes a proxy at `POST/GET/PATCH /api/ingredient-harvester/*`.

@@ -31,10 +31,9 @@ python -m app.worker
 
 ## Env vars
 
-- `HARVESTER_DB_URL`: SQLAlchemy DB URL (default: `sqlite:///./harvester.sqlite3`)
+- `HARVESTER_DB_URL`: SQLAlchemy DB URL (default: `sqlite:///./harvester.sqlite3`); falls back to `DATABASE_URL` if present (Railway Postgres).
 - `HARVESTER_API_CORS_ORIGINS`: comma-separated origins for CORS (default: `*`)
 - `REDIS_URL`: enable RQ queue + worker
 - `HARVESTER_QUEUE_MODE`: `rq` (default if `REDIS_URL` set) | `inline` (run jobs in API process)
 - `SERPER_API_KEY`: Serper.dev key (optional)
 - `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_ID`: Google Custom Search (optional)
-

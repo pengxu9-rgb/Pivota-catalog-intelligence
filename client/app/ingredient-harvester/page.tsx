@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ExternalLink, RefreshCw, Upload } from "lucide-react";
 
@@ -43,18 +43,34 @@ function fmtCounts(p: TaskProgress | null) {
 export default function IngredientHarvesterPage() {
   const [importId, setImportId] = useState<string>("");
   const [rows, setRows] = useState<CandidateRow[]>([]);
+  const [total, setTotal] = useState<number>(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [filterStatus, setFilterStatus] = useState<RowStatus | "ALL">("ALL");
-  const [query, setQuery] = useState("");
+  const [queryInput, setQueryInput] = useState("");
+  const [queryApplied, setQueryApplied] = useState("");
+  const [pageSize, setPageSize] = useState<number>(200);
+  const [page, setPage] = useState<number>(1);
 
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const selectedIds = useMemo(() => Object.keys(selected).filter((k) => selected[k]), [selected]);
+  const selectedOnPageCount = useMemo(() => rows.filter((r) => !!selected[r.row_id]).length, [rows, selected]);
+  const allOnPageSelected = rows.length > 0 && selectedOnPageCount === rows.length;
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!selectAllRef.current) return;
+    selectAllRef.current.indeterminate = selectedOnPageCount > 0 && selectedOnPageCount < rows.length;
+  }, [selectedOnPageCount, rows.length]);
 
   const [taskId, setTaskId] = useState<string>("");
   const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null);
 
   const [modal, setModal] = useState<ModalState>({ open: false });
+
+  const offset = Math.max(0, (page - 1) * pageSize);
+  const pageCount = Math.max(1, Math.ceil((total || 0) / pageSize));
+  const showingFrom = total > 0 ? offset + 1 : 0;
+  const showingTo = offset + rows.length;
 
   const loadRows = async () => {
     if (!importId) return;
@@ -64,11 +80,12 @@ export default function IngredientHarvesterPage() {
       const res = await listImportRows({
         importId,
         status: filterStatus === "ALL" ? undefined : filterStatus,
-        q: query.trim() || undefined,
-        limit: 200,
-        offset: 0,
+        q: queryApplied || undefined,
+        limit: pageSize,
+        offset,
       });
       setRows(res.items || []);
+      setTotal(res.total || 0);
     } catch (e: any) {
       setError(e?.message || "Failed to load rows.");
     } finally {
@@ -77,9 +94,19 @@ export default function IngredientHarvesterPage() {
   };
 
   useEffect(() => {
+    setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importId, filterStatus, queryApplied, pageSize]);
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageCount]);
+
+  useEffect(() => {
     loadRows();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [importId, filterStatus]);
+  }, [importId, filterStatus, queryApplied, page, pageSize]);
 
   useEffect(() => {
     if (!taskId) return;
@@ -281,10 +308,10 @@ export default function IngredientHarvesterPage() {
               <option value="ERROR">ERROR</option>
             </select>
             <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              value={queryInput}
+              onChange={(e) => setQueryInput(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") void loadRows();
+                if (e.key === "Enter") setQueryApplied(queryInput.trim());
               }}
               placeholder="Search brand/product…"
               className="text-sm border rounded-lg px-3 py-2 w-64"
@@ -292,7 +319,7 @@ export default function IngredientHarvesterPage() {
             />
             <button
               type="button"
-              onClick={() => void loadRows()}
+              onClick={() => setQueryApplied(queryInput.trim())}
               className="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50 disabled:opacity-50"
               disabled={!importId}
             >
@@ -300,6 +327,15 @@ export default function IngredientHarvesterPage() {
             </button>
             <div className="ml-auto text-xs text-gray-600">
               Selected: <span className="font-mono">{selectedIds.length}</span>
+              {selectedIds.length ? (
+                <button
+                  type="button"
+                  className="ml-2 text-xs text-blue-700 hover:text-blue-900"
+                  onClick={() => setSelected({})}
+                >
+                  Clear
+                </button>
+              ) : null}
             </div>
           </div>
 
@@ -309,13 +345,16 @@ export default function IngredientHarvesterPage() {
                 <tr>
                   <th className="px-3 py-2 text-left">
                     <input
+                      ref={selectAllRef}
                       type="checkbox"
-                      checked={rows.length > 0 && selectedIds.length === rows.length}
+                      checked={allOnPageSelected}
                       onChange={(e) => {
                         const on = e.target.checked;
-                        const next: Record<string, boolean> = {};
-                        rows.forEach((r) => (next[r.row_id] = on));
-                        setSelected(next);
+                        setSelected((prev) => {
+                          const next = { ...prev };
+                          rows.forEach((r) => (next[r.row_id] = on));
+                          return next;
+                        });
                       }}
                       disabled={!rows.length}
                     />
@@ -371,7 +410,12 @@ export default function IngredientHarvesterPage() {
                         <button
                           type="button"
                           className="text-xs rounded border px-2 py-1 hover:bg-gray-50"
-                          onClick={() => void startHarvestTask({ importId, rowIds: [r.row_id], force: true }).then((t) => setTaskId(t.task_id))}
+                          onClick={() => {
+                            void startHarvestTask({ importId, rowIds: [r.row_id], force: true }).then((t) => {
+                              setTaskId(t.task_id);
+                              setTaskProgress(null);
+                            });
+                          }}
                           disabled={!importId}
                         >
                           Re-run
@@ -399,6 +443,47 @@ export default function IngredientHarvesterPage() {
               </tbody>
             </table>
           </div>
+
+          {importId ? (
+            <div className="flex items-center justify-between flex-wrap gap-2 text-xs text-gray-600">
+              <div>
+                Showing <span className="font-mono">{showingFrom}</span>–<span className="font-mono">{showingTo}</span> of{" "}
+                <span className="font-mono">{total}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div>
+                  Page <span className="font-mono">{page}</span>/<span className="font-mono">{pageCount}</span>
+                </div>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 hover:bg-gray-50 disabled:opacity-50"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 hover:bg-gray-50 disabled:opacity-50"
+                  onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                  disabled={page >= pageCount}
+                >
+                  Next
+                </button>
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value))}
+                  className="text-xs border rounded px-2 py-1"
+                >
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={200}>200</option>
+                  <option value={500}>500</option>
+                </select>
+                <span className="text-xs text-gray-500">/ page</span>
+              </div>
+            </div>
+          ) : null}
         </section>
 
         {modal.open ? (

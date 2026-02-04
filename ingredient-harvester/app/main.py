@@ -4,13 +4,17 @@ import io
 import os
 import threading
 import time
+import uuid
 from typing import Any, Optional
 
 import pandas as pd
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from redis import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError, OperationalError
 from tenacity import RetryError, retry, stop_after_attempt, wait_exponential_jitter
 
 from app.config import settings
@@ -36,6 +40,24 @@ _DB_INIT_ATTEMPTS = int((os.getenv("HARVESTER_DB_INIT_ATTEMPTS") or "8").strip()
 _DB_RETRY_INTERVAL_S = float((os.getenv("HARVESTER_DB_RETRY_INTERVAL_S") or "10").strip() or "10")
 _DB_INIT_LOCK = threading.Lock()
 _DB_LAST_TRY_AT = 0.0
+
+
+def _request_id(request: Request) -> str:
+    existing = (
+        request.headers.get("x-harvester-request-id")
+        or request.headers.get("x-request-id")
+        or request.headers.get("x-railway-request-id")
+    )
+    if existing:
+        return existing
+    return uuid.uuid4().hex[:12]
+
+
+def _set_db_error(message: str) -> None:
+    global _DB_READY  # noqa: PLW0603
+    global _DB_ERROR  # noqa: PLW0603
+    _DB_READY = False
+    _DB_ERROR = (message or "DB error")[:500]
 
 
 @retry(
@@ -81,6 +103,56 @@ def _require_db() -> None:
 
 app = FastAPI(title="Ingredient Source Harvester", version="1.0.0")
 
+@app.middleware("http")
+async def _request_id_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+    rid = _request_id(request)
+    request.state.request_id = rid  # type: ignore[attr-defined]
+    response = await call_next(request)
+    response.headers["x-harvester-request-id"] = rid
+    return response
+
+
+@app.exception_handler(OperationalError)
+async def _operational_error_handler(request: Request, exc: OperationalError):  # type: ignore[override]
+    rid = getattr(request.state, "request_id", "unknown")
+    # eslint-disable-next-line no-console
+    print(f"[harvester][{rid}] db operational error: {exc!s}")
+    _set_db_error(f"DB operational error: {exc!s}")
+    return JSONResponse(status_code=503, content={"detail": _DB_ERROR, "request_id": rid})
+
+
+@app.exception_handler(DBAPIError)
+async def _dbapi_error_handler(request: Request, exc: DBAPIError):  # type: ignore[override]
+    rid = getattr(request.state, "request_id", "unknown")
+    # eslint-disable-next-line no-console
+    print(f"[harvester][{rid}] db api error: {exc!s}")
+    _set_db_error(f"DB error: {exc!s}")
+    return JSONResponse(status_code=503, content={"detail": _DB_ERROR, "request_id": rid})
+
+
+@app.exception_handler(RedisError)
+async def _redis_error_handler(request: Request, exc: RedisError):  # type: ignore[override]
+    rid = getattr(request.state, "request_id", "unknown")
+    # eslint-disable-next-line no-console
+    print(f"[harvester][{rid}] redis error: {exc!s}")
+    return JSONResponse(status_code=503, content={"detail": f"Redis error: {exc!s}"[:500], "request_id": rid})
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):  # type: ignore[override]
+    rid = getattr(request.state, "request_id", "unknown")
+    # eslint-disable-next-line no-console
+    print(f"[harvester][{rid}] unhandled error: {type(exc).__name__}: {exc!s}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal Server Error",
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:500],
+            "request_id": rid,
+        },
+    )
+
 origins = settings.cors_origins
 app.add_middleware(
     CORSMiddleware,
@@ -88,6 +160,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["x-harvester-request-id"],
 )
 
 
@@ -110,10 +183,22 @@ def _row_view(row: CandidateRow) -> CandidateRowView:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    redis_ready: Optional[bool] = None
+    redis_error: Optional[str] = None
+    if settings.redis_url:
+        try:
+            r = Redis.from_url(settings.redis_url, socket_connect_timeout=1, socket_timeout=1)
+            r.ping()
+            redis_ready = True
+        except Exception as exc:  # noqa: BLE001
+            redis_ready = False
+            redis_error = str(exc)[:300]
     return {
         "ok": True,
         "queue_mode": settings.queue_mode,
         "has_redis": bool(settings.redis_url),
+        "redis_ready": redis_ready,
+        "redis_error": redis_error,
         "db_ready": _DB_READY,
         "db_url_scheme": (settings.db_url.split(":", 1)[0] if settings.db_url else None),
         "db_error": _DB_ERROR,

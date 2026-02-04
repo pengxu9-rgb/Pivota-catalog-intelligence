@@ -12,10 +12,13 @@ function baseUrl() {
   return DEFAULT_BASE;
 }
 
-async function assertOk(res: Response) {
+async function assertOk(res: Response, url: string) {
   if (res.ok) return;
+  const rid = res.headers.get("x-harvester-request-id");
   const text = await res.text().catch(() => "");
-  throw new Error(`Harvester API error (${res.status}): ${text || res.statusText}`);
+  const snippet = text && text.length > 800 ? `${text.slice(0, 800)}…` : text;
+  const where = rid ? `${url} [${rid}]` : url;
+  throw new Error(`Harvester API error (${res.status}) at ${where}: ${snippet || res.statusText}`);
 }
 
 export async function uploadCandidatesCsv(file: File): Promise<ImportResponse> {
@@ -23,7 +26,7 @@ export async function uploadCandidatesCsv(file: File): Promise<ImportResponse> {
   const form = new FormData();
   form.append("file", file);
   const res = await fetch(url, { method: "POST", body: form });
-  await assertOk(res);
+  await assertOk(res, url);
   return (await res.json()) as ImportResponse;
 }
 
@@ -40,8 +43,9 @@ export async function listImportRows(args: {
   if (q) u.searchParams.set("q", q);
   u.searchParams.set("limit", String(limit));
   u.searchParams.set("offset", String(offset));
-  const res = await fetch(u.toString(), { cache: "no-store" });
-  await assertOk(res);
+  const url = u.toString();
+  const res = await fetch(url, { cache: "no-store" });
+  await assertOk(res, url);
   return (await res.json()) as ListRowsResponse;
 }
 
@@ -50,28 +54,31 @@ export async function startHarvestTask(args: {
   rowIds?: string[];
   force?: boolean;
 }): Promise<CreateTaskResponse> {
-  const res = await fetch(`${baseUrl()}/v1/tasks`, {
+  const url = `${baseUrl()}/v1/tasks`;
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ import_id: args.importId, row_ids: args.rowIds || null, force: !!args.force }),
   });
-  await assertOk(res);
+  await assertOk(res, url);
   return (await res.json()) as CreateTaskResponse;
 }
 
 export async function getTaskProgress(taskId: string): Promise<TaskProgress> {
-  const res = await fetch(`${baseUrl()}/v1/tasks/${encodeURIComponent(taskId)}`, { cache: "no-store" });
-  await assertOk(res);
+  const url = `${baseUrl()}/v1/tasks/${encodeURIComponent(taskId)}`;
+  const res = await fetch(url, { cache: "no-store" });
+  await assertOk(res, url);
   return (await res.json()) as TaskProgress;
 }
 
 export async function updateRow(rowId: string, patch: Record<string, unknown>) {
-  const res = await fetch(`${baseUrl()}/v1/rows/${encodeURIComponent(rowId)}`, {
+  const url = `${baseUrl()}/v1/rows/${encodeURIComponent(rowId)}`;
+  const res = await fetch(url, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  await assertOk(res);
+  await assertOk(res, url);
   return res.json();
 }
 

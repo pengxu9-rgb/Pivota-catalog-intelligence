@@ -249,6 +249,21 @@ async def create_import(file: UploadFile = File(...)) -> ImportResponse:
             detail="CSV must contain columns: brand, product_name, market (case-insensitive).",
         )
 
+    def clean_existing(val: Any) -> str:
+        if val is None:
+            return ""
+        try:
+            if pd.isna(val):
+                return ""
+        except Exception:  # noqa: BLE001
+            pass
+        text = str(val).strip()
+        if not text:
+            return ""
+        if text.lower() in {"nan", "none", "null", "n/a", "na"}:
+            return ""
+        return text
+
     with db_session() as db:
         batch = ImportBatch(filename=file.filename)
         db.add(batch)
@@ -262,7 +277,7 @@ async def create_import(file: UploadFile = File(...)) -> ImportResponse:
             market = str(r.get(market_col) or "").strip()
             if not (brand and product_name and market):
                 continue
-            existing = str(r.get(raw_ing_col) or "").strip() if raw_ing_col else ""
+            existing = clean_existing(r.get(raw_ing_col)) if raw_ing_col else ""
             row = CandidateRow(
                 import_id=batch.import_id,
                 row_index=int(idx),

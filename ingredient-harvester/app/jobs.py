@@ -7,6 +7,17 @@ from app.harvester.source_harvester import SourceHarvester
 from app.models import CandidateRow, TaskRow
 
 
+def _has_meaningful_ingredients(text: str | None) -> bool:
+    if not text:
+        return False
+    t = str(text).strip()
+    if not t:
+        return False
+    if t.lower() in {"nan", "none", "null", "n/a", "na"}:
+        return False
+    return True
+
+
 def harvest_row(*, task_id: str, row_id: str, force: bool) -> None:
     harvester = SourceHarvester()
     with db_session() as db:
@@ -21,7 +32,7 @@ def harvest_row(*, task_id: str, row_id: str, force: bool) -> None:
         db.add(tr)
         db.commit()
 
-        if not force and row.raw_ingredient_text:
+        if not force and _has_meaningful_ingredients(row.raw_ingredient_text):
             row.status = "SKIPPED"
             row.updated_at = utcnow()
             tr.status = "SKIPPED"
@@ -57,4 +68,3 @@ def harvest_row(*, task_id: str, row_id: str, force: bool) -> None:
             tr.finished_at = utcnow()
             db.add_all([row, tr])
             db.commit()
-

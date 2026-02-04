@@ -48,10 +48,14 @@ Frontend (Vercel):
 - Root directory: `client`
 - Env:
   - `NEXT_PUBLIC_API_BASE_URL=<your-railway-backend-url>`
-  - `NEXT_PUBLIC_INGREDIENT_HARVESTER_BASE_URL=<your-harvester-url>`
+  - (optional) `NEXT_PUBLIC_INGREDIENT_HARVESTER_BASE_URL=<your-backend-url>/api/ingredient-harvester` (proxy; recommended)
 
 Ingredient harvester (Railway/Docker):
 - Root directory: `ingredient-harvester`
 - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 - Env: `HARVESTER_DB_URL`, `HARVESTER_API_CORS_ORIGINS`, search keys
 - Optional async queue: set `REDIS_URL` + run a separate worker with `python -m app.worker`
+
+Ingredient harvester proxy (Express server):
+- The `server/` app exposes a proxy at `POST/GET/PATCH /api/ingredient-harvester/*`.
+- Configure `INGREDIENT_HARVESTER_BASE_URL=<your-harvester-url>` on the `server` Railway service.

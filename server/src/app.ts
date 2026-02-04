@@ -2,6 +2,7 @@ import cors from "cors";
 import express from "express";
 
 import { extractRouter } from "./routes/extract";
+import { createIngredientHarvesterProxyRouter } from "./routes/ingredientHarvesterProxy";
 
 type CorsRule =
   | { kind: "any" }
@@ -95,6 +96,7 @@ export function createApp() {
 
   app.use(corsMiddleware);
   app.options("*", corsMiddleware);
+  app.use("/api/ingredient-harvester", createIngredientHarvesterProxyRouter());
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/health", (_req, res) => res.json({ ok: true }));

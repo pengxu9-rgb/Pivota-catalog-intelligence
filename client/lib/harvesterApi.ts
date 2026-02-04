@@ -1,9 +1,15 @@
 import type { CreateTaskResponse, ImportResponse, ListRowsResponse, TaskProgress } from "./harvesterTypes";
 
-const DEFAULT_BASE = "http://localhost:8008";
+const DEFAULT_BASE = "http://localhost:3001/api/ingredient-harvester";
 
 function baseUrl() {
-  return process.env.NEXT_PUBLIC_INGREDIENT_HARVESTER_BASE_URL || DEFAULT_BASE;
+  const explicit = process.env.NEXT_PUBLIC_INGREDIENT_HARVESTER_BASE_URL;
+  if (explicit) return explicit;
+
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
+  if (apiBase) return `${String(apiBase).trim().replace(/\/+$/g, "")}/api/ingredient-harvester`;
+
+  return DEFAULT_BASE;
 }
 
 async function assertOk(res: Response) {
@@ -74,4 +80,3 @@ export function exportImportUrl(importId: string, format: "csv" | "xlsx") {
   u.searchParams.set("format", format);
   return u.toString();
 }
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 from typing import Any, Optional
 
 import pandas as pd
@@ -8,6 +9,7 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
+from tenacity import RetryError, retry, stop_after_attempt, wait_exponential_jitter
 
 from app.config import settings
 from app.db import db_session, engine, utcnow
@@ -26,7 +28,24 @@ from app.schema import (
 )
 
 
-Base.metadata.create_all(bind=engine)
+_DB_READY = False
+_DB_ERROR: Optional[str] = None
+_DB_INIT_ATTEMPTS = int((os.getenv("HARVESTER_DB_INIT_ATTEMPTS") or "8").strip() or "8")
+
+
+@retry(
+    stop=stop_after_attempt(max(1, _DB_INIT_ATTEMPTS)),
+    wait=wait_exponential_jitter(initial=1, max=10),
+)
+def _init_db() -> None:
+    Base.metadata.create_all(bind=engine)
+
+
+def _require_db() -> None:
+    if _DB_READY:
+        return
+    msg = _DB_ERROR or "Database not ready."
+    raise HTTPException(status_code=503, detail=msg)
 
 app = FastAPI(title="Ingredient Source Harvester", version="1.0.0")
 
@@ -54,16 +73,40 @@ def _row_view(row: CandidateRow) -> CandidateRowView:
         raw_ingredient_text=row.raw_ingredient_text,
         updated_at=row.updated_at,
         error=row.error,
-    )
+)
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "queue_mode": settings.queue_mode, "has_redis": bool(settings.redis_url)}
+    return {
+        "ok": True,
+        "queue_mode": settings.queue_mode,
+        "has_redis": bool(settings.redis_url),
+        "db_ready": _DB_READY,
+        "db_url_scheme": (settings.db_url.split(":", 1)[0] if settings.db_url else None),
+        "db_error": _DB_ERROR,
+    }
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    global _DB_READY  # noqa: PLW0603
+    global _DB_ERROR  # noqa: PLW0603
+    try:
+        _init_db()
+        _DB_READY = True
+        _DB_ERROR = None
+    except RetryError as exc:
+        _DB_READY = False
+        _DB_ERROR = f"DB init failed after retries: {exc.last_attempt.exception()!s}"[:500]
+    except Exception as exc:  # noqa: BLE001
+        _DB_READY = False
+        _DB_ERROR = f"DB init failed: {exc!s}"[:500]
 
 
 @app.post("/v1/imports", response_model=ImportResponse)
 async def create_import(file: UploadFile = File(...)) -> ImportResponse:
+    _require_db()
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Please upload a .csv file.")
     raw = await file.read()
@@ -129,6 +172,7 @@ def list_rows(
     limit: int = Query(default=200, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> ListRowsResponse:
+    _require_db()
     with db_session() as db:
         stmt = select(CandidateRow).where(CandidateRow.import_id == import_id)
         if status:
@@ -146,6 +190,7 @@ def list_rows(
 
 @app.post("/v1/tasks", response_model=CreateTaskResponse)
 def create_task(req: CreateTaskRequest) -> CreateTaskResponse:
+    _require_db()
     with db_session() as db:
         batch = db.scalar(select(ImportBatch).where(ImportBatch.import_id == req.import_id))
         if not batch:
@@ -184,6 +229,7 @@ def create_task(req: CreateTaskRequest) -> CreateTaskResponse:
 
 @app.get("/v1/tasks/{task_id}", response_model=TaskProgress)
 def get_task(task_id: str) -> TaskProgress:
+    _require_db()
     with db_session() as db:
         task = db.scalar(select(HarvestTask).where(HarvestTask.task_id == task_id))
         if not task:
@@ -220,6 +266,7 @@ def get_task(task_id: str) -> TaskProgress:
 
 @app.patch("/v1/rows/{row_id}", response_model=UpdateRowResponse)
 def update_row(row_id: str, req: UpdateRowRequest) -> UpdateRowResponse:
+    _require_db()
     with db_session() as db:
         row = db.scalar(select(CandidateRow).where(CandidateRow.row_id == row_id))
         if not row:
@@ -247,6 +294,7 @@ def update_row(row_id: str, req: UpdateRowRequest) -> UpdateRowResponse:
 
 @app.post("/v1/rows/{row_id}/rerun", response_model=CreateTaskResponse)
 def rerun_single_row(row_id: str, force: bool = Query(default=False)) -> CreateTaskResponse:
+    _require_db()
     with db_session() as db:
         row = db.scalar(select(CandidateRow).where(CandidateRow.row_id == row_id))
         if not row:
@@ -257,6 +305,7 @@ def rerun_single_row(row_id: str, force: bool = Query(default=False)) -> CreateT
 
 @app.get("/v1/exports/{import_id}")
 def export_import(import_id: str, format: str = Query(default="csv")):
+    _require_db()
     fmt = (format or "csv").strip().lower()
     if fmt not in {"csv", "xlsx"}:
         raise HTTPException(status_code=400, detail="format must be csv or xlsx")

@@ -14,6 +14,10 @@ def _normalize_db_url(raw: str) -> str:
     url = (raw or "").strip()
     if not url:
         return ""
+    if url.startswith("postgresql+asyncpg://"):
+        return f"postgresql+psycopg://{url[len('postgresql+asyncpg://'):]}"
+    if url.startswith("postgresql+psycopg2://"):
+        return f"postgresql+psycopg://{url[len('postgresql+psycopg2://'):]}"
     if url.startswith("postgres://"):
         return f"postgresql+psycopg://{url[len('postgres://'):]}"
     if url.startswith("postgresql://"):

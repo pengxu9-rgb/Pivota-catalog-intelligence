@@ -13,6 +13,21 @@ class SearchEngine(Protocol):
 
 
 @dataclass(frozen=True)
+class SearchEngineChain:
+    engines: list[SearchEngine]
+
+    def search(self, query: str, *, top_k: int = 3) -> list[str]:
+        for engine in self.engines:
+            try:
+                urls = engine.search(query, top_k=top_k)
+                if urls:
+                    return urls
+            except Exception:  # noqa: BLE001
+                continue
+        return []
+
+
+@dataclass(frozen=True)
 class SerperDevSearchEngine:
     api_key: str
 
@@ -80,12 +95,20 @@ class GoogleCseSearchEngine:
 
 
 def default_search_engine() -> SearchEngine:
-    if settings.serper_api_key:
-        return SerperDevSearchEngine(settings.serper_api_key)
+    engines: list[SearchEngine] = []
+
+    # Prefer SerpApi first (works reliably for our current production config), but fall back to others.
     if settings.serpapi_api_key:
-        return SerpApiSearchEngine(settings.serpapi_api_key)
+        engines.append(SerpApiSearchEngine(settings.serpapi_api_key))
+    if settings.serper_api_key:
+        engines.append(SerperDevSearchEngine(settings.serper_api_key))
     if settings.google_cse_api_key and settings.google_cse_id:
-        return GoogleCseSearchEngine(settings.google_cse_api_key, settings.google_cse_id)
+        engines.append(GoogleCseSearchEngine(settings.google_cse_api_key, settings.google_cse_id))
+
+    if len(engines) == 1:
+        return engines[0]
+    if len(engines) > 1:
+        return SearchEngineChain(engines=engines)
 
     # No network search configured; return empty so API can still be used for manual review.
     class _NoopSearch:

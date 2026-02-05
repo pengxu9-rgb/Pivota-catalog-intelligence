@@ -47,6 +47,9 @@ class SourceHarvester:
         urls = self.search_engine.search(query, top_k=3)
         debug: dict[str, Any] = {"query": query, "urls": urls, "attempts": []}
 
+        best_pending: dict[str, Any] | None = None
+        best_rank: float = -1.0
+
         for url in urls[:3]:
             try:
                 fetched = fetch_html(url)
@@ -60,6 +63,14 @@ class SourceHarvester:
 
                 confidence = float(extracted.score)
                 verified = bool(extracted.verified_in_dom)
+                debug["attempts"].append(
+                    {
+                        "url": fetched.url,
+                        "score": confidence,
+                        "verified": verified,
+                        "hint": extracted.debug_hint,
+                    }
+                )
                 if verified and confidence >= 0.8:
                     return HarvestOutcome(
                         status="OK",
@@ -70,18 +81,34 @@ class SourceHarvester:
                         debug={**debug, "picked": fetched.url, "hint": extracted.debug_hint},
                     )
 
-                # Extracted something but not fully trusted.
-                return HarvestOutcome(
-                    status="PENDING",
-                    confidence=max(0.3, min(0.8, confidence)),
-                    raw_ingredient_text=extracted.text,
-                    source_ref=fetched.url,
-                    source_type=classify_source_type(fetched.url),
-                    debug={**debug, "picked": fetched.url, "hint": extracted.debug_hint, "verified": verified},
-                )
+                # Extracted something but not fully trusted; keep searching other URLs and pick best at end.
+                rank = confidence + (0.05 if verified else 0.0)
+                if rank > best_rank:
+                    best_rank = rank
+                    best_pending = {
+                        "confidence": confidence,
+                        "verified": verified,
+                        "text": extracted.text,
+                        "url": fetched.url,
+                        "hint": extracted.debug_hint,
+                    }
             except Exception as exc:  # noqa: BLE001
                 debug["attempts"].append({"url": url, "error": str(exc)[:200]})
                 continue
+
+        if best_pending is not None:
+            confidence = float(best_pending["confidence"])
+            verified = bool(best_pending["verified"])
+            url = str(best_pending["url"])
+            hint = str(best_pending["hint"])
+            return HarvestOutcome(
+                status="PENDING",
+                confidence=max(0.3, min(0.8, confidence)),
+                raw_ingredient_text=str(best_pending["text"]),
+                source_ref=url,
+                source_type=classify_source_type(url),
+                debug={**debug, "picked": url, "hint": hint, "verified": verified},
+            )
 
         return HarvestOutcome(
             status="NEEDS_SOURCE",

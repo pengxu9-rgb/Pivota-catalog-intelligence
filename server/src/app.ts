@@ -3,6 +3,8 @@ import express from "express";
 
 import { extractRouter } from "./routes/extract";
 import { createIngredientHarvesterProxyRouter } from "./routes/ingredientHarvesterProxy";
+import { parserRouter } from "./routes/parser";
+import { productsRouter } from "./routes/products";
 
 type CorsRule =
   | { kind: "any" }
@@ -98,6 +100,8 @@ export function createApp() {
   app.options("*", corsMiddleware);
   app.use("/api/ingredient-harvester", createIngredientHarvesterProxyRouter());
   app.use(express.json({ limit: "2mb" }));
+  app.use("/api/parser", parserRouter);
+  app.use("/api/products", productsRouter);
 
   app.get("/health", (_req, res) => res.json({ ok: true }));
   app.use("/api", extractRouter);

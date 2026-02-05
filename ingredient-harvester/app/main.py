@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
@@ -28,6 +30,11 @@ from app.schema import (
     CreateTaskResponse,
     ImportResponse,
     ListRowsResponse,
+    ParserReparseBatchRequest,
+    ParserReparseBatchResponse,
+    ParserReparseBatchResponseItem,
+    ParserReparseRequest,
+    ParserReparseResponse,
     TaskProgress,
     UpdateRowRequest,
     UpdateRowResponse,
@@ -40,6 +47,62 @@ _DB_INIT_ATTEMPTS = int((os.getenv("HARVESTER_DB_INIT_ATTEMPTS") or "8").strip()
 _DB_RETRY_INTERVAL_S = float((os.getenv("HARVESTER_DB_RETRY_INTERVAL_S") or "10").strip() or "10")
 _DB_INIT_LOCK = threading.Lock()
 _DB_LAST_TRY_AT = 0.0
+
+
+_PARSER_ENGINE: Any = None
+_PARSER_ERROR: Optional[str] = None
+try:
+    # In monorepo mode, Railway "root directory" can be `ingredient-harvester/`,
+    # but the full repo is still available in the container. Import the parser
+    # engine from `../services/ingredient_parser.py`.
+    import sys as _sys
+
+    _services_dir = Path(__file__).resolve().parents[2] / "services"
+    if _services_dir.exists():
+        _sys.path.insert(0, str(_services_dir))
+    from ingredient_parser import ParserEngine, clean_noise  # type: ignore[import-not-found]
+    from ingredient_parser import _coerce_text as _parser_coerce_text  # type: ignore[import-not-found]
+    from ingredient_parser import _preprocess as _parser_preprocess  # type: ignore[import-not-found]
+
+    _PARSER_ENGINE = ParserEngine()
+except Exception as exc:  # noqa: BLE001
+    _PARSER_ENGINE = None
+    _PARSER_ERROR = f"Parser unavailable: {type(exc).__name__}: {exc!s}"[:300]
+
+
+def _require_parser() -> Any:
+    if _PARSER_ENGINE is not None:
+        return _PARSER_ENGINE
+    raise HTTPException(status_code=503, detail=_PARSER_ERROR or "Parser not available.")
+
+
+def _loads_json(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, (list, dict)):
+        return value
+    if not isinstance(value, str):
+        return default
+    raw = value.strip()
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _to_parser_response(parsed: dict[str, Any], *, cleaned_text: str) -> ParserReparseResponse:
+    return ParserReparseResponse(
+        cleaned_text=cleaned_text or "",
+        parse_status=str(parsed.get("parse_status") or "NEEDS_REVIEW"),
+        inci_list=str(parsed.get("inci_list") or ""),
+        inci_list_json=_loads_json(parsed.get("inci_list_json"), []),
+        unrecognized_tokens=_loads_json(parsed.get("unrecognized_tokens"), []),
+        normalization_notes=_loads_json(parsed.get("normalization_notes"), []),
+        parse_confidence=float(parsed.get("parse_confidence") or 0.0),
+        needs_review=_loads_json(parsed.get("needs_review"), []),
+    )
 
 
 def _request_id(request: Request) -> str:
@@ -202,6 +265,8 @@ def health() -> dict[str, Any]:
         "db_ready": _DB_READY,
         "db_url_scheme": (settings.db_url.split(":", 1)[0] if settings.db_url else None),
         "db_error": _DB_ERROR,
+        "parser_ready": bool(_PARSER_ENGINE),
+        "parser_error": _PARSER_ERROR,
     }
 
 
@@ -294,6 +359,29 @@ async def create_import(file: UploadFile = File(...)) -> ImportResponse:
         db.commit()
 
         return ImportResponse(import_id=batch.import_id, filename=batch.filename, created_at=batch.created_at, total_rows=total)
+
+
+@app.post("/v1/parser/re-parse", response_model=ParserReparseResponse)
+def parser_reparse(req: ParserReparseRequest) -> ParserReparseResponse:
+    engine = _require_parser()
+    raw = _parser_coerce_text(req.raw_ingredient_text)
+    pre = _parser_preprocess(raw)
+    cleaned, _ = clean_noise(pre)
+    parsed = engine.parse(raw)
+    return _to_parser_response(parsed, cleaned_text=cleaned)
+
+
+@app.post("/v1/parser/re-parse-batch", response_model=ParserReparseBatchResponse)
+def parser_reparse_batch(req: ParserReparseBatchRequest) -> ParserReparseBatchResponse:
+    engine = _require_parser()
+    out: list[ParserReparseBatchResponseItem] = []
+    for item in req.items or []:
+        raw = _parser_coerce_text(item.raw_ingredient_text)
+        pre = _parser_preprocess(raw)
+        cleaned, _ = clean_noise(pre)
+        parsed = engine.parse(raw)
+        out.append(ParserReparseBatchResponseItem(row_id=item.row_id, result=_to_parser_response(parsed, cleaned_text=cleaned)))
+    return ParserReparseBatchResponse(items=out)
 
 
 @app.get("/v1/imports/{import_id}/rows", response_model=ListRowsResponse)

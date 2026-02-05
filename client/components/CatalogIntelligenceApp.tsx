@@ -151,6 +151,12 @@ export function CatalogIntelligenceApp() {
             >
               Ingredient Harvester →
             </Link>
+            <Link
+              href="/ingredients/review"
+              className="text-xs px-3 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700"
+            >
+              Ingredient Review →
+            </Link>
           </div>
           <div className="flex items-center gap-4 text-sm">
             <span className="px-3 py-1 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-full font-medium text-xs shadow-sm flex items-center gap-1">

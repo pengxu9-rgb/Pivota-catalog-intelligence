@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 RowStatus = Literal["EMPTY", "OK", "PENDING", "NEEDS_SOURCE", "SKIPPED", "ERROR"]
 TaskStatus = Literal["RUNNING", "COMPLETED", "FAILED", "CANCELED"]
+ParseStatus = Literal["OK", "NEEDS_SOURCE", "NEEDS_REVIEW"]
 
 
 class ImportResponse(BaseModel):
@@ -73,3 +74,36 @@ class UpdateRowRequest(BaseModel):
 
 class UpdateRowResponse(BaseModel):
     row: CandidateRowView
+
+
+class ParserReparseRequest(BaseModel):
+    raw_ingredient_text: Optional[str] = None
+
+
+class ParserReparseResponse(BaseModel):
+    cleaned_text: str
+    parse_status: ParseStatus
+    inci_list: str
+    inci_list_json: list[dict] = Field(default_factory=list)
+    unrecognized_tokens: list[str] = Field(default_factory=list)
+    normalization_notes: list[str] = Field(default_factory=list)
+    parse_confidence: float
+    needs_review: list[dict] = Field(default_factory=list)
+
+
+class ParserReparseBatchItem(BaseModel):
+    row_id: str
+    raw_ingredient_text: Optional[str] = None
+
+
+class ParserReparseBatchRequest(BaseModel):
+    items: list[ParserReparseBatchItem] = Field(default_factory=list)
+
+
+class ParserReparseBatchResponseItem(BaseModel):
+    row_id: str
+    result: ParserReparseResponse
+
+
+class ParserReparseBatchResponse(BaseModel):
+    items: list[ParserReparseBatchResponseItem] = Field(default_factory=list)

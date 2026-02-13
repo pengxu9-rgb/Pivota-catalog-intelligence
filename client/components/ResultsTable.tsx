@@ -4,6 +4,9 @@ import { Copy, ExternalLink } from "lucide-react";
 
 import type { ExtractedVariantRow, LogLine } from "@/lib/types";
 
+const PLACEHOLDER_THUMB =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='6' fill='%23e5e7eb'/%3E%3Ctext x='20' y='23' text-anchor='middle' font-size='10' fill='%239ca3af' font-family='Arial,sans-serif'%3EIMG%3C/text%3E%3C/svg%3E";
+
 type Props = {
   logs: LogLine[];
   variants: ExtractedVariantRow[];
@@ -132,7 +135,7 @@ function ResultRow({
     <tr className="hover:bg-gray-50 transition-colors fade-in group">
       <td className="px-6 py-4 whitespace-nowrap">
         <img
-          src="https://via.placeholder.com/40x40/e5e7eb/9ca3af?text=IMG"
+          src={PLACEHOLDER_THUMB}
           alt="Thumb"
           className="product-thumb"
           title={`Actual URL in CSV: ${variant.image_url}`}

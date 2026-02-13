@@ -11,6 +11,11 @@ import type {
   StockStatus,
 } from "./types";
 
+const DEFAULT_MAX_PRODUCTS = 10;
+const DEFAULT_CONCURRENCY = 3;
+const DEFAULT_NAV_TIMEOUT_MS = 12_000;
+const DEFAULT_FETCH_TIMEOUT_MS = 12_000;
+
 export class PuppeteerExtractor implements Extractor {
   async extract(input: ExtractInput): Promise<ExtractResponse> {
     const generatedAt = new Date().toISOString();
@@ -22,7 +27,7 @@ export class PuppeteerExtractor implements Extractor {
 
     const target = parseTarget(input.domain);
     const baseUrl = target.baseUrl;
-    const maxProducts = clampInt(process.env.MAX_PRODUCTS, 50, 1, 5000);
+    const maxProducts = clampInt(process.env.MAX_PRODUCTS, DEFAULT_MAX_PRODUCTS, 1, 5000);
 
     log("info", `Initializing Puppeteer extraction for: ${input.brand}`);
     log("info", `Target: ${baseUrl}`);
@@ -63,8 +68,8 @@ export class PuppeteerExtractor implements Extractor {
 
       log("success", `Discovered ${discovered.productUrls.length} product URLs.`);
 
-      const concurrency = clampInt(process.env.PUPPETEER_CONCURRENCY, 2, 1, 6);
-      const navigationTimeoutMs = clampInt(process.env.PUPPETEER_NAV_TIMEOUT_MS, 30_000, 5_000, 120_000);
+      const concurrency = clampInt(process.env.PUPPETEER_CONCURRENCY, DEFAULT_CONCURRENCY, 1, 6);
+      const navigationTimeoutMs = clampInt(process.env.PUPPETEER_NAV_TIMEOUT_MS, DEFAULT_NAV_TIMEOUT_MS, 5_000, 120_000);
 
       const browser = await puppeteer.launch({
         headless: true,
@@ -541,9 +546,13 @@ function toStockStatus(available?: boolean, inventoryQuantity?: number | null): 
 }
 
 async function fetchJson<T>(url: string): Promise<T | null> {
+  const timeoutMs = clampInt(process.env.PUPPETEER_FETCH_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, 2_000, 120_000);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, {
       redirect: "follow",
+      signal: controller.signal,
       headers: {
         accept: "application/json",
         "user-agent": process.env.PUPPETEER_USER_AGENT || "PivotaCatalogIntelligence/1.0",
@@ -553,13 +562,19 @@ async function fetchJson<T>(url: string): Promise<T | null> {
     return (await res.json()) as T;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 async function fetchText(url: string): Promise<string | null> {
+  const timeoutMs = clampInt(process.env.PUPPETEER_FETCH_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, 2_000, 120_000);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, {
       redirect: "follow",
+      signal: controller.signal,
       headers: {
         accept: "text/plain,text/html,application/xml;q=0.9,*/*;q=0.8",
         "user-agent": process.env.PUPPETEER_USER_AGENT || "PivotaCatalogIntelligence/1.0",
@@ -569,6 +584,8 @@ async function fetchText(url: string): Promise<string | null> {
     return await res.text();
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

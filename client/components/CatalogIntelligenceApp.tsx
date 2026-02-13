@@ -105,8 +105,9 @@ export function CatalogIntelligenceApp() {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(err);
-      appendLocalLogs([{ at: new Date().toISOString(), type: "error", msg: "Extraction failed." }]);
-      showToast("Extraction failed.");
+      const message = err instanceof Error ? err.message : "Extraction failed.";
+      appendLocalLogs([{ at: new Date().toISOString(), type: "error", msg: message }]);
+      showToast(message);
       setActiveStep(-1);
     } finally {
       window.clearTimeout(stepTimer1);

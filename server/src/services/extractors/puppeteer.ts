@@ -572,15 +572,68 @@ async function fetchText(url: string): Promise<string | null> {
   }
 }
 
-function extractProductUrlsFromHtml(html: string, baseUrl: string) {
-  const urls = new Set<string>();
-  for (const match of html.matchAll(/\/product\/[^"'?#\s<]+/gi)) {
-    urls.add(toAbsoluteUrl(baseUrl, match[0]));
+export function extractProductUrlsFromHtml(html: string, baseUrl: string) {
+  const hrefUrls = new Set<string>();
+  for (const match of html.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["']/gi)) {
+    const rawHref = match[1]?.trim();
+    if (!rawHref) continue;
+    if (/^(#|mailto:|tel:|javascript:)/i.test(rawHref)) continue;
+    hrefUrls.add(toAbsoluteUrl(baseUrl, rawHref.replace(/&amp;/gi, "&")));
   }
-  for (const match of html.matchAll(/\/products\/[^"'?#\s<]+/gi)) {
-    urls.add(toAbsoluteUrl(baseUrl, match[0]));
+
+  const hrefProducts = Array.from(hrefUrls).filter((u) => isLikelyProductUrl(u, baseUrl));
+  if (hrefProducts.length > 0) return hrefProducts;
+
+  const urls = new Set<string>();
+  const fallbackPatterns = [
+    /["'](\/product\/[^"'?#\s<]+)["']/gi,
+    /["'](\/products\/[^"'?#\s<]+)["']/gi,
+    /["'](https?:\/\/[^"'?#\s<]+)["']/gi,
+  ];
+  for (const pattern of fallbackPatterns) {
+    for (const match of html.matchAll(pattern)) {
+      const candidate = match[1] || match[0];
+      const absolute = toAbsoluteUrl(baseUrl, candidate);
+      if (isLikelyProductUrl(absolute, baseUrl)) urls.add(absolute);
+    }
   }
   return Array.from(urls);
+}
+
+const STATIC_ASSET_EXT_RE =
+  /\.(?:css|js|mjs|map|png|jpe?g|gif|webp|svg|ico|pdf|xml|txt|woff2?|ttf|eot|otf|mp3|wav|mp4|webm|zip|gz|tar|json)(?:$|[?#])/i;
+
+function parseHttpUrl(rawUrl: string, baseUrl: string): URL | null {
+  try {
+    const parsed = new URL(rawUrl, baseUrl);
+    if (!/^https?:$/i.test(parsed.protocol)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function isStaticAssetUrl(rawUrl: string, baseUrl: string) {
+  const parsed = parseHttpUrl(rawUrl, baseUrl);
+  if (!parsed) return true;
+  return STATIC_ASSET_EXT_RE.test(parsed.pathname);
+}
+
+export function isLikelyProductUrl(rawUrl: string, baseUrl: string) {
+  const parsed = parseHttpUrl(rawUrl, baseUrl);
+  if (!parsed) return false;
+
+  const baseHost = parseHttpUrl(baseUrl, baseUrl)?.host.toLowerCase();
+  if (baseHost && parsed.host.toLowerCase() !== baseHost) return false;
+  if (isStaticAssetUrl(parsed.toString(), baseUrl)) return false;
+
+  const path = parsed.pathname.toLowerCase();
+  if (path === "/" || path === "") return false;
+  if (/\/products?\//.test(path)) return true;
+  if (/[-_]\d{4,}\.html$/.test(path)) return true;
+  if (/\/p\/[^/]+$/.test(path)) return true;
+
+  return false;
 }
 
 function extractSitemapUrlsFromRobots(robotsText: string) {
@@ -656,12 +709,10 @@ async function discoverProductUrls(params: { baseUrl: string; maxProducts: numbe
     }
   }
 
-  const deduped = Array.from(new Set(pageUrls));
-
-  const productLike = deduped.filter((u) => /\/product\/|\/products\//i.test(u));
-  const selected = (productLike.length > 0 ? productLike : deduped)
-    .slice(0, params.maxProducts)
-    .filter((u) => u.startsWith("http"));
+  const deduped = Array.from(new Set(pageUrls)).filter((u) => u.startsWith("http"));
+  const nonAsset = deduped.filter((u) => !isStaticAssetUrl(u, params.baseUrl));
+  const productLike = nonAsset.filter((u) => isLikelyProductUrl(u, params.baseUrl));
+  const selected = (productLike.length > 0 ? productLike : nonAsset).slice(0, params.maxProducts);
 
   return { sitemapUrl: chosenSitemap, productUrls: selected };
 }
@@ -831,24 +882,27 @@ async function scrapeProductPage(params: {
         }
       })();
 
-      const getAccordionContentByTitle = (value: string) => {
-        const normalize = (s: string) => s.trim().toLowerCase();
+      let howToUseContent = document.getElementById("accordion-toggle-How to Use");
+      let ingredientsContent = document.getElementById("accordion-toggle-Ingredients and Safety");
+
+      if (!howToUseContent || !ingredientsContent) {
         const buttons = Array.from(document.querySelectorAll("button[aria-controls]")) as HTMLButtonElement[];
-        const btn = buttons.find((b) => normalize(b.getAttribute("title") || b.textContent || "") === normalize(value));
-        const id = btn?.getAttribute("aria-controls") || "";
-        if (!id) return null;
-        return document.getElementById(id);
-      };
+        for (const button of buttons) {
+          const titleText = (button.getAttribute("title") || button.textContent || "").trim().toLowerCase();
+          if (!titleText) continue;
 
-      const howToUseContent =
-        getAccordionContentByTitle("How to Use") ||
-        getAccordionContentByTitle("How to use") ||
-        document.getElementById("accordion-toggle-How to Use");
+          const targetId = button.getAttribute("aria-controls") || "";
+          if (!targetId) continue;
 
-      const ingredientsContent =
-        getAccordionContentByTitle("Ingredients and Safety") ||
-        getAccordionContentByTitle("Ingredients & Safety") ||
-        document.getElementById("accordion-toggle-Ingredients and Safety");
+          if (!howToUseContent && titleText === "how to use") {
+            howToUseContent = document.getElementById(targetId);
+          } else if (!ingredientsContent && (titleText === "ingredients and safety" || titleText === "ingredients & safety")) {
+            ingredientsContent = document.getElementById(targetId);
+          }
+
+          if (howToUseContent && ingredientsContent) break;
+        }
+      }
 
       const howToUseText = howToUseContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
       const ingredientsMarkdownText = ingredientsContent?.querySelector(".markdown")?.textContent?.trim() || undefined;

@@ -11,10 +11,10 @@ import type {
   StockStatus,
 } from "./types";
 
-const DEFAULT_MAX_PRODUCTS = 10;
+const DEFAULT_MAX_PRODUCTS = 6;
 const DEFAULT_CONCURRENCY = 3;
-const DEFAULT_NAV_TIMEOUT_MS = 12_000;
-const DEFAULT_FETCH_TIMEOUT_MS = 12_000;
+const DEFAULT_NAV_TIMEOUT_MS = 8_000;
+const DEFAULT_FETCH_TIMEOUT_MS = 8_000;
 
 export class PuppeteerExtractor implements Extractor {
   async extract(input: ExtractInput): Promise<ExtractResponse> {
@@ -703,7 +703,7 @@ async function discoverProductUrls(params: { baseUrl: string; maxProducts: numbe
   const pageUrls: string[] = [];
   let chosenSitemap: string | undefined;
 
-  const maxSitemaps = clampInt(process.env.MAX_SITEMAPS, 10, 1, 100);
+  const maxSitemaps = clampInt(process.env.MAX_SITEMAPS, 4, 1, 100);
 
   while (queue.length > 0 && visited.size < maxSitemaps) {
     const sitemapUrl = queue.shift();
@@ -723,6 +723,11 @@ async function discoverProductUrls(params: { baseUrl: string; maxProducts: numbe
       }
     } else {
       pageUrls.push(...locs);
+      const dedupedSoFar = Array.from(new Set(pageUrls)).filter((u) => u.startsWith("http"));
+      const likelySoFar = dedupedSoFar.filter((u) => isLikelyProductUrl(u, params.baseUrl));
+      const enoughLikely = likelySoFar.length >= params.maxProducts;
+      const enoughAny = dedupedSoFar.length >= params.maxProducts * 2;
+      if (enoughLikely || enoughAny) break;
     }
   }
 

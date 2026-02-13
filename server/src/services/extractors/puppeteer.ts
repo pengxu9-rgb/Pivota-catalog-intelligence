@@ -795,7 +795,7 @@ async function discoverProductUrls(params: { baseUrl: string; maxProducts: numbe
   const pageUrls: string[] = [];
   let chosenSitemap: string | undefined;
 
-  const maxSitemaps = clampInt(process.env.MAX_SITEMAPS, 4, 1, 100);
+  const maxSitemaps = clampInt(process.env.MAX_SITEMAPS, 20, 1, 100);
 
   while (queue.length > 0 && visited.size < maxSitemaps) {
     const sitemapUrl = queue.shift();

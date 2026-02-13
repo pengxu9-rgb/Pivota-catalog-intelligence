@@ -11,12 +11,13 @@ import type {
   StockStatus,
 } from "./types";
 
-const DEFAULT_MAX_PRODUCTS = 6;
+const DEFAULT_MAX_PRODUCTS = 10;
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_NAV_TIMEOUT_MS = 8_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 8_000;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 15_000;
-const DEFAULT_SCRAPE_TIMEOUT_MS = 45_000;
+const DEFAULT_SCRAPE_TIMEOUT_MS = 60_000;
+const DEFAULT_PRODUCT_URL_RESERVE = 4;
 
 export class PuppeteerExtractor implements Extractor {
   async extract(input: ExtractInput): Promise<ExtractResponse> {
@@ -30,6 +31,8 @@ export class PuppeteerExtractor implements Extractor {
     const target = parseTarget(input.domain);
     const baseUrl = target.baseUrl;
     const maxProducts = clampInt(process.env.MAX_PRODUCTS, DEFAULT_MAX_PRODUCTS, 1, 5000);
+    const discoveryReserve = clampInt(process.env.PRODUCT_URL_RESERVE, DEFAULT_PRODUCT_URL_RESERVE, 0, 100);
+    const discoveryLimit = Math.min(maxProducts + discoveryReserve, maxProducts * 3);
 
     log("info", `Initializing Puppeteer extraction for: ${input.brand}`);
     log("info", `Target: ${baseUrl}`);
@@ -49,7 +52,7 @@ export class PuppeteerExtractor implements Extractor {
 
       // 2) Generic path: sitemap discovery + JSON-LD parsing with Puppeteer.
       log("info", "Shopify feed not detected. Falling back to Sitemap + JSON-LD extraction.");
-      const discovered = await discoverProductUrls({ baseUrl, maxProducts, seedUrl: target.seedUrl, log });
+      const discovered = await discoverProductUrls({ baseUrl, maxProducts: discoveryLimit, seedUrl: target.seedUrl, log });
 
       if (discovered.productUrls.length === 0) {
         log("error", "No product URLs discovered (robots/sitemap).");
@@ -68,7 +71,7 @@ export class PuppeteerExtractor implements Extractor {
         };
       }
 
-      log("success", `Discovered ${discovered.productUrls.length} product URLs.`);
+      log("success", `Discovered ${discovered.productUrls.length} product URLs. Target successful products: ${maxProducts}.`);
 
       const concurrency = clampInt(process.env.PUPPETEER_CONCURRENCY, DEFAULT_CONCURRENCY, 1, 6);
       const navigationTimeoutMs = clampInt(process.env.PUPPETEER_NAV_TIMEOUT_MS, DEFAULT_NAV_TIMEOUT_MS, 5_000, 120_000);
@@ -95,7 +98,7 @@ export class PuppeteerExtractor implements Extractor {
           "Product scraping",
         );
 
-        const products = scrapedProducts.filter((p): p is ExtractedProduct => Boolean(p));
+        const products = scrapedProducts.filter((p): p is ExtractedProduct => Boolean(p)).slice(0, maxProducts);
         const { variants, adCopyById } = flattenVariants({
           brand: input.brand,
           products,

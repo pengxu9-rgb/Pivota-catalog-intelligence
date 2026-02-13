@@ -15,6 +15,8 @@ const DEFAULT_MAX_PRODUCTS = 6;
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_NAV_TIMEOUT_MS = 8_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 8_000;
+const DEFAULT_LAUNCH_TIMEOUT_MS = 15_000;
+const DEFAULT_SCRAPE_TIMEOUT_MS = 45_000;
 
 export class PuppeteerExtractor implements Extractor {
   async extract(input: ExtractInput): Promise<ExtractResponse> {
@@ -70,18 +72,28 @@ export class PuppeteerExtractor implements Extractor {
 
       const concurrency = clampInt(process.env.PUPPETEER_CONCURRENCY, DEFAULT_CONCURRENCY, 1, 6);
       const navigationTimeoutMs = clampInt(process.env.PUPPETEER_NAV_TIMEOUT_MS, DEFAULT_NAV_TIMEOUT_MS, 5_000, 120_000);
+      const launchTimeoutMs = clampInt(process.env.PUPPETEER_LAUNCH_TIMEOUT_MS, DEFAULT_LAUNCH_TIMEOUT_MS, 5_000, 120_000);
+      const scrapeTimeoutMs = clampInt(process.env.PUPPETEER_SCRAPE_TIMEOUT_MS, DEFAULT_SCRAPE_TIMEOUT_MS, 10_000, 300_000);
 
-      const browser = await puppeteer.launch({
-        headless: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-      });
+      const browser = await withTimeout(
+        puppeteer.launch({
+          headless: true,
+          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+          args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+        }),
+        launchTimeoutMs,
+        "Puppeteer launch",
+      );
 
       try {
-        const scrapedProducts = await mapWithConcurrency(discovered.productUrls, concurrency, async (url, idx) => {
-          const verbose = idx < 3;
-          return scrapeProductPage({ browser, url, baseUrl, navigationTimeoutMs, verbose, log });
-        });
+        const scrapedProducts = await withTimeout(
+          mapWithConcurrency(discovered.productUrls, concurrency, async (url, idx) => {
+            const verbose = idx < 3;
+            return scrapeProductPage({ browser, url, baseUrl, navigationTimeoutMs, verbose, log });
+          }),
+          scrapeTimeoutMs,
+          "Product scraping",
+        );
 
         const products = scrapedProducts.filter((p): p is ExtractedProduct => Boolean(p));
         const { variants, adCopyById } = flattenVariants({
@@ -144,6 +156,19 @@ function clampInt(value: string | undefined, fallback: number, min: number, max:
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function parseTarget(raw: string): {

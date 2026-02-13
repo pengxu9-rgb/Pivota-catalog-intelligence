@@ -11,7 +11,8 @@ import type {
   StockStatus,
 } from "./types";
 
-const DEFAULT_MAX_PRODUCTS = 10;
+const DEFAULT_BATCH_LIMIT = 10;
+const DEFAULT_MAX_TOTAL_PRODUCTS = 500;
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_NAV_TIMEOUT_MS = 8_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 8_000;
@@ -30,12 +31,20 @@ export class PuppeteerExtractor implements Extractor {
 
     const target = parseTarget(input.domain);
     const baseUrl = target.baseUrl;
-    const maxProducts = clampInt(process.env.MAX_PRODUCTS, DEFAULT_MAX_PRODUCTS, 1, 5000);
+    const batchOffset = clampOptionalInt(input.offset, 0, 0, 100_000);
+    const batchLimit = clampOptionalInt(
+      input.limit,
+      clampInt(process.env.BATCH_LIMIT || process.env.MAX_PRODUCTS, DEFAULT_BATCH_LIMIT, 1, 200),
+      1,
+      200,
+    );
+    const maxProductsTotal = clampInt(process.env.MAX_TOTAL_PRODUCTS, DEFAULT_MAX_TOTAL_PRODUCTS, 1, 10_000);
     const discoveryReserve = clampInt(process.env.PRODUCT_URL_RESERVE, DEFAULT_PRODUCT_URL_RESERVE, 0, 100);
-    const discoveryLimit = Math.min(maxProducts + discoveryReserve, maxProducts * 3);
+    const discoveryLimit = Math.min(maxProductsTotal, batchOffset + batchLimit + discoveryReserve);
 
     log("info", `Initializing Puppeteer extraction for: ${input.brand}`);
     log("info", `Target: ${baseUrl}`);
+    log("info", `Batch window: offset=${batchOffset}, limit=${batchLimit}, max_total=${maxProductsTotal}`);
     if (target.seedUrl) log("info", `Seed URL: ${target.seedUrl}`);
 
     try {
@@ -45,7 +54,9 @@ export class PuppeteerExtractor implements Extractor {
         domain: target.domain,
         baseUrl,
         collectionHandle: target.collectionHandle,
-        maxProducts,
+        maxProducts: maxProductsTotal,
+        offset: batchOffset,
+        limit: batchLimit,
         log,
       });
       if (shopify) return { ...shopify, generated_at: generatedAt, logs };
@@ -53,9 +64,14 @@ export class PuppeteerExtractor implements Extractor {
       // 2) Generic path: sitemap discovery + JSON-LD parsing with Puppeteer.
       log("info", "Shopify feed not detected. Falling back to Sitemap + JSON-LD extraction.");
       const discovered = await discoverProductUrls({ baseUrl, maxProducts: discoveryLimit, seedUrl: target.seedUrl, log });
+      const batchCandidates = discovered.productUrls.slice(batchOffset, batchOffset + batchLimit + discoveryReserve);
 
-      if (discovered.productUrls.length === 0) {
+      if (batchCandidates.length === 0) {
         log("error", "No product URLs discovered (robots/sitemap).");
+        const nextOffset = batchOffset + batchLimit;
+        const reachedDiscoveryCap = discovered.productUrls.length >= discoveryLimit && discoveryLimit < maxProductsTotal;
+        const hasMore =
+          nextOffset < maxProductsTotal && (nextOffset < discovered.productUrls.length || reachedDiscoveryCap);
         return {
           brand: input.brand,
           domain: target.domain,
@@ -67,11 +83,21 @@ export class PuppeteerExtractor implements Extractor {
           variants: [],
           pricing: { currency: "USD", min: 0, max: 0, avg: 0 },
           ad_copy: { by_variant_id: {} },
+          pagination: {
+            offset: batchOffset,
+            limit: batchLimit,
+            next_offset: hasMore ? nextOffset : null,
+            has_more: hasMore,
+            discovered_urls: discovered.productUrls.length,
+          },
           logs,
         };
       }
 
-      log("success", `Discovered ${discovered.productUrls.length} product URLs. Target successful products: ${maxProducts}.`);
+      log(
+        "success",
+        `Discovered ${discovered.productUrls.length} product URLs. Scraping batch candidates: ${batchCandidates.length}.`,
+      );
 
       const concurrency = clampInt(process.env.PUPPETEER_CONCURRENCY, DEFAULT_CONCURRENCY, 1, 6);
       const navigationTimeoutMs = clampInt(process.env.PUPPETEER_NAV_TIMEOUT_MS, DEFAULT_NAV_TIMEOUT_MS, 5_000, 120_000);
@@ -90,7 +116,7 @@ export class PuppeteerExtractor implements Extractor {
 
       try {
         const scrapedProducts = await withTimeout(
-          mapWithConcurrency(discovered.productUrls, concurrency, async (url, idx) => {
+          mapWithConcurrency(batchCandidates, concurrency, async (url, idx) => {
             const verbose = idx < 3;
             return scrapeProductPage({ browser, url, baseUrl, navigationTimeoutMs, verbose, log });
           }),
@@ -98,13 +124,16 @@ export class PuppeteerExtractor implements Extractor {
           "Product scraping",
         );
 
-        const products = scrapedProducts.filter((p): p is ExtractedProduct => Boolean(p)).slice(0, maxProducts);
+        const products = scrapedProducts.filter((p): p is ExtractedProduct => Boolean(p)).slice(0, batchLimit);
         const { variants, adCopyById } = flattenVariants({
           brand: input.brand,
           products,
           simulated: false,
         });
 
+        const nextOffset = batchOffset + batchLimit;
+        const reachedDiscoveryCap = discovered.productUrls.length >= discoveryLimit && discoveryLimit < maxProductsTotal;
+        const hasMore = nextOffset < maxProductsTotal && (nextOffset < discovered.productUrls.length || reachedDiscoveryCap);
         const pricing = computePricingStats(variants);
         log("success", `Extraction Complete. ${variants.length} variants processed successfully.`);
 
@@ -119,6 +148,13 @@ export class PuppeteerExtractor implements Extractor {
           variants,
           pricing,
           ad_copy: { by_variant_id: adCopyById },
+          pagination: {
+            offset: batchOffset,
+            limit: batchLimit,
+            next_offset: hasMore ? nextOffset : null,
+            has_more: hasMore,
+            discovered_urls: discovered.productUrls.length,
+          },
           logs,
         };
       } finally {
@@ -137,6 +173,13 @@ export class PuppeteerExtractor implements Extractor {
         variants: [],
         pricing: { currency: "USD", min: 0, max: 0, avg: 0 },
         ad_copy: { by_variant_id: {} },
+        pagination: {
+          offset: batchOffset,
+          limit: batchLimit,
+          next_offset: null,
+          has_more: false,
+          discovered_urls: 0,
+        },
         logs,
       };
     }
@@ -156,6 +199,12 @@ type DomVariantMeta = {
 };
 
 function clampInt(value: string | undefined, fallback: number, min: number, max: number) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function clampOptionalInt(value: number | undefined, fallback: number, min: number, max: number) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(n)));
@@ -405,6 +454,8 @@ async function tryExtractShopify(params: {
   baseUrl: string;
   collectionHandle?: string;
   maxProducts: number;
+  offset: number;
+  limit: number;
   log: Logger;
 }): Promise<Omit<ExtractResponse, "generated_at" | "logs"> | null> {
   const log = params.log;
@@ -527,30 +578,43 @@ async function tryExtractShopify(params: {
 
   const extractedProducts = Array.from(extractedByTitle.values());
 
+  const pagedProducts = extractedProducts.slice(params.offset, params.offset + params.limit);
   const { variants, adCopyById } = flattenVariants({
     brand: params.brand,
-    products: extractedProducts,
+    products: pagedProducts,
     simulated: false,
   });
 
   const productCount = extractedProducts.length;
   const variantCount = variants.length;
-  const avg = productCount > 0 ? (variantCount / productCount).toFixed(2) : "0.00";
+  const avg = pagedProducts.length > 0 ? (variantCount / pagedProducts.length).toFixed(2) : "0.00";
   const multi = extractedProducts.filter((p) => p.variants.length > 1).length;
-  log("data", `Summary: products=${productCount}, variants=${variantCount}, avg=${avg}, multi=${multi}`);
+  log(
+    "data",
+    `Summary: total_products=${productCount}, batch_products=${pagedProducts.length}, variants=${variantCount}, avg=${avg}, multi=${multi}`,
+  );
 
   const pricing = computePricingStats(variants);
   log("success", `Extraction Complete. ${variants.length} variants processed successfully.`);
+  const nextOffset = params.offset + params.limit;
+  const hasMore = nextOffset < extractedProducts.length;
 
   return {
     brand: params.brand,
     domain: params.domain,
     mode: "puppeteer",
     platform: params.collectionHandle ? `Shopify (Collection: ${params.collectionHandle})` : "Shopify",
-    products: extractedProducts,
+    products: pagedProducts,
     variants,
     pricing,
     ad_copy: { by_variant_id: adCopyById },
+    pagination: {
+      offset: params.offset,
+      limit: params.limit,
+      next_offset: hasMore ? nextOffset : null,
+      has_more: hasMore,
+      discovered_urls: extractedProducts.length,
+    },
   };
 }
 

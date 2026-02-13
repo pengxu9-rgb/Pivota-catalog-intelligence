@@ -3,7 +3,12 @@ import type { ExtractResponse } from "./types";
 const DEFAULT_BASE = "http://localhost:3001";
 const DEFAULT_EXTRACT_TIMEOUT_MS = 65_000;
 
-export async function extractCatalog(input: { brand: string; domain: string }): Promise<ExtractResponse> {
+export async function extractCatalog(input: {
+  brand: string;
+  domain: string;
+  offset?: number;
+  limit?: number;
+}): Promise<ExtractResponse> {
   const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_BASE;
   const timeoutMs = Number(process.env.NEXT_PUBLIC_EXTRACT_TIMEOUT_MS || DEFAULT_EXTRACT_TIMEOUT_MS);
   const controller = new AbortController();

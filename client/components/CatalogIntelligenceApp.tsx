@@ -17,6 +17,51 @@ type ToastState = { message: string; visible: boolean };
 
 const EMPTY_VARIANTS: ExtractedVariantRow[] = [];
 const EMPTY_LOGS: LogLine[] = [];
+const DEFAULT_BATCH_LIMIT = 10;
+const DEFAULT_MAX_BATCH_ROUNDS = 60;
+
+function computeMergedPricing(variants: ExtractedVariantRow[]) {
+  const nums = variants
+    .map((v) => Number.parseFloat(v.price))
+    .filter((n) => Number.isFinite(n));
+  if (nums.length === 0) return { currency: "USD" as const, min: 0, max: 0, avg: 0 };
+
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+  return { currency: "USD" as const, min, max, avg: Number(avg.toFixed(2)) };
+}
+
+function mergeExtractResponses(base: ExtractResponse | null, next: ExtractResponse): ExtractResponse {
+  if (!base) return next;
+
+  const products = [...base.products];
+  const seenProducts = new Set(products.map((p) => `${p.url}|${p.title}`));
+  for (const product of next.products) {
+    const key = `${product.url}|${product.title}`;
+    if (seenProducts.has(key)) continue;
+    seenProducts.add(key);
+    products.push(product);
+  }
+
+  const variants = [...base.variants];
+  const seenVariants = new Set(variants.map((v) => `${v.id}|${v.sku}`));
+  for (const variant of next.variants) {
+    const key = `${variant.id}|${variant.sku}`;
+    if (seenVariants.has(key)) continue;
+    seenVariants.add(key);
+    variants.push(variant);
+  }
+
+  return {
+    ...next,
+    products,
+    variants,
+    pricing: computeMergedPricing(variants),
+    ad_copy: { by_variant_id: { ...base.ad_copy.by_variant_id, ...next.ad_copy.by_variant_id } },
+    logs: [...base.logs, ...next.logs],
+  };
+}
 
 export function CatalogIntelligenceApp() {
   const [brand, setBrand] = useState("Tom Ford Beauty");
@@ -88,26 +133,55 @@ export function CatalogIntelligenceApp() {
 
     // Lightweight UI pacing to match the prototype feel.
     const t0 = Date.now();
+    const batchLimitRaw = Number(process.env.NEXT_PUBLIC_EXTRACT_BATCH_LIMIT || DEFAULT_BATCH_LIMIT);
+    const maxRoundsRaw = Number(process.env.NEXT_PUBLIC_EXTRACT_MAX_BATCH_ROUNDS || DEFAULT_MAX_BATCH_ROUNDS);
+    const batchLimit = Number.isFinite(batchLimitRaw) ? Math.max(1, Math.floor(batchLimitRaw)) : DEFAULT_BATCH_LIMIT;
+    const maxRounds = Number.isFinite(maxRoundsRaw) ? Math.max(1, Math.floor(maxRoundsRaw)) : DEFAULT_MAX_BATCH_ROUNDS;
+
     appendLocalLogs([
       { at: new Date().toISOString(), type: "info", msg: `Initializing Pivota Extraction for: ${brand}` },
       { at: new Date().toISOString(), type: "info", msg: `Checking connectivity to ${domain}...` },
-      { at: new Date().toISOString(), type: "info", msg: "POST /api/extract" },
+      { at: new Date().toISOString(), type: "info", msg: `Batch mode enabled: limit=${batchLimit}` },
     ]);
 
     const stepTimer1 = window.setTimeout(() => setActiveStep(1), 700);
     const stepTimer2 = window.setTimeout(() => setActiveStep(2), 1400);
 
+    let merged: ExtractResponse | null = null;
     try {
-      const result = await extractCatalog({ brand, domain });
-      setData(result);
+      let offset = 0;
+      for (let round = 0; round < maxRounds; round++) {
+        appendLocalLogs([
+          {
+            at: new Date().toISOString(),
+            type: "info",
+            msg: `POST /api/extract (batch=${round + 1}, offset=${offset}, limit=${batchLimit})`,
+          },
+        ]);
+
+        const result = await extractCatalog({ brand, domain, offset, limit: batchLimit });
+        merged = mergeExtractResponses(merged, result);
+        setData(merged);
+
+        const page = result.pagination;
+        if (!page?.has_more || page.next_offset == null || page.next_offset <= offset) break;
+        offset = page.next_offset;
+      }
+
+      if (!merged) throw new Error("Extraction returned no data.");
       setActiveStep(-1);
-      showToast(`Extraction complete (${result.variants.length} rows).`);
+      showToast(`Extraction complete (${merged.variants.length} rows).`);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(err);
       const message = err instanceof Error ? err.message : "Extraction failed.";
       appendLocalLogs([{ at: new Date().toISOString(), type: "error", msg: message }]);
-      showToast(message);
+      if (merged && merged.variants.length > 0) {
+        setData(merged);
+        showToast(`Partial extraction (${merged.variants.length} rows): ${message}`);
+      } else {
+        showToast(message);
+      }
       setActiveStep(-1);
     } finally {
       window.clearTimeout(stepTimer1);

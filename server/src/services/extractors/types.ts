@@ -1,6 +1,8 @@
 export type ExtractRequestBody = {
   brand: string;
   domain: string;
+  offset?: number;
+  limit?: number;
 };
 
 export type ExtractInput = ExtractRequestBody;
@@ -53,6 +55,13 @@ export type ExtractResponse = {
   };
   ad_copy: {
     by_variant_id: Record<string, string>;
+  };
+  pagination?: {
+    offset: number;
+    limit: number;
+    next_offset: number | null;
+    has_more: boolean;
+    discovered_urls: number;
   };
   logs: Array<{
     at: string;

@@ -60,6 +60,12 @@ export type ExtractResponse = {
   ad_copy: {
     by_variant_id: Record<string, string>;
   };
+  pagination?: {
+    offset: number;
+    limit: number;
+    next_offset: number | null;
+    has_more: boolean;
+    discovered_urls: number;
+  };
   logs: LogLine[];
 };
-

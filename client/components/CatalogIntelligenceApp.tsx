@@ -10,7 +10,7 @@ import { ResultsTable } from "./ResultsTable";
 
 import type { ExtractResponse, ExtractedVariantRow, LogLine } from "@/lib/types";
 import { extractCatalog } from "@/lib/api";
-import { buildCsv, downloadTextFile } from "@/lib/csv";
+import { buildCsv, buildProductCsv, downloadTextFile } from "@/lib/csv";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
 type ToastState = { message: string; visible: boolean };
@@ -102,6 +102,18 @@ export function CatalogIntelligenceApp() {
     const csv = buildCsv(variants);
     downloadTextFile(csv, "tom_ford_beauty_catalog_export.csv", "text/csv;charset=utf-8;");
     showToast("Download started.");
+  }, [variants, showToast]);
+
+  const handleCopyProductCsv = useCallback(async () => {
+    const csv = buildProductCsv(variants);
+    const ok = await copyTextToClipboard(csv);
+    showToast(ok ? "Product CSV copied!" : "Copy failed.");
+  }, [variants, showToast]);
+
+  const handleDownloadProductCsv = useCallback(() => {
+    const csv = buildProductCsv(variants);
+    downloadTextFile(csv, "tom_ford_beauty_product_export.csv", "text/csv;charset=utf-8;");
+    showToast("Product download started.");
   }, [variants, showToast]);
 
   const appendLocalLogs = useCallback((lines: LogLine[]) => {
@@ -279,6 +291,8 @@ export function CatalogIntelligenceApp() {
               recordCountText={recordCountText}
               onCopyCsv={handleCopyCsv}
               onDownloadCsv={handleDownloadCsv}
+              onCopyProductCsv={handleCopyProductCsv}
+              onDownloadProductCsv={handleDownloadProductCsv}
               onCopyLink={handleCopyLink}
               isActionsEnabled={variants.length > 0}
             />

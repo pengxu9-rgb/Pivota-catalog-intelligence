@@ -14,6 +14,8 @@ type Props = {
   isActionsEnabled: boolean;
   onCopyCsv: () => void;
   onDownloadCsv: () => void;
+  onCopyProductCsv: () => void;
+  onDownloadProductCsv: () => void;
   onCopyLink: (url: string) => void;
 };
 
@@ -24,6 +26,8 @@ export function ResultsTable({
   isActionsEnabled,
   onCopyCsv,
   onDownloadCsv,
+  onCopyProductCsv,
+  onDownloadProductCsv,
   onCopyLink,
 }: Props) {
   return (
@@ -65,14 +69,28 @@ export function ResultsTable({
               disabled={!isActionsEnabled}
               className="text-xs bg-gray-100 border border-gray-300 px-3 py-1 rounded hover:bg-gray-200 text-gray-700 font-medium disabled:opacity-50"
             >
-              Copy CSV
+              Copy Variant CSV
             </button>
             <button
               onClick={onDownloadCsv}
               disabled={!isActionsEnabled}
               className="text-xs bg-blue-600 border border-blue-600 px-3 py-1 rounded hover:bg-blue-700 text-white font-medium disabled:opacity-50"
             >
-              Download CSV
+              Download Variant CSV
+            </button>
+            <button
+              onClick={onCopyProductCsv}
+              disabled={!isActionsEnabled}
+              className="text-xs bg-gray-100 border border-gray-300 px-3 py-1 rounded hover:bg-gray-200 text-gray-700 font-medium disabled:opacity-50"
+            >
+              Copy Product CSV
+            </button>
+            <button
+              onClick={onDownloadProductCsv}
+              disabled={!isActionsEnabled}
+              className="text-xs bg-emerald-600 border border-emerald-600 px-3 py-1 rounded hover:bg-emerald-700 text-white font-medium disabled:opacity-50"
+            >
+              Download Product CSV
             </button>
           </div>
         </div>

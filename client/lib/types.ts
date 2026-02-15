@@ -7,6 +7,7 @@ export type LogLine = {
 export type ExtractedVariantRow = {
   id: string;
   sku: string;
+  product_id?: string;
   url: string;
   option_name: string;
   option_value: string;

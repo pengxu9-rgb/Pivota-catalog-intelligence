@@ -75,6 +75,7 @@ function toLegacyVariant(offer: OfferV2, brand: string, index: number): Extracte
   return {
     id: `${offer.source_product_id}-${offer.market_id}-${index}`,
     sku: variantSku,
+    product_id: offer.source_product_id,
     url: offer.url_canonical,
     option_name: "Market",
     option_value: offer.market_id,
@@ -97,7 +98,9 @@ function convertV2ResponseToLegacy(v2: ExtractV2Response, brand: string): Extrac
   const productsMap = new Map<string, { title: string; url: string; variants: ExtractResponse["products"][number]["variants"] }>();
 
   for (const row of variants) {
-    const key = `${row.product_url}|${row.product_title}`;
+    const marketId = row.option_name === "Market" ? row.option_value : "";
+    const stableProductKey = row.product_id?.trim() || row.product_url || row.url;
+    const key = `${marketId}|${stableProductKey}`;
     const existing = productsMap.get(key) || {
       title: row.product_title,
       url: row.product_url,

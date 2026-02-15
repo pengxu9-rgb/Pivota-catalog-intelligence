@@ -105,6 +105,7 @@ export type OfferV2 = {
   source_product_id: string;
   url_canonical: string;
   product_title?: string | null;
+  product_description?: string | null;
   variant_sku?: string | null;
   market_id: MarketId;
   price_amount: number | null;
@@ -145,6 +146,13 @@ export type ExtractV2Response = {
   mode: "simulation" | "puppeteer";
   offers_v2: OfferV2[];
   counters_by_site_market: SiteMarketCounters[];
+  pagination?: {
+    offset: number;
+    limit: number;
+    next_offset: number | null;
+    has_more: boolean;
+    discovered_urls: number;
+  };
   logs: Array<{
     at: string;
     type: "info" | "success" | "warn" | "error" | "data";

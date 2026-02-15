@@ -59,6 +59,14 @@ type CurrencyResolution = {
 type MarketExtractionResult = {
   offers: OfferV2[];
   failed: boolean;
+  hasMore: boolean;
+  nextOffset: number | null;
+  discoveredCount: number;
+};
+
+type ShopifyExtractionResult = {
+  offers: OfferV2[];
+  totalProducts: number;
 };
 
 type ShopifyProductsResponse = { products?: ShopifyProduct[] };
@@ -66,6 +74,7 @@ type ShopifyProductsResponse = { products?: ShopifyProduct[] };
 type ShopifyProduct = {
   id?: number;
   title?: string;
+  body_html?: string;
   handle?: string;
   variants?: ShopifyVariant[];
 };
@@ -81,6 +90,7 @@ type ShopifyVariant = {
 type ScrapedPageData = {
   title: string;
   canonical: string;
+  metaDescription: string;
   scripts: string[];
   metaCurrencies: string[];
   priceTexts: string[];
@@ -114,6 +124,8 @@ export async function extractCatalogV2(input: ExtractV2RequestBody): Promise<Ext
 
   const offers: OfferV2[] = [];
   const marketFailures = new Map<string, boolean>();
+  let hasMore = false;
+  let discoveredCount = 0;
 
   for (const profile of profiles) {
     const context = buildRequestContext(profile);
@@ -129,10 +141,13 @@ export async function extractCatalogV2(input: ExtractV2RequestBody): Promise<Ext
         batchOffset,
         batchLimit,
         discoveryLimit,
+        maxProductsTotal,
         log,
       });
       offers.push(...result.offers);
       marketFailures.set(String(context.market_id), result.failed);
+      hasMore = hasMore || result.hasMore;
+      discoveredCount = Math.max(discoveredCount, result.discoveredCount);
       log(
         result.failed ? "warn" : "success",
         `Market ${context.market_id} offers=${result.offers.length} failed=${result.failed ? "yes" : "no"}`,
@@ -145,6 +160,7 @@ export async function extractCatalogV2(input: ExtractV2RequestBody): Promise<Ext
   }
 
   const countersBySiteMarket = computeCounters({ sourceSite, profiles, offers, marketFailures });
+  const nextOffset = hasMore ? batchOffset + batchLimit : null;
 
   return {
     brand: input.brand,
@@ -153,6 +169,13 @@ export async function extractCatalogV2(input: ExtractV2RequestBody): Promise<Ext
     mode: "puppeteer",
     offers_v2: offers,
     counters_by_site_market: countersBySiteMarket,
+    pagination: {
+      offset: batchOffset,
+      limit: batchLimit,
+      next_offset: nextOffset,
+      has_more: hasMore,
+      discovered_urls: discoveredCount,
+    },
     logs,
   };
 }
@@ -179,9 +202,10 @@ async function extractSingleMarket(params: {
   batchOffset: number;
   batchLimit: number;
   discoveryLimit: number;
+  maxProductsTotal: number;
   log: Logger;
 }): Promise<MarketExtractionResult> {
-  const shopifyOffers = await tryExtractShopifyOffersV2({
+  const shopifyResult = await tryExtractShopifyOffersV2({
     baseUrl: params.baseUrl,
     sourceSite: params.sourceSite,
     collectionHandle: params.collectionHandle,
@@ -191,10 +215,15 @@ async function extractSingleMarket(params: {
     log: params.log,
   });
 
-  if (shopifyOffers) {
+  if (shopifyResult) {
+    const nextOffset = params.batchOffset + params.batchLimit;
+    const hasMore = nextOffset < shopifyResult.totalProducts;
     return {
-      offers: shopifyOffers,
-      failed: shopifyOffers.length === 0,
+      offers: shopifyResult.offers,
+      failed: shopifyResult.offers.length === 0,
+      hasMore,
+      nextOffset: hasMore ? nextOffset : null,
+      discoveredCount: shopifyResult.totalProducts,
     };
   }
 
@@ -212,7 +241,13 @@ async function extractSingleMarket(params: {
   );
 
   if (batchCandidates.length === 0) {
-    return { offers: [], failed: true };
+    return {
+      offers: [],
+      failed: true,
+      hasMore: false,
+      nextOffset: null,
+      discoveredCount: discovered.productUrls.length,
+    };
   }
 
   const concurrency = clampInt(process.env.PUPPETEER_CONCURRENCY, DEFAULT_CONCURRENCY, 1, 6);
@@ -249,9 +284,18 @@ async function extractSingleMarket(params: {
     );
 
     const offers = productOfferBatches.flatMap((batch) => batch).slice(0, params.batchLimit * 20);
+    const nextOffset = params.batchOffset + params.batchLimit;
+    const reachedDiscoveryCap =
+      discovered.productUrls.length >= params.discoveryLimit && params.discoveryLimit < params.maxProductsTotal;
+    const hasMore =
+      nextOffset < params.maxProductsTotal && (nextOffset < discovered.productUrls.length || reachedDiscoveryCap);
+
     return {
       offers,
       failed: offers.length === 0,
+      hasMore,
+      nextOffset: hasMore ? nextOffset : null,
+      discoveredCount: discovered.productUrls.length,
     };
   } finally {
     await browser.close().catch(() => undefined);
@@ -266,7 +310,7 @@ async function tryExtractShopifyOffersV2(params: {
   batchOffset: number;
   batchLimit: number;
   log: Logger;
-}): Promise<OfferV2[] | null> {
+}): Promise<ShopifyExtractionResult | null> {
   const probeUrl = params.collectionHandle
     ? `${params.baseUrl}/collections/${params.collectionHandle}/products.json?limit=1`
     : `${params.baseUrl}/products.json?limit=1`;
@@ -297,6 +341,7 @@ async function tryExtractShopifyOffersV2(params: {
     const productHandle = (product.handle || "").trim();
     if (!productHandle) continue;
     const productTitle = (product.title || "").trim() || productHandle;
+    const productDescription = normalizeDescriptionText(product.body_html);
 
     const canonicalProductUrl = canonicalizeUrl(`${params.baseUrl}/products/${productHandle}`, params.baseUrl);
     const siteProductId = typeof product.id === "number" ? String(product.id) : "";
@@ -327,6 +372,7 @@ async function tryExtractShopifyOffersV2(params: {
         source_product_id: sourceProductId,
         url_canonical: canonicalProductUrl,
         product_title: productTitle || null,
+        product_description: productDescription,
         variant_sku: variantSku || null,
         market_id: params.context.market_id,
         price_amount: priceParsed.price_amount,
@@ -353,7 +399,10 @@ async function tryExtractShopifyOffersV2(params: {
   }
 
   params.log("data", `Shopify V2 offers=${offers.length} market=${params.context.market_id}`);
-  return offers;
+  return {
+    offers,
+    totalProducts: allProducts.length,
+  };
 }
 
 async function scrapeProductPageV2(params: {
@@ -402,6 +451,11 @@ async function scrapeProductPageV2(params: {
         document.querySelector('meta[property="og:url"]')?.getAttribute("content") ||
         location.href;
 
+      const metaDescription =
+        document.querySelector('meta[name="description"]')?.getAttribute("content")?.trim() ||
+        document.querySelector('meta[property="og:description"]')?.getAttribute("content")?.trim() ||
+        "";
+
       const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
         .map((s) => s.textContent || "")
         .filter(Boolean);
@@ -439,6 +493,7 @@ async function scrapeProductPageV2(params: {
       return {
         title,
         canonical,
+        metaDescription,
         scripts,
         metaCurrencies,
         priceTexts,
@@ -483,6 +538,9 @@ function buildOffersFromScrapedPage(params: {
   const productTitle =
     (typeof productObj?.name === "string" ? productObj.name.trim() : params.extracted.title.trim()) ||
     params.extracted.title.trim();
+  const productDescription =
+    normalizeDescriptionText(typeof productObj?.description === "string" ? productObj.description : null) ||
+    normalizeDescriptionText(params.extracted.metaDescription);
 
   const rawCanonical =
     (typeof productObj?.url === "string" ? productObj.url : params.extracted.canonical) || params.extracted.canonical;
@@ -514,6 +572,7 @@ function buildOffersFromScrapedPage(params: {
         }),
         url_canonical: canonicalUrl,
         product_title: productTitle || null,
+        product_description: productDescription,
         variant_sku: null,
         market_id: params.context.market_id,
         price_amount: parsed.price_amount,
@@ -590,6 +649,7 @@ function buildOffersFromScrapedPage(params: {
       }),
       url_canonical: canonicalUrl,
       product_title: productTitle || null,
+      product_description: productDescription,
       variant_sku: skuRaw || null,
       market_id: params.context.market_id,
       price_amount: parsed.price_amount,
@@ -639,6 +699,26 @@ function stringifyPriceRaw(value: unknown): string | null {
   if (typeof value === "number" && Number.isFinite(value)) return value.toString();
   if (typeof value === "string" && value.trim()) return value.trim();
   return null;
+}
+
+function normalizeDescriptionText(raw: string | null | undefined): string | null {
+  if (!raw || !raw.trim()) return null;
+
+  const withNewlines = raw
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p\s*>/gi, "\n")
+    .replace(/<\/div\s*>/gi, "\n")
+    .replace(/<\/li\s*>/gi, "\n")
+    .replace(/<\/?[a-z][^>]*>/gi, " ");
+
+  const text = withNewlines
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return text || null;
 }
 
 export function buildSourceProductId(params: {

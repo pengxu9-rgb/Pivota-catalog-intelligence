@@ -18,6 +18,7 @@ type ToastState = { message: string; visible: boolean };
 const EMPTY_VARIANTS: ExtractedVariantRow[] = [];
 const EMPTY_LOGS: LogLine[] = [];
 const DEFAULT_BATCH_LIMIT = 10;
+const DEFAULT_V2_BATCH_LIMIT = 100;
 const DEFAULT_MAX_BATCH_ROUNDS = 60;
 const DEFAULT_V2_MARKETS = ["US"];
 
@@ -68,6 +69,8 @@ function toLegacyVariant(offer: OfferV2, brand: string, index: number): Extracte
   const derivedTitle = deriveTitleFromUrl(offer.url_canonical);
   const productTitle = (offer.product_title || "").trim() || derivedTitle || offer.source_product_id;
   const variantSku = (offer.variant_sku || "").trim() || offer.source_product_id;
+  const productDescription = (offer.product_description || "").trim();
+  const debugDescription = `price_type=${offer.price_type}; switch=${offer.market_switch_status}; confidence=${offer.currency_confidence}; currency=${observedCurrency}; expected=${expectedCurrencyDisplay}`;
 
   return {
     id: `${offer.source_product_id}-${offer.market_id}-${index}`,
@@ -78,7 +81,7 @@ function toLegacyVariant(offer: OfferV2, brand: string, index: number): Extracte
     price: bestPriceText || "0",
     currency,
     stock: toLegacyStock(offer.availability),
-    description: `price_type=${offer.price_type}; switch=${offer.market_switch_status}; confidence=${offer.currency_confidence}; currency=${observedCurrency}; expected=${expectedCurrencyDisplay}`,
+    description: productDescription || debugDescription,
     image_url: "",
     ad_copy: "",
     brand,
@@ -157,6 +160,43 @@ function mergeExtractResponses(base: ExtractResponse | null, next: ExtractRespon
     pricing: computeMergedPricing(variants),
     ad_copy: { by_variant_id: { ...base.ad_copy.by_variant_id, ...next.ad_copy.by_variant_id } },
     logs: [...base.logs, ...next.logs],
+  };
+}
+
+function mergeExtractV2Responses(base: ExtractV2Response | null, next: ExtractV2Response): ExtractV2Response {
+  if (!base) return next;
+
+  const mergedOffers = [...base.offers_v2];
+  const seen = new Set(
+    mergedOffers.map((offer) =>
+      [
+        offer.source_site,
+        offer.source_product_id,
+        offer.market_id,
+        offer.variant_sku || "",
+        offer.url_canonical,
+      ].join("|"),
+    ),
+  );
+
+  for (const offer of next.offers_v2) {
+    const key = [
+      offer.source_site,
+      offer.source_product_id,
+      offer.market_id,
+      offer.variant_sku || "",
+      offer.url_canonical,
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    mergedOffers.push(offer);
+  }
+
+  return {
+    ...next,
+    offers_v2: mergedOffers,
+    logs: [...base.logs, ...next.logs],
+    pagination: next.pagination || base.pagination,
   };
 }
 
@@ -249,8 +289,10 @@ export function CatalogIntelligenceApp() {
       .filter(Boolean);
     const v2Markets = configuredMarkets.length > 0 ? configuredMarkets : DEFAULT_V2_MARKETS;
     const batchLimitRaw = Number(process.env.NEXT_PUBLIC_EXTRACT_BATCH_LIMIT || DEFAULT_BATCH_LIMIT);
+    const v2BatchLimitRaw = Number(process.env.NEXT_PUBLIC_EXTRACT_V2_BATCH_LIMIT || DEFAULT_V2_BATCH_LIMIT);
     const maxRoundsRaw = Number(process.env.NEXT_PUBLIC_EXTRACT_MAX_BATCH_ROUNDS || DEFAULT_MAX_BATCH_ROUNDS);
     const batchLimit = Number.isFinite(batchLimitRaw) ? Math.max(1, Math.floor(batchLimitRaw)) : DEFAULT_BATCH_LIMIT;
+    const v2BatchLimit = Number.isFinite(v2BatchLimitRaw) ? Math.max(1, Math.floor(v2BatchLimitRaw)) : DEFAULT_V2_BATCH_LIMIT;
     const maxRounds = Number.isFinite(maxRoundsRaw) ? Math.max(1, Math.floor(maxRoundsRaw)) : DEFAULT_MAX_BATCH_ROUNDS;
 
     appendLocalLogs([
@@ -260,7 +302,7 @@ export function CatalogIntelligenceApp() {
         at: new Date().toISOString(),
         type: "info",
         msg: v2Enabled
-          ? `V2 mode preferred: endpoint=/api/extract/v2, markets=${v2Markets.join(",")}`
+          ? `V2 mode preferred: endpoint=/api/extract/v2, markets=${v2Markets.join(",")}, limit=${v2BatchLimit}, max_rounds=${maxRounds}`
           : `Batch mode enabled: limit=${batchLimit}`,
       },
     ]);
@@ -297,18 +339,36 @@ export function CatalogIntelligenceApp() {
         return legacyMerged;
       };
 
-      if (v2Enabled) {
-        appendLocalLogs([
-          {
-            at: new Date().toISOString(),
-            type: "info",
-            msg: `POST /api/extract/v2 (markets=${v2Markets.join(",")}, limit=${batchLimit})`,
-          },
-        ]);
+      const runV2BatchExtraction = async () => {
+        let v2Merged: ExtractV2Response | null = null;
+        let offset = 0;
 
+        for (let round = 0; round < maxRounds; round++) {
+          appendLocalLogs([
+            {
+              at: new Date().toISOString(),
+              type: "info",
+              msg: `POST /api/extract/v2 (batch=${round + 1}, offset=${offset}, limit=${v2BatchLimit}, markets=${v2Markets.join(",")})`,
+            },
+          ]);
+
+          const v2Page = await extractCatalogV2({ brand, domain, offset, limit: v2BatchLimit, markets: v2Markets });
+          v2Merged = mergeExtractV2Responses(v2Merged, v2Page);
+          const interim = convertV2ResponseToLegacy(v2Merged, brand);
+          setData(interim);
+
+          const page = v2Page.pagination;
+          if (!page?.has_more || page.next_offset == null || page.next_offset <= offset) break;
+          offset = page.next_offset;
+        }
+
+        if (!v2Merged) throw new Error("V2 extraction returned no data.");
+        return convertV2ResponseToLegacy(v2Merged, brand);
+      };
+
+      if (v2Enabled) {
         try {
-          const v2Result = await extractCatalogV2({ brand, domain, offset: 0, limit: batchLimit, markets: v2Markets });
-          merged = convertV2ResponseToLegacy(v2Result, brand);
+          merged = await runV2BatchExtraction();
           setData(merged);
           setActiveStep(-1);
           showToast(`V2 extraction complete (${merged.variants.length} rows).`);

@@ -10,7 +10,7 @@ import { ResultsTable } from "./ResultsTable";
 
 import type { ExtractResponse, ExtractV2Response, ExtractedVariantRow, LogLine, OfferV2 } from "@/lib/types";
 import { extractCatalog, extractCatalogV2 } from "@/lib/api";
-import { buildCsv, buildProductCsv, downloadTextFile } from "@/lib/csv";
+import { buildCsv, buildProductCsv, downloadTextFile, getStableProductId } from "@/lib/csv";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
 type ToastState = { message: string; visible: boolean };
@@ -216,7 +216,11 @@ export function CatalogIntelligenceApp() {
   const [toast, setToast] = useState<ToastState>({ message: "Notification", visible: false });
   const toastTimerRef = useRef<number | null>(null);
 
-  const recordCountText = useMemo(() => `${variants.length} records found`, [variants.length]);
+  const recordCountText = useMemo(() => {
+    const variantCount = variants.length;
+    const productCount = new Set(variants.map((variant) => getStableProductId(variant))).size;
+    return `${variantCount.toLocaleString()} variants / ${productCount.toLocaleString()} products`;
+  }, [variants]);
 
   const showToast = useCallback((message: string) => {
     setToast({ message, visible: true });

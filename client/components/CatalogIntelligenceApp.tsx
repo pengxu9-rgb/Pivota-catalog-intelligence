@@ -41,28 +41,48 @@ function toLegacyStock(availability?: string) {
   return "In Stock" as const;
 }
 
+function deriveTitleFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const slug = parts[parts.length - 1] || "";
+    if (!slug) return "";
+    return slug
+      .replace(/[-_]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
 function toLegacyVariant(offer: OfferV2, brand: string, index: number): ExtractedVariantRow {
   const bestPriceText =
     offer.price_amount !== null
       ? String(offer.price_amount)
       : (offer.price_display_raw || "").replace(/[^\d.,-]/g, "").trim();
   const expectedCurrency = offer.market_context_debug.expected_currency || "";
-  const currency = offer.price_currency || expectedCurrency || "";
+  const currency = offer.price_currency || "";
+  const observedCurrency = offer.price_currency || "unknown";
+  const expectedCurrencyDisplay = expectedCurrency || "unknown";
+  const derivedTitle = deriveTitleFromUrl(offer.url_canonical);
+  const productTitle = (offer.product_title || "").trim() || derivedTitle || offer.source_product_id;
+  const variantSku = (offer.variant_sku || "").trim() || offer.source_product_id;
 
   return {
     id: `${offer.source_product_id}-${offer.market_id}-${index}`,
-    sku: offer.source_product_id,
+    sku: variantSku,
     url: offer.url_canonical,
     option_name: "Market",
     option_value: offer.market_id,
     price: bestPriceText || "0",
     currency,
     stock: toLegacyStock(offer.availability),
-    description: `price_type=${offer.price_type}; switch=${offer.market_switch_status}; confidence=${offer.currency_confidence}`,
+    description: `price_type=${offer.price_type}; switch=${offer.market_switch_status}; confidence=${offer.currency_confidence}; currency=${observedCurrency}; expected=${expectedCurrencyDisplay}`,
     image_url: "",
     ad_copy: "",
     brand,
-    product_title: offer.source_product_id,
+    product_title: productTitle,
     product_url: offer.url_canonical,
     deep_link: offer.url_canonical,
     simulated: false,
@@ -249,6 +269,7 @@ export function CatalogIntelligenceApp() {
     const stepTimer2 = window.setTimeout(() => setActiveStep(2), 1400);
 
     let merged: ExtractResponse | null = null;
+    let usedLegacyFallback = false;
     try {
       const runLegacyBatchExtraction = async () => {
         let legacyMerged: ExtractResponse | null = null;
@@ -294,6 +315,7 @@ export function CatalogIntelligenceApp() {
           return;
         } catch (v2Err) {
           const v2Message = v2Err instanceof Error ? v2Err.message : "unknown error";
+          usedLegacyFallback = true;
           appendLocalLogs([
             {
               at: new Date().toISOString(),
@@ -306,7 +328,11 @@ export function CatalogIntelligenceApp() {
 
       merged = await runLegacyBatchExtraction();
       setActiveStep(-1);
-      showToast(`Extraction complete (${merged.variants.length} rows).`);
+      showToast(
+        usedLegacyFallback
+          ? `Legacy fallback complete (${merged.variants.length} rows). Currency fields may be less reliable.`
+          : `Extraction complete (${merged.variants.length} rows).`,
+      );
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(err);

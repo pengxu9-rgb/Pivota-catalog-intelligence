@@ -104,6 +104,8 @@ export type OfferV2 = {
   source_site: string;
   source_product_id: string;
   url_canonical: string;
+  product_title?: string | null;
+  variant_sku?: string | null;
   market_id: MarketId;
   price_amount: number | null;
   price_currency: string | null;

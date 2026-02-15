@@ -296,6 +296,7 @@ async function tryExtractShopifyOffersV2(params: {
   for (const product of allProducts.slice(params.batchOffset, params.batchOffset + params.batchLimit)) {
     const productHandle = (product.handle || "").trim();
     if (!productHandle) continue;
+    const productTitle = (product.title || "").trim() || productHandle;
 
     const canonicalProductUrl = canonicalizeUrl(`${params.baseUrl}/products/${productHandle}`, params.baseUrl);
     const siteProductId = typeof product.id === "number" ? String(product.id) : "";
@@ -304,11 +305,15 @@ async function tryExtractShopifyOffersV2(params: {
       const rawPrice = typeof variant.price === "string" ? variant.price.trim() : "";
       const priceDisplayRaw = rawPrice || null;
       const priceParsed = parsePrice(rawPrice || null);
-
-      const currency = normalizeCurrencyCode(hintedCurrency);
-      const currencyConfidence: CurrencyConfidence = currency ? "medium" : "low";
-      const status = resolveMarketSwitchStatus(currency, params.context.expected_currency, false);
+      const resolvedCurrency = resolveCurrency({
+        structuredCurrency: null,
+        metaCurrencyCandidates: hintedCurrency ? [hintedCurrency] : [],
+        priceDisplayRaw,
+        marketId: params.context.market_id,
+      });
+      const status = resolveMarketSwitchStatus(resolvedCurrency.code, params.context.expected_currency, false);
       const sku = (variant.sku || "").trim();
+      const variantSku = sku || (typeof variant.id === "number" ? String(variant.id) : "");
 
       const sourceProductId = buildSourceProductId({
         sourceSite: params.sourceSite,
@@ -321,9 +326,11 @@ async function tryExtractShopifyOffersV2(params: {
         source_site: params.sourceSite,
         source_product_id: sourceProductId,
         url_canonical: canonicalProductUrl,
+        product_title: productTitle || null,
+        variant_sku: variantSku || null,
         market_id: params.context.market_id,
         price_amount: priceParsed.price_amount,
-        price_currency: currency,
+        price_currency: resolvedCurrency.code,
         price_display_raw: priceDisplayRaw,
         price_type: priceParsed.price_type,
         range_min: priceParsed.range_min,
@@ -331,7 +338,7 @@ async function tryExtractShopifyOffersV2(params: {
         tax_included: "unknown",
         availability: normalizeAvailabilityFromBoolean(variant.available, variant.inventory_quantity),
         captured_at: capturedAt,
-        currency_confidence: currencyConfidence,
+        currency_confidence: resolvedCurrency.confidence,
         market_switch_status: status,
         market_context_debug: {
           headers: { ...params.context.headers },
@@ -339,7 +346,7 @@ async function tryExtractShopifyOffersV2(params: {
           url_params: { ...params.context.url_params },
           geo_hint: params.context.geo_hint,
           expected_currency: params.context.expected_currency,
-          observed_currency: currency,
+          observed_currency: resolvedCurrency.code,
         },
       });
     }
@@ -506,6 +513,8 @@ function buildOffersFromScrapedPage(params: {
           sku: productTitle,
         }),
         url_canonical: canonicalUrl,
+        product_title: productTitle || null,
+        variant_sku: null,
         market_id: params.context.market_id,
         price_amount: parsed.price_amount,
         price_currency: resolvedCurrency.code,
@@ -580,6 +589,8 @@ function buildOffersFromScrapedPage(params: {
         sku,
       }),
       url_canonical: canonicalUrl,
+      product_title: productTitle || null,
+      variant_sku: skuRaw || null,
       market_id: params.context.market_id,
       price_amount: parsed.price_amount,
       price_currency: resolvedCurrency.code,

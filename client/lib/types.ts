@@ -126,3 +126,44 @@ export type ExtractV2Response = {
   };
   logs: LogLine[];
 };
+
+export type ExtractHistoryEntry = {
+  at: string;
+  session_id: string;
+  endpoint: "v1" | "v2";
+  brand: string;
+  domain: string;
+  markets?: string[];
+  offset?: number;
+  limit?: number;
+  status: "ok" | "error";
+  records_returned: number;
+  products_returned?: number;
+  has_more?: boolean;
+  next_offset?: number | null;
+  duration_ms: number;
+  error?: string;
+};
+
+export type ExtractHistoryRun = {
+  session_id: string;
+  started_at: string;
+  finished_at: string;
+  endpoint: "v1" | "v2";
+  brand: string;
+  domain: string;
+  markets: string[];
+  status: "ok" | "error";
+  request_count: number;
+  total_records: number;
+  total_products: number;
+};
+
+export type ExtractHistoryResponse = {
+  generated_at: string;
+  days: number;
+  total_entries: number;
+  total_runs: number;
+  runs: ExtractHistoryRun[];
+  entries?: ExtractHistoryEntry[];
+};

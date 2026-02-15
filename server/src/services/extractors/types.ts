@@ -3,6 +3,7 @@ export type ExtractRequestBody = {
   domain: string;
   offset?: number;
   limit?: number;
+  session_id?: string;
 };
 
 export type ExtractInput = ExtractRequestBody;
@@ -98,6 +99,7 @@ export type ExtractV2RequestBody = {
   offset?: number;
   limit?: number;
   markets?: MarketId[];
+  session_id?: string;
 };
 
 export type OfferV2 = {

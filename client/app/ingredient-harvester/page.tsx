@@ -209,10 +209,11 @@ export default function IngredientHarvesterPage() {
         <section className="bg-white border rounded-xl p-4">
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div>
-              <div className="text-sm font-semibold text-gray-900">1) Upload product_candidates_master.csv</div>
+              <div className="text-sm font-semibold text-gray-900">1) Upload candidate CSV</div>
               <div className="mt-1 text-xs text-gray-600">
-                Required columns: <span className="font-mono">brand</span>, <span className="font-mono">product_name</span>,{" "}
-                <span className="font-mono">market</span>.
+                Required columns: <span className="font-mono">brand</span> and <span className="font-mono">product_name</span> (or{" "}
+                <span className="font-mono">Brand</span> + <span className="font-mono">Product Title</span>). Optional:{" "}
+                <span className="font-mono">market</span>, <span className="font-mono">product_url</span>/<span className="font-mono">deep_link</span>.
               </div>
             </div>
             <label className="inline-flex items-center gap-2 rounded-lg bg-slate-900 text-white px-3 py-2 text-sm cursor-pointer hover:bg-slate-800">

@@ -5,6 +5,7 @@ from sqlalchemy import select
 from app.db import db_session, utcnow
 from app.harvester.source_harvester import SourceHarvester
 from app.models import CandidateRow, TaskRow
+from app.non_cosmetic import non_cosmetic_skip_reason
 
 
 def _has_meaningful_ingredients(text: str | None) -> bool:
@@ -31,6 +32,19 @@ def harvest_row(*, task_id: str, row_id: str, force: bool) -> None:
         tr.message = None
         db.add(tr)
         db.commit()
+
+        skip_reason = non_cosmetic_skip_reason(brand=row.brand, product_name=row.product_name)
+        if skip_reason:
+            row.status = "SKIPPED"
+            row.error = skip_reason
+            row.updated_at = utcnow()
+
+            tr.status = "SKIPPED"
+            tr.finished_at = utcnow()
+            tr.message = skip_reason
+            db.add_all([row, tr])
+            db.commit()
+            return
 
         if not force and _has_meaningful_ingredients(row.raw_ingredient_text):
             row.status = "SKIPPED"

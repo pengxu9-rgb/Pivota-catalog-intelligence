@@ -25,6 +25,7 @@ from app.config import settings
 from app.db import db_session, engine, utcnow
 from app.jobs import harvest_row
 from app.models import Base, CandidateRow, HarvestTask, ImportBatch, TaskRow
+from app.non_cosmetic import non_cosmetic_skip_reason
 from app.queue import enqueue
 from app.schema import (
     CandidateRowView,
@@ -442,6 +443,8 @@ async def create_import(file: UploadFile = File(...)) -> ImportResponse:
             market = _clean_cell(r.get(market_col)) if market_col else ""
             if not market:
                 market = _infer_market_from_url(source_ref) if source_ref else "GLOBAL"
+            skip_reason = non_cosmetic_skip_reason(brand=brand, product_name=product_name)
+            initial_status = "SKIPPED" if (existing or skip_reason) else "EMPTY"
             row = CandidateRow(
                 import_id=batch.import_id,
                 row_index=int(idx),
@@ -450,8 +453,9 @@ async def create_import(file: UploadFile = File(...)) -> ImportResponse:
                 market=(market or "GLOBAL").upper()[:16],
                 raw_ingredient_text=existing or None,
                 source_ref=source_ref or None,
-                status="SKIPPED" if existing else "EMPTY",
+                status=initial_status,
                 confidence=1.0 if existing else None,
+                error=skip_reason,
                 updated_at=utcnow(),
             )
             db.add(row)

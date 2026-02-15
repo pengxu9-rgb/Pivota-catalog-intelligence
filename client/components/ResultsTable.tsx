@@ -2,6 +2,7 @@
 
 import { Copy, ExternalLink } from "lucide-react";
 
+import { getStableProductId, getStableVariantId } from "@/lib/csv";
 import type { ExtractedVariantRow, LogLine } from "@/lib/types";
 
 const PLACEHOLDER_THUMB =
@@ -102,7 +103,7 @@ export function ResultsTable({
                   Img
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                  SKU/ID
+                  SKU / External IDs
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
                   Product Title
@@ -162,7 +163,11 @@ function ResultRow({
           title={`Actual URL in CSV: ${variant.image_url}`}
         />
       </td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{variant.sku}</td>
+      <td className="px-6 py-4 text-sm text-gray-900 max-w-xs" title={`SKU: ${variant.sku}\nExternal Product ID: ${getStableProductId(variant)}\nExternal Variant ID: ${getStableVariantId(variant)}`}>
+        <div className="font-medium truncate">{variant.sku || variant.id}</div>
+        <div className="text-xs text-gray-500 truncate">PID: {getStableProductId(variant)}</div>
+        <div className="text-xs text-gray-500 truncate">VID: {getStableVariantId(variant)}</div>
+      </td>
       <td
         className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 max-w-xs truncate"
         title={variant.product_title}

@@ -78,7 +78,7 @@ function getMarketId(variant: ExtractedVariantRow) {
   return variant.option_name === "Market" ? variant.option_value : "";
 }
 
-function getStableProductId(variant: ExtractedVariantRow) {
+export function getStableProductId(variant: ExtractedVariantRow) {
   const sourceProductId = (variant.product_id || "").trim();
   if (sourceProductId) return sourceProductId;
   return normalizeProductUrlForGrouping(variant.product_url || variant.url);
@@ -98,7 +98,7 @@ function getVariantTokenFromUrl(url: string) {
   }
 }
 
-function getStableVariantId(variant: ExtractedVariantRow) {
+export function getStableVariantId(variant: ExtractedVariantRow) {
   const marketId = getMarketId(variant);
   const productId = getStableProductId(variant);
   const sku = (variant.sku || "").trim();

@@ -222,7 +222,7 @@ export function CatalogIntelligenceApp() {
 
     // Lightweight UI pacing to match the prototype feel.
     const t0 = Date.now();
-    const v2Enabled = (process.env.NEXT_PUBLIC_EXTRACT_V2_ENABLED || "0") === "1";
+    const v2Enabled = (process.env.NEXT_PUBLIC_EXTRACT_V2_ENABLED || "1") !== "0";
     const configuredMarkets = (process.env.NEXT_PUBLIC_EXTRACT_V2_MARKETS || "")
       .split(",")
       .map((v) => v.trim())
@@ -240,7 +240,7 @@ export function CatalogIntelligenceApp() {
         at: new Date().toISOString(),
         type: "info",
         msg: v2Enabled
-          ? `V2 mode enabled: endpoint=/api/extract/v2, markets=${v2Markets.join(",")}`
+          ? `V2 mode preferred: endpoint=/api/extract/v2, markets=${v2Markets.join(",")}`
           : `Batch mode enabled: limit=${batchLimit}`,
       },
     ]);
@@ -250,6 +250,32 @@ export function CatalogIntelligenceApp() {
 
     let merged: ExtractResponse | null = null;
     try {
+      const runLegacyBatchExtraction = async () => {
+        let legacyMerged: ExtractResponse | null = null;
+        let offset = 0;
+
+        for (let round = 0; round < maxRounds; round++) {
+          appendLocalLogs([
+            {
+              at: new Date().toISOString(),
+              type: "info",
+              msg: `POST /api/extract (batch=${round + 1}, offset=${offset}, limit=${batchLimit})`,
+            },
+          ]);
+
+          const result = await extractCatalog({ brand, domain, offset, limit: batchLimit });
+          legacyMerged = mergeExtractResponses(legacyMerged, result);
+          setData(legacyMerged);
+
+          const page = result.pagination;
+          if (!page?.has_more || page.next_offset == null || page.next_offset <= offset) break;
+          offset = page.next_offset;
+        }
+
+        if (!legacyMerged) throw new Error("Extraction returned no data.");
+        return legacyMerged;
+      };
+
       if (v2Enabled) {
         appendLocalLogs([
           {
@@ -259,35 +285,28 @@ export function CatalogIntelligenceApp() {
           },
         ]);
 
-        const v2Result = await extractCatalogV2({ brand, domain, offset: 0, limit: batchLimit, markets: v2Markets });
-        merged = convertV2ResponseToLegacy(v2Result, brand);
-        setData(merged);
-        setActiveStep(-1);
-        showToast(`V2 extraction complete (${merged.variants.length} rows).`);
-      } else {
-      let offset = 0;
-      for (let round = 0; round < maxRounds; round++) {
-        appendLocalLogs([
-          {
-            at: new Date().toISOString(),
-            type: "info",
-            msg: `POST /api/extract (batch=${round + 1}, offset=${offset}, limit=${batchLimit})`,
-          },
-        ]);
-
-        const result = await extractCatalog({ brand, domain, offset, limit: batchLimit });
-        merged = mergeExtractResponses(merged, result);
-        setData(merged);
-
-        const page = result.pagination;
-        if (!page?.has_more || page.next_offset == null || page.next_offset <= offset) break;
-        offset = page.next_offset;
+        try {
+          const v2Result = await extractCatalogV2({ brand, domain, offset: 0, limit: batchLimit, markets: v2Markets });
+          merged = convertV2ResponseToLegacy(v2Result, brand);
+          setData(merged);
+          setActiveStep(-1);
+          showToast(`V2 extraction complete (${merged.variants.length} rows).`);
+          return;
+        } catch (v2Err) {
+          const v2Message = v2Err instanceof Error ? v2Err.message : "unknown error";
+          appendLocalLogs([
+            {
+              at: new Date().toISOString(),
+              type: "warn",
+              msg: `V2 failed (${v2Message}); falling back to /api/extract.`,
+            },
+          ]);
+        }
       }
 
-        if (!merged) throw new Error("Extraction returned no data.");
-        setActiveStep(-1);
-        showToast(`Extraction complete (${merged.variants.length} rows).`);
-      }
+      merged = await runLegacyBatchExtraction();
+      setActiveStep(-1);
+      showToast(`Extraction complete (${merged.variants.length} rows).`);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(err);

@@ -7,12 +7,11 @@ export type LogLine = {
 export type ExtractedVariantRow = {
   id: string;
   sku: string;
-  product_id?: string;
   url: string;
   option_name: string;
   option_value: string;
   price: string;
-  currency: string;
+  currency: "USD";
   stock: "In Stock" | "Low Stock" | "Out of Stock";
   description: string;
   image_url: string;
@@ -35,7 +34,7 @@ export type ExtractedProduct = {
     option_name: string;
     option_value: string;
     price: string;
-    currency: string;
+    currency: "USD";
     stock: "In Stock" | "Low Stock" | "Out of Stock";
     description: string;
     image_url: string;
@@ -53,7 +52,7 @@ export type ExtractResponse = {
   products: ExtractedProduct[];
   variants: ExtractedVariantRow[];
   pricing: {
-    currency: string;
+    currency: "USD";
     min: number;
     max: number;
     avg: number;
@@ -69,101 +68,4 @@ export type ExtractResponse = {
     discovered_urls: number;
   };
   logs: LogLine[];
-};
-
-export type OfferV2 = {
-  source_site: string;
-  source_product_id: string;
-  url_canonical: string;
-  product_title?: string | null;
-  product_description?: string | null;
-  variant_sku?: string | null;
-  market_id: string;
-  price_amount: number | null;
-  price_currency: string | null;
-  price_display_raw: string | null;
-  price_type: "list" | "sale" | "from" | "range" | "member" | "unknown";
-  range_min?: number;
-  range_max?: number;
-  tax_included: true | false | "unknown";
-  availability?: string;
-  captured_at: string;
-  currency_confidence: "high" | "medium" | "low";
-  market_switch_status: "ok" | "failed" | "mismatch" | "unknown";
-  market_context_debug: {
-    headers: Record<string, string>;
-    cookies: Record<string, string>;
-    url_params: Record<string, string>;
-    geo_hint?: string;
-    expected_currency?: string;
-    observed_currency?: string | null;
-  };
-};
-
-export type SiteMarketCounter = {
-  source_site: string;
-  market_id: string;
-  total_offers: number;
-  native_currency_hit_rate: number;
-  price_parse_success_rate: number;
-  currency_confidence_low_rate: number;
-  market_switch_fail_rate: number;
-};
-
-export type ExtractV2Response = {
-  brand: string;
-  domain: string;
-  generated_at: string;
-  mode: "simulation" | "puppeteer";
-  offers_v2: OfferV2[];
-  counters_by_site_market: SiteMarketCounter[];
-  pagination?: {
-    offset: number;
-    limit: number;
-    next_offset: number | null;
-    has_more: boolean;
-    discovered_urls: number;
-  };
-  logs: LogLine[];
-};
-
-export type ExtractHistoryEntry = {
-  at: string;
-  session_id: string;
-  endpoint: "v1" | "v2";
-  brand: string;
-  domain: string;
-  markets?: string[];
-  offset?: number;
-  limit?: number;
-  status: "ok" | "error";
-  records_returned: number;
-  products_returned?: number;
-  has_more?: boolean;
-  next_offset?: number | null;
-  duration_ms: number;
-  error?: string;
-};
-
-export type ExtractHistoryRun = {
-  session_id: string;
-  started_at: string;
-  finished_at: string;
-  endpoint: "v1" | "v2";
-  brand: string;
-  domain: string;
-  markets: string[];
-  status: "ok" | "error";
-  request_count: number;
-  total_records: number;
-  total_products: number;
-};
-
-export type ExtractHistoryResponse = {
-  generated_at: string;
-  days: number;
-  total_entries: number;
-  total_runs: number;
-  runs: ExtractHistoryRun[];
-  entries?: ExtractHistoryEntry[];
 };

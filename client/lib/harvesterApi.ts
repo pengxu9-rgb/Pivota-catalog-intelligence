@@ -87,25 +87,3 @@ export function exportImportUrl(importId: string, format: "csv" | "xlsx") {
   u.searchParams.set("format", format);
   return u.toString();
 }
-
-export async function downloadImportFile(args: { importId: string; format: "csv" | "xlsx" }): Promise<void> {
-  const { importId, format } = args;
-  const url = exportImportUrl(importId, format);
-  const res = await fetch(url, { cache: "no-store" });
-  await assertOk(res, url);
-
-  const blob = await res.blob();
-  const disposition = res.headers.get("content-disposition") || "";
-  const nameMatch = disposition.match(/filename="?([^";]+)"?/i);
-  const fallback = `ingredient_harvest_${importId}.${format}`;
-  const filename = nameMatch?.[1]?.trim() || fallback;
-
-  const objectUrl = window.URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = objectUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.URL.revokeObjectURL(objectUrl);
-}

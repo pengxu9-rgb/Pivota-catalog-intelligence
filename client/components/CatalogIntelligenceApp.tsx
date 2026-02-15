@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Sparkles } from "lucide-react";
 
@@ -8,16 +8,9 @@ import { DashboardStats } from "./DashboardStats";
 import { ExtractionForm } from "./ExtractionForm";
 import { ResultsTable } from "./ResultsTable";
 
-import type {
-  ExtractHistoryResponse,
-  ExtractResponse,
-  ExtractV2Response,
-  ExtractedVariantRow,
-  LogLine,
-  OfferV2,
-} from "@/lib/types";
-import { extractCatalog, extractCatalogV2, fetchExtractHistory } from "@/lib/api";
-import { buildCsv, buildProductCsv, downloadTextFile, getStableProductId } from "@/lib/csv";
+import type { ExtractResponse, ExtractedVariantRow, LogLine } from "@/lib/types";
+import { extractCatalog } from "@/lib/api";
+import { buildCsv, buildProductCsv, downloadTextFile } from "@/lib/csv";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
 type ToastState = { message: string; visible: boolean };
@@ -25,127 +18,18 @@ type ToastState = { message: string; visible: boolean };
 const EMPTY_VARIANTS: ExtractedVariantRow[] = [];
 const EMPTY_LOGS: LogLine[] = [];
 const DEFAULT_BATCH_LIMIT = 10;
-const DEFAULT_V2_BATCH_LIMIT = 100;
 const DEFAULT_MAX_BATCH_ROUNDS = 60;
-const DEFAULT_V2_MARKETS = ["US"];
 
 function computeMergedPricing(variants: ExtractedVariantRow[]) {
   const nums = variants
     .map((v) => Number.parseFloat(v.price))
     .filter((n) => Number.isFinite(n));
-  const currency = variants.find((v) => Boolean(v.currency))?.currency || "";
-  if (nums.length === 0) return { currency, min: 0, max: 0, avg: 0 };
+  if (nums.length === 0) return { currency: "USD" as const, min: 0, max: 0, avg: 0 };
 
   const min = Math.min(...nums);
   const max = Math.max(...nums);
   const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
-  return { currency, min, max, avg: Number(avg.toFixed(2)) };
-}
-
-function toLegacyStock(availability?: string) {
-  const lower = (availability || "").toLowerCase();
-  if (lower.includes("out")) return "Out of Stock" as const;
-  if (lower.includes("low")) return "Low Stock" as const;
-  return "In Stock" as const;
-}
-
-function deriveTitleFromUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    const parts = parsed.pathname.split("/").filter(Boolean);
-    const slug = parts[parts.length - 1] || "";
-    if (!slug) return "";
-    return slug
-      .replace(/[-_]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  } catch {
-    return "";
-  }
-}
-
-function formatDateTime(value: string): string {
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return value;
-  return new Date(timestamp).toLocaleString();
-}
-
-function toLegacyVariant(offer: OfferV2, brand: string, index: number): ExtractedVariantRow {
-  const bestPriceText =
-    offer.price_amount !== null
-      ? String(offer.price_amount)
-      : (offer.price_display_raw || "").replace(/[^\d.,-]/g, "").trim();
-  const expectedCurrency = offer.market_context_debug.expected_currency || "";
-  const currency = offer.price_currency || "";
-  const observedCurrency = offer.price_currency || "unknown";
-  const expectedCurrencyDisplay = expectedCurrency || "unknown";
-  const derivedTitle = deriveTitleFromUrl(offer.url_canonical);
-  const productTitle = (offer.product_title || "").trim() || derivedTitle || offer.source_product_id;
-  const variantSku = (offer.variant_sku || "").trim() || offer.source_product_id;
-  const productDescription = (offer.product_description || "").trim();
-  const debugDescription = `price_type=${offer.price_type}; switch=${offer.market_switch_status}; confidence=${offer.currency_confidence}; currency=${observedCurrency}; expected=${expectedCurrencyDisplay}`;
-
-  return {
-    id: `${offer.source_product_id}-${offer.market_id}-${index}`,
-    sku: variantSku,
-    product_id: offer.source_product_id,
-    url: offer.url_canonical,
-    option_name: "Market",
-    option_value: offer.market_id,
-    price: bestPriceText || "0",
-    currency,
-    stock: toLegacyStock(offer.availability),
-    description: productDescription || debugDescription,
-    image_url: "",
-    ad_copy: "",
-    brand,
-    product_title: productTitle,
-    product_url: offer.url_canonical,
-    deep_link: offer.url_canonical,
-    simulated: false,
-  };
-}
-
-function convertV2ResponseToLegacy(v2: ExtractV2Response, brand: string): ExtractResponse {
-  const variants = v2.offers_v2.map((offer, idx) => toLegacyVariant(offer, brand, idx));
-  const productsMap = new Map<string, { title: string; url: string; variants: ExtractResponse["products"][number]["variants"] }>();
-
-  for (const row of variants) {
-    const marketId = row.option_name === "Market" ? row.option_value : "";
-    const stableProductKey = row.product_id?.trim() || row.product_url || row.url;
-    const key = `${marketId}|${stableProductKey}`;
-    const existing = productsMap.get(key) || {
-      title: row.product_title,
-      url: row.product_url,
-      variants: [],
-    };
-    existing.variants.push({
-      id: row.id,
-      sku: row.sku,
-      url: row.url,
-      option_name: row.option_name,
-      option_value: row.option_value,
-      price: row.price,
-      currency: row.currency,
-      stock: row.stock,
-      description: row.description,
-      image_url: row.image_url,
-      ad_copy: row.ad_copy,
-    });
-    productsMap.set(key, existing);
-  }
-
-  return {
-    brand: v2.brand,
-    domain: v2.domain,
-    generated_at: v2.generated_at,
-    mode: v2.mode,
-    products: Array.from(productsMap.values()),
-    variants,
-    pricing: computeMergedPricing(variants),
-    ad_copy: { by_variant_id: {} },
-    logs: v2.logs,
-  };
+  return { currency: "USD" as const, min, max, avg: Number(avg.toFixed(2)) };
 }
 
 function mergeExtractResponses(base: ExtractResponse | null, next: ExtractResponse): ExtractResponse {
@@ -179,43 +63,6 @@ function mergeExtractResponses(base: ExtractResponse | null, next: ExtractRespon
   };
 }
 
-function mergeExtractV2Responses(base: ExtractV2Response | null, next: ExtractV2Response): ExtractV2Response {
-  if (!base) return next;
-
-  const mergedOffers = [...base.offers_v2];
-  const seen = new Set(
-    mergedOffers.map((offer) =>
-      [
-        offer.source_site,
-        offer.source_product_id,
-        offer.market_id,
-        offer.variant_sku || "",
-        offer.url_canonical,
-      ].join("|"),
-    ),
-  );
-
-  for (const offer of next.offers_v2) {
-    const key = [
-      offer.source_site,
-      offer.source_product_id,
-      offer.market_id,
-      offer.variant_sku || "",
-      offer.url_canonical,
-    ].join("|");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    mergedOffers.push(offer);
-  }
-
-  return {
-    ...next,
-    offers_v2: mergedOffers,
-    logs: [...base.logs, ...next.logs],
-    pagination: next.pagination || base.pagination,
-  };
-}
-
 export function CatalogIntelligenceApp() {
   const [brand, setBrand] = useState("Tom Ford Beauty");
   const [domain, setDomain] = useState("www.tomfordbeauty.com");
@@ -225,42 +72,17 @@ export function CatalogIntelligenceApp() {
   const [data, setData] = useState<ExtractResponse | null>(null);
   const variants = data?.variants ?? EMPTY_VARIANTS;
   const logs = data?.logs ?? EMPTY_LOGS;
-  const [history, setHistory] = useState<ExtractHistoryResponse | null>(null);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const [toast, setToast] = useState<ToastState>({ message: "Notification", visible: false });
   const toastTimerRef = useRef<number | null>(null);
 
-  const recordCountText = useMemo(() => {
-    const variantCount = variants.length;
-    const productCount = new Set(variants.map((variant) => getStableProductId(variant))).size;
-    return `${variantCount.toLocaleString()} variants / ${productCount.toLocaleString()} products`;
-  }, [variants]);
+  const recordCountText = useMemo(() => `${variants.length} records found`, [variants.length]);
 
   const showToast = useCallback((message: string) => {
     setToast({ message, visible: true });
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     toastTimerRef.current = window.setTimeout(() => setToast((t) => ({ ...t, visible: false })), 3000);
   }, []);
-
-  const loadHistory = useCallback(async () => {
-    setHistoryLoading(true);
-    setHistoryError(null);
-    try {
-      const result = await fetchExtractHistory({ days: 7, run_limit: 20 });
-      setHistory(result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to load history.";
-      setHistoryError(message);
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadHistory();
-  }, [loadHistory]);
 
   const handleCopyLink = useCallback(
     async (url: string) => {
@@ -305,7 +127,7 @@ export function CatalogIntelligenceApp() {
           mode: "simulation",
           products: [],
           variants: [],
-          pricing: { currency: "", min: 0, max: 0, avg: 0 },
+          pricing: { currency: "USD", min: 0, max: 0, avg: 0 },
           ad_copy: { by_variant_id: {} },
           logs: [],
         } satisfies ExtractResponse);
@@ -323,128 +145,44 @@ export function CatalogIntelligenceApp() {
 
     // Lightweight UI pacing to match the prototype feel.
     const t0 = Date.now();
-    const v2Enabled = (process.env.NEXT_PUBLIC_EXTRACT_V2_ENABLED || "1") !== "0";
-    const configuredMarkets = (process.env.NEXT_PUBLIC_EXTRACT_V2_MARKETS || "")
-      .split(",")
-      .map((v) => v.trim())
-      .filter(Boolean);
-    const v2Markets = configuredMarkets.length > 0 ? configuredMarkets : DEFAULT_V2_MARKETS;
     const batchLimitRaw = Number(process.env.NEXT_PUBLIC_EXTRACT_BATCH_LIMIT || DEFAULT_BATCH_LIMIT);
-    const v2BatchLimitRaw = Number(process.env.NEXT_PUBLIC_EXTRACT_V2_BATCH_LIMIT || DEFAULT_V2_BATCH_LIMIT);
     const maxRoundsRaw = Number(process.env.NEXT_PUBLIC_EXTRACT_MAX_BATCH_ROUNDS || DEFAULT_MAX_BATCH_ROUNDS);
     const batchLimit = Number.isFinite(batchLimitRaw) ? Math.max(1, Math.floor(batchLimitRaw)) : DEFAULT_BATCH_LIMIT;
-    const v2BatchLimit = Number.isFinite(v2BatchLimitRaw) ? Math.max(1, Math.floor(v2BatchLimitRaw)) : DEFAULT_V2_BATCH_LIMIT;
     const maxRounds = Number.isFinite(maxRoundsRaw) ? Math.max(1, Math.floor(maxRoundsRaw)) : DEFAULT_MAX_BATCH_ROUNDS;
-    const sessionId =
-      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
     appendLocalLogs([
       { at: new Date().toISOString(), type: "info", msg: `Initializing Pivota Extraction for: ${brand}` },
       { at: new Date().toISOString(), type: "info", msg: `Checking connectivity to ${domain}...` },
-      {
-        at: new Date().toISOString(),
-        type: "info",
-        msg: v2Enabled
-          ? `V2 mode preferred: endpoint=/api/extract/v2, markets=${v2Markets.join(",")}, limit=${v2BatchLimit}, max_rounds=${maxRounds}`
-          : `Batch mode enabled: limit=${batchLimit}`,
-      },
+      { at: new Date().toISOString(), type: "info", msg: `Batch mode enabled: limit=${batchLimit}` },
     ]);
 
     const stepTimer1 = window.setTimeout(() => setActiveStep(1), 700);
     const stepTimer2 = window.setTimeout(() => setActiveStep(2), 1400);
 
     let merged: ExtractResponse | null = null;
-    let usedLegacyFallback = false;
     try {
-      const runLegacyBatchExtraction = async () => {
-        let legacyMerged: ExtractResponse | null = null;
-        let offset = 0;
+      let offset = 0;
+      for (let round = 0; round < maxRounds; round++) {
+        appendLocalLogs([
+          {
+            at: new Date().toISOString(),
+            type: "info",
+            msg: `POST /api/extract (batch=${round + 1}, offset=${offset}, limit=${batchLimit})`,
+          },
+        ]);
 
-        for (let round = 0; round < maxRounds; round++) {
-          appendLocalLogs([
-            {
-              at: new Date().toISOString(),
-              type: "info",
-              msg: `POST /api/extract (batch=${round + 1}, offset=${offset}, limit=${batchLimit})`,
-            },
-          ]);
+        const result = await extractCatalog({ brand, domain, offset, limit: batchLimit });
+        merged = mergeExtractResponses(merged, result);
+        setData(merged);
 
-          const result = await extractCatalog({ brand, domain, offset, limit: batchLimit, session_id: sessionId });
-          legacyMerged = mergeExtractResponses(legacyMerged, result);
-          setData(legacyMerged);
-
-          const page = result.pagination;
-          if (!page?.has_more || page.next_offset == null || page.next_offset <= offset) break;
-          offset = page.next_offset;
-        }
-
-        if (!legacyMerged) throw new Error("Extraction returned no data.");
-        return legacyMerged;
-      };
-
-      const runV2BatchExtraction = async () => {
-        let v2Merged: ExtractV2Response | null = null;
-        let offset = 0;
-
-        for (let round = 0; round < maxRounds; round++) {
-          appendLocalLogs([
-            {
-              at: new Date().toISOString(),
-              type: "info",
-              msg: `POST /api/extract/v2 (batch=${round + 1}, offset=${offset}, limit=${v2BatchLimit}, markets=${v2Markets.join(",")})`,
-            },
-          ]);
-
-          const v2Page = await extractCatalogV2({
-            brand,
-            domain,
-            offset,
-            limit: v2BatchLimit,
-            markets: v2Markets,
-            session_id: sessionId,
-          });
-          v2Merged = mergeExtractV2Responses(v2Merged, v2Page);
-          const interim = convertV2ResponseToLegacy(v2Merged, brand);
-          setData(interim);
-
-          const page = v2Page.pagination;
-          if (!page?.has_more || page.next_offset == null || page.next_offset <= offset) break;
-          offset = page.next_offset;
-        }
-
-        if (!v2Merged) throw new Error("V2 extraction returned no data.");
-        return convertV2ResponseToLegacy(v2Merged, brand);
-      };
-
-      if (v2Enabled) {
-        try {
-          merged = await runV2BatchExtraction();
-          setData(merged);
-          setActiveStep(-1);
-          showToast(`V2 extraction complete (${merged.variants.length} rows).`);
-          return;
-        } catch (v2Err) {
-          const v2Message = v2Err instanceof Error ? v2Err.message : "unknown error";
-          usedLegacyFallback = true;
-          appendLocalLogs([
-            {
-              at: new Date().toISOString(),
-              type: "warn",
-              msg: `V2 failed (${v2Message}); falling back to /api/extract.`,
-            },
-          ]);
-        }
+        const page = result.pagination;
+        if (!page?.has_more || page.next_offset == null || page.next_offset <= offset) break;
+        offset = page.next_offset;
       }
 
-      merged = await runLegacyBatchExtraction();
+      if (!merged) throw new Error("Extraction returned no data.");
       setActiveStep(-1);
-      showToast(
-        usedLegacyFallback
-          ? `Legacy fallback complete (${merged.variants.length} rows). Currency fields may be less reliable.`
-          : `Extraction complete (${merged.variants.length} rows).`,
-      );
+      showToast(`Extraction complete (${merged.variants.length} rows).`);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(err);
@@ -461,13 +199,12 @@ export function CatalogIntelligenceApp() {
       window.clearTimeout(stepTimer1);
       window.clearTimeout(stepTimer2);
       setIsRunning(false);
-      void loadHistory();
 
       // Keep a minimum “run” time so the UI doesn’t flicker on fast localhost responses.
       const elapsed = Date.now() - t0;
       if (elapsed < 350) await new Promise((r) => setTimeout(r, 350 - elapsed));
     }
-  }, [appendLocalLogs, brand, domain, isRunning, loadHistory, showToast]);
+  }, [appendLocalLogs, brand, domain, isRunning, showToast]);
 
   return (
     <>
@@ -548,68 +285,6 @@ export function CatalogIntelligenceApp() {
           </div>
 
           <div className="lg:col-span-8 flex flex-col gap-6">
-            <section className="bg-white rounded-xl border border-gray-200 p-4">
-              <div className="flex items-center justify-between gap-3 mb-3">
-                <h3 className="text-sm font-semibold text-gray-900">Recent 7-Day Extract Runs</h3>
-                <button
-                  type="button"
-                  onClick={() => void loadHistory()}
-                  className="text-xs px-3 py-1.5 rounded border border-gray-200 text-gray-700 hover:bg-gray-50"
-                  disabled={historyLoading}
-                >
-                  {historyLoading ? "Refreshing..." : "Refresh"}
-                </button>
-              </div>
-              {historyError ? (
-                <p className="text-sm text-red-600">{historyError}</p>
-              ) : historyLoading && !history ? (
-                <p className="text-sm text-gray-500">Loading...</p>
-              ) : history && history.runs.length > 0 ? (
-                <div className="overflow-auto">
-                  <table className="min-w-full text-xs">
-                    <thead>
-                      <tr className="text-left text-gray-500 border-b border-gray-100">
-                        <th className="py-2 pr-3 font-medium">Finished</th>
-                        <th className="py-2 pr-3 font-medium">Brand/Domain</th>
-                        <th className="py-2 pr-3 font-medium">Endpoint</th>
-                        <th className="py-2 pr-3 font-medium">Status</th>
-                        <th className="py-2 pr-3 font-medium">Requests</th>
-                        <th className="py-2 pr-3 font-medium">Records</th>
-                        <th className="py-2 pr-3 font-medium">Run ID</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {history.runs.map((run) => (
-                        <tr key={run.session_id} className="border-b border-gray-100 text-gray-700">
-                          <td className="py-2 pr-3 whitespace-nowrap">{formatDateTime(run.finished_at)}</td>
-                          <td className="py-2 pr-3">
-                            <div className="font-medium">{run.brand}</div>
-                            <div className="text-gray-500">{run.domain}</div>
-                          </td>
-                          <td className="py-2 pr-3 uppercase">{run.endpoint}</td>
-                          <td className="py-2 pr-3">
-                            <span
-                              className={[
-                                "inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium",
-                                run.status === "ok" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700",
-                              ].join(" ")}
-                            >
-                              {run.status}
-                            </span>
-                          </td>
-                          <td className="py-2 pr-3">{run.request_count.toLocaleString()}</td>
-                          <td className="py-2 pr-3 font-medium">{run.total_records.toLocaleString()}</td>
-                          <td className="py-2 pr-3 font-mono text-[11px] text-gray-500">{run.session_id}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className="text-sm text-gray-500">No extract runs found in the last 7 days.</p>
-              )}
-            </section>
-
             <ResultsTable
               logs={logs}
               variants={variants}

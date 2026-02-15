@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Optional
-from urllib.parse import urlparse
 
 from app.harvester.extract import extract_ingredients
 from app.harvester.fetch import fetch_html
@@ -29,20 +28,6 @@ def classify_source_type(url: str) -> str:
     return "Official"
 
 
-def _normalize_http_url(raw: str) -> str:
-    text = (raw or "").strip()
-    if not text:
-        return ""
-    if text.startswith("//"):
-        return f"https:{text}"
-    parsed = urlparse(text)
-    if parsed.scheme in {"http", "https"} and parsed.netloc:
-        return text
-    if not parsed.scheme and parsed.path and "." in parsed.path and " " not in parsed.path:
-        return f"https://{parsed.path}"
-    return ""
-
-
 @dataclass(frozen=True)
 class HarvestOutcome:
     status: str
@@ -57,31 +42,15 @@ class SourceHarvester:
     def __init__(self, search_engine: Optional[SearchEngine] = None) -> None:
         self.search_engine = search_engine or default_search_engine()
 
-    def process(self, *, market: str, brand: str, product_name: str, preferred_url: Optional[str] = None) -> HarvestOutcome:
+    def process(self, *, market: str, brand: str, product_name: str) -> HarvestOutcome:
         query = build_query(market, brand, product_name)
-        search_urls = self.search_engine.search(query, top_k=3)
-
-        normalized_preferred = _normalize_http_url(preferred_url or "")
-        urls: list[str] = []
-        if normalized_preferred:
-            urls.append(normalized_preferred)
-        for candidate in search_urls:
-            normalized = _normalize_http_url(candidate)
-            if normalized and normalized not in urls:
-                urls.append(normalized)
-
-        debug: dict[str, Any] = {
-            "query": query,
-            "preferred_url": normalized_preferred or None,
-            "search_urls": search_urls,
-            "urls": urls,
-            "attempts": [],
-        }
+        urls = self.search_engine.search(query, top_k=3)
+        debug: dict[str, Any] = {"query": query, "urls": urls, "attempts": []}
 
         best_pending: dict[str, Any] | None = None
         best_rank: float = -1.0
 
-        for url in urls[:4]:
+        for url in urls[:3]:
             try:
                 fetched = fetch_html(url)
                 if fetched.status_code >= 400:

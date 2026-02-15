@@ -6,7 +6,7 @@ import { ExternalLink, RefreshCw, Upload } from "lucide-react";
 
 import type { CandidateRow, RowStatus, TaskProgress } from "@/lib/harvesterTypes";
 import {
-  downloadImportFile,
+  exportImportUrl,
   getTaskProgress,
   listImportRows,
   startHarvestTask,
@@ -45,8 +45,6 @@ export default function IngredientHarvesterPage() {
   const [rows, setRows] = useState<CandidateRow[]>([]);
   const [total, setTotal] = useState<number>(0);
   const [loading, setLoading] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [downloadFormat, setDownloadFormat] = useState<"csv" | "xlsx">("csv");
   const [error, setError] = useState<string>("");
   const [filterStatus, setFilterStatus] = useState<RowStatus | "ALL">("ALL");
   const [queryInput, setQueryInput] = useState("");
@@ -182,19 +180,6 @@ export default function IngredientHarvesterPage() {
     }
   };
 
-  const handleDownload = async () => {
-    if (!importId) return;
-    setError("");
-    setDownloading(true);
-    try {
-      await downloadImportFile({ importId, format: downloadFormat });
-    } catch (e: any) {
-      setError(e?.message || "Download failed.");
-    } finally {
-      setDownloading(false);
-    }
-  };
-
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-200 sticky top-0 z-50">
@@ -224,11 +209,10 @@ export default function IngredientHarvesterPage() {
         <section className="bg-white border rounded-xl p-4">
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div>
-              <div className="text-sm font-semibold text-gray-900">1) Upload candidate CSV</div>
+              <div className="text-sm font-semibold text-gray-900">1) Upload product_candidates_master.csv</div>
               <div className="mt-1 text-xs text-gray-600">
-                Required columns: <span className="font-mono">brand</span> and <span className="font-mono">product_name</span> (or{" "}
-                <span className="font-mono">Brand</span> + <span className="font-mono">Product Title</span>). Optional:{" "}
-                <span className="font-mono">market</span>, <span className="font-mono">product_url</span>/<span className="font-mono">deep_link</span>.
+                Required columns: <span className="font-mono">brand</span>, <span className="font-mono">product_name</span>,{" "}
+                <span className="font-mono">market</span>.
               </div>
             </div>
             <label className="inline-flex items-center gap-2 rounded-lg bg-slate-900 text-white px-3 py-2 text-sm cursor-pointer hover:bg-slate-800">
@@ -261,28 +245,16 @@ export default function IngredientHarvesterPage() {
           </div>
 
           {importId ? (
-            <div className="mt-3 flex items-center gap-2 text-xs text-gray-700 flex-wrap">
-              <span>
-                Active import: <span className="font-mono">{importId}</span>
-              </span>
-              <span className="text-gray-300">|</span>
-              <span>Download:</span>
-              <select
-                value={downloadFormat}
-                onChange={(e) => setDownloadFormat(e.target.value as "csv" | "xlsx")}
-                className="text-xs border rounded px-2 py-1 bg-white"
-              >
-                <option value="csv">CSV</option>
-                <option value="xlsx">XLSX</option>
-              </select>
-              <button
-                type="button"
-                onClick={() => void handleDownload()}
-                disabled={!importId || downloading}
-                className="rounded border px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-50"
-              >
-                {downloading ? "Downloading..." : "Download"}
-              </button>
+            <div className="mt-3 text-xs text-gray-700">
+              Active import: <span className="font-mono">{importId}</span>
+              <span className="mx-2">•</span>
+              <a className="text-blue-700 hover:text-blue-900" href={exportImportUrl(importId, "csv")}>
+                Export CSV
+              </a>
+              <span className="mx-2">•</span>
+              <a className="text-blue-700 hover:text-blue-900" href={exportImportUrl(importId, "xlsx")}>
+                Export XLSX
+              </a>
             </div>
           ) : null}
         </section>

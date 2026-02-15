@@ -3,13 +3,11 @@ from __future__ import annotations
 import io
 import json
 import os
-import re
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlparse
 
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -25,7 +23,6 @@ from app.config import settings
 from app.db import db_session, engine, utcnow
 from app.jobs import harvest_row
 from app.models import Base, CandidateRow, HarvestTask, ImportBatch, TaskRow
-from app.non_cosmetic import non_cosmetic_skip_reason
 from app.queue import enqueue
 from app.schema import (
     CandidateRowView,
@@ -106,91 +103,6 @@ def _to_parser_response(parsed: dict[str, Any], *, cleaned_text: str) -> ParserR
         parse_confidence=float(parsed.get("parse_confidence") or 0.0),
         needs_review=_loads_json(parsed.get("needs_review"), []),
     )
-
-
-_COL_NAME_SANITIZER = re.compile(r"[^a-z0-9]+")
-
-
-def _normalize_col_name(name: str) -> str:
-    return _COL_NAME_SANITIZER.sub("_", str(name or "").strip().lower()).strip("_")
-
-
-def _first_matching_col(df: pd.DataFrame, aliases: list[str]) -> str:
-    normalized_to_actual: dict[str, str] = {}
-    for c in df.columns:
-        key = _normalize_col_name(str(c))
-        if key and key not in normalized_to_actual:
-            normalized_to_actual[key] = str(c)
-    for alias in aliases:
-        key = _normalize_col_name(alias)
-        if key in normalized_to_actual:
-            return normalized_to_actual[key]
-    return ""
-
-
-def _clean_cell(value: Any) -> str:
-    if value is None:
-        return ""
-    try:
-        if pd.isna(value):
-            return ""
-    except Exception:  # noqa: BLE001
-        pass
-    text = str(value).strip()
-    if not text:
-        return ""
-    if text.lower() in {"nan", "none", "null", "n/a", "na"}:
-        return ""
-    return text
-
-
-def _normalize_http_url(raw: str) -> str:
-    text = (raw or "").strip()
-    if not text:
-        return ""
-    if text.startswith("//"):
-        return f"https:{text}"
-    parsed = urlparse(text)
-    if parsed.scheme in {"http", "https"} and parsed.netloc:
-        return text
-    if not parsed.scheme and parsed.netloc:
-        return f"https://{text}"
-    if not parsed.scheme and parsed.path and "." in parsed.path and " " not in parsed.path:
-        return f"https://{parsed.path}"
-    return ""
-
-
-def _infer_market_from_url(url: str) -> str:
-    if not url:
-        return ""
-    parsed = urlparse(url)
-    host = (parsed.netloc or "").lower()
-    path = (parsed.path or "").lower()
-
-    locale_match = re.search(r"/([a-z]{2})[-_]([a-z]{2})(?:/|$)", path)
-    if locale_match:
-        region = locale_match.group(2).upper()
-        return "UK" if region == "GB" else region
-
-    if host.endswith(".cn") or "/zh-cn/" in path:
-        return "CN"
-
-    tld_map = {
-        ".us": "US",
-        ".ca": "CA",
-        ".uk": "UK",
-        ".jp": "JP",
-        ".kr": "KR",
-        ".fr": "FR",
-        ".de": "DE",
-        ".it": "IT",
-        ".es": "ES",
-        ".au": "AU",
-    }
-    for tld, market in tld_map.items():
-        if host.endswith(tld):
-            return market
-    return "GLOBAL"
 
 
 def _request_id(request: Request) -> str:
@@ -385,46 +297,37 @@ async def create_import(file: UploadFile = File(...)) -> ImportResponse:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"CSV parse failed: {exc}") from exc
 
-    brand_col = _first_matching_col(df, ["brand", "brand_en", "brand_zh", "vendor"])
-    product_col = _first_matching_col(
-        df,
-        [
-            "product_name",
-            "product",
-            "product_name_en",
-            "product_name_zh",
-            "product title",
-            "product_title",
-            "title",
-            "name",
-        ],
-    )
-    market_col = _first_matching_col(df, ["market", "country", "region", "market_code", "locale"])
-    url_col = _first_matching_col(
-        df,
-        [
-            "product_url",
-            "product url",
-            "product_link",
-            "product link",
-            "url",
-            "link",
-            "deep_link",
-            "deep link",
-            "source_ref",
-            "source_url",
-        ],
-    )
-    raw_ing_col = _first_matching_col(df, ["raw_ingredient_text", "ingredients", "ingredient_text", "inci_list"])
+    def col(name: str) -> str:
+        for c in df.columns:
+            if str(c).strip().lower() == name:
+                return str(c)
+        return ""
 
-    if not brand_col or not product_col:
+    brand_col = col("brand") or col("brand_en") or col("brand_zh")
+    product_col = col("product_name") or col("product") or col("product_name_en") or col("product_name_zh") or col("product title")
+    market_col = col("market") or col("country") or col("region")
+    raw_ing_col = col("raw_ingredient_text") or col("ingredients") or col("ingredient_text")
+
+    if not brand_col or not product_col or not market_col:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "CSV must contain columns for brand and product name "
-                "(e.g. brand/product_name or Brand/Product Title, case-insensitive)."
-            ),
+            detail="CSV must contain columns: brand, product_name, market (case-insensitive).",
         )
+
+    def clean_existing(val: Any) -> str:
+        if val is None:
+            return ""
+        try:
+            if pd.isna(val):
+                return ""
+        except Exception:  # noqa: BLE001
+            pass
+        text = str(val).strip()
+        if not text:
+            return ""
+        if text.lower() in {"nan", "none", "null", "n/a", "na"}:
+            return ""
+        return text
 
     with db_session() as db:
         batch = ImportBatch(filename=file.filename)
@@ -434,28 +337,21 @@ async def create_import(file: UploadFile = File(...)) -> ImportResponse:
 
         total = 0
         for idx, r in df.iterrows():
-            brand = _clean_cell(r.get(brand_col))
-            product_name = _clean_cell(r.get(product_col))
-            if not (brand and product_name):
+            brand = str(r.get(brand_col) or "").strip()
+            product_name = str(r.get(product_col) or "").strip()
+            market = str(r.get(market_col) or "").strip()
+            if not (brand and product_name and market):
                 continue
-            existing = _clean_cell(r.get(raw_ing_col)) if raw_ing_col else ""
-            source_ref = _normalize_http_url(_clean_cell(r.get(url_col))) if url_col else ""
-            market = _clean_cell(r.get(market_col)) if market_col else ""
-            if not market:
-                market = _infer_market_from_url(source_ref) if source_ref else "GLOBAL"
-            skip_reason = non_cosmetic_skip_reason(brand=brand, product_name=product_name)
-            initial_status = "SKIPPED" if (existing or skip_reason) else "EMPTY"
+            existing = clean_existing(r.get(raw_ing_col)) if raw_ing_col else ""
             row = CandidateRow(
                 import_id=batch.import_id,
                 row_index=int(idx),
                 brand=brand,
                 product_name=product_name,
-                market=(market or "GLOBAL").upper()[:16],
+                market=market,
                 raw_ingredient_text=existing or None,
-                source_ref=source_ref or None,
-                status=initial_status,
+                status="SKIPPED" if existing else "EMPTY",
                 confidence=1.0 if existing else None,
-                error=skip_reason,
                 updated_at=utcnow(),
             )
             db.add(row)

@@ -2,7 +2,6 @@
 
 import { Copy, ExternalLink } from "lucide-react";
 
-import { getStableProductId, getStableVariantId } from "@/lib/csv";
 import type { ExtractedVariantRow, LogLine } from "@/lib/types";
 
 const PLACEHOLDER_THUMB =
@@ -103,7 +102,7 @@ export function ResultsTable({
                   Img
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                  SKU / External IDs
+                  SKU/ID
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
                   Product Title
@@ -115,9 +114,6 @@ export function ResultsTable({
                   Price
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
-                  Market
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
                   Actions
                 </th>
               </tr>
@@ -125,7 +121,7 @@ export function ResultsTable({
             <tbody className="bg-white divide-y divide-gray-200">
               {variants.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-10 text-center text-gray-500 text-sm italic">
+                  <td colSpan={6} className="px-6 py-10 text-center text-gray-500 text-sm italic">
                     Run extraction to view data
                   </td>
                 </tr>
@@ -163,11 +159,7 @@ function ResultRow({
           title={`Actual URL in CSV: ${variant.image_url}`}
         />
       </td>
-      <td className="px-6 py-4 text-sm text-gray-900 max-w-xs" title={`SKU: ${variant.sku}\nExternal Product ID: ${getStableProductId(variant)}\nExternal Variant ID: ${getStableVariantId(variant)}`}>
-        <div className="font-medium truncate">{variant.sku || variant.id}</div>
-        <div className="text-xs text-gray-500 truncate">PID: {getStableProductId(variant)}</div>
-        <div className="text-xs text-gray-500 truncate">VID: {getStableVariantId(variant)}</div>
-      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{variant.sku}</td>
       <td
         className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 max-w-xs truncate"
         title={variant.product_title}
@@ -183,10 +175,7 @@ function ResultRow({
         {variant.description}
       </td>
       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-        {[variant.currency, variant.price].filter(Boolean).join(" ").trim() || variant.price}
-      </td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-        {variant.option_name === "Market" ? variant.option_value : "-"}
+        {[variant.price, variant.currency].filter(Boolean).join(" ").trim() || variant.price}
       </td>
       <td className="px-6 py-4 whitespace-nowrap text-sm flex items-center gap-3">
         <a

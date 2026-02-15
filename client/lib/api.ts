@@ -1,4 +1,4 @@
-import type { ExtractResponse } from "./types";
+import type { ExtractResponse, ExtractV2Response } from "./types";
 
 const DEFAULT_BASE = "http://localhost:3001";
 const DEFAULT_EXTRACT_TIMEOUT_MS = 65_000;
@@ -35,4 +35,40 @@ export async function extractCatalog(input: {
     throw new Error(`Extract failed (${res.status})`);
   }
   return (await res.json()) as ExtractResponse;
+}
+
+export async function extractCatalogV2(input: {
+  brand: string;
+  domain: string;
+  offset?: number;
+  limit?: number;
+  markets?: string[];
+}): Promise<ExtractV2Response> {
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_BASE;
+  const timeoutMs = Number(process.env.NEXT_PUBLIC_EXTRACT_TIMEOUT_MS || DEFAULT_EXTRACT_TIMEOUT_MS);
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) ? timeoutMs : DEFAULT_EXTRACT_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/api/extract/v2`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if ((err as Error)?.name === "AbortError") {
+      throw new Error("V2 extraction timed out. Please retry or reduce crawl size.");
+    }
+    throw new Error("Network error while calling /api/extract/v2.");
+  } finally {
+    window.clearTimeout(timer);
+  }
+
+  if (!res.ok) {
+    throw new Error(`V2 extract failed (${res.status})`);
+  }
+
+  return (await res.json()) as ExtractV2Response;
 }

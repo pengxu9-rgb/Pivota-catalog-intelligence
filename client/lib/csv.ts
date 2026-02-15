@@ -7,9 +7,10 @@ function escapeCsvField(value: string) {
 
 export function buildCsv(variants: ExtractedVariantRow[]) {
   let csv =
-    "Brand,Product Title,Product URL,Variant ID,SKU,Option Name,Option Value,Price,Currency,Availability,Variant Image URL,AI Merged Description,Deep Link\n";
+    "Brand,Product Title,Product URL,Variant ID,SKU,Option Name,Option Value,Market ID,Price,Currency,Availability,Variant Image URL,AI Merged Description,Deep Link\n";
 
   for (const v of variants) {
+    const marketId = v.option_name === "Market" ? v.option_value : "";
     const row = [
       v.brand,
       escapeCsvField(v.product_title),
@@ -18,6 +19,7 @@ export function buildCsv(variants: ExtractedVariantRow[]) {
       v.sku,
       v.option_name,
       v.option_value,
+      marketId,
       v.price,
       v.currency,
       v.stock,
@@ -38,7 +40,8 @@ type ProductAggregate = {
   variantCount: number;
   minPrice: number;
   maxPrice: number;
-  currency: "USD";
+  currency: string;
+  marketId: string;
   stockSummary: string;
   imageUrl: string;
   description: string;
@@ -78,6 +81,7 @@ function aggregateProducts(variants: ExtractedVariantRow[]): ProductAggregate[] 
       minPrice,
       maxPrice,
       currency: first.currency,
+      marketId: first.option_name === "Market" ? first.option_value : "",
       stockSummary: summarizeStock(bucket.map((v) => v.stock)),
       imageUrl: bucket.find((v) => Boolean(v.image_url))?.image_url || "",
       description: bucket.find((v) => Boolean(v.description))?.description || "",
@@ -91,7 +95,7 @@ function aggregateProducts(variants: ExtractedVariantRow[]): ProductAggregate[] 
 export function buildProductCsv(variants: ExtractedVariantRow[]) {
   const products = aggregateProducts(variants);
   let csv =
-    "Brand,Product Title,Product URL,Variant Count,Min Price,Max Price,Currency,Stock Summary,Representative Image URL,AI Merged Description,Representative Deep Link\n";
+    "Brand,Product Title,Product URL,Variant Count,Min Price,Max Price,Currency,Market ID,Stock Summary,Representative Image URL,AI Merged Description,Representative Deep Link\n";
 
   for (const product of products) {
     const row = [
@@ -102,6 +106,7 @@ export function buildProductCsv(variants: ExtractedVariantRow[]) {
       product.minPrice.toFixed(2),
       product.maxPrice.toFixed(2),
       product.currency,
+      product.marketId,
       escapeCsvField(product.stockSummary),
       product.imageUrl,
       escapeCsvField(product.description),

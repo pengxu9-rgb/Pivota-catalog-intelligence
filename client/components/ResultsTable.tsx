@@ -114,6 +114,9 @@ export function ResultsTable({
                   Price
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
+                  Market
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
                   Actions
                 </th>
               </tr>
@@ -121,7 +124,7 @@ export function ResultsTable({
             <tbody className="bg-white divide-y divide-gray-200">
               {variants.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-10 text-center text-gray-500 text-sm italic">
+                  <td colSpan={7} className="px-6 py-10 text-center text-gray-500 text-sm italic">
                     Run extraction to view data
                   </td>
                 </tr>
@@ -174,7 +177,12 @@ function ResultRow({
       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 max-w-xs truncate" title={variant.description}>
         {variant.description}
       </td>
-      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${variant.price}</td>
+      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+        {[variant.currency, variant.price].filter(Boolean).join(" ").trim() || variant.price}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+        {variant.option_name === "Market" ? variant.option_value : "-"}
+      </td>
       <td className="px-6 py-4 whitespace-nowrap text-sm flex items-center gap-3">
         <a
           href={variant.deep_link}

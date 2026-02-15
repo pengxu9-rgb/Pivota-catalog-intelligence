@@ -8,8 +8,8 @@ import { DashboardStats } from "./DashboardStats";
 import { ExtractionForm } from "./ExtractionForm";
 import { ResultsTable } from "./ResultsTable";
 
-import type { ExtractResponse, ExtractedVariantRow, LogLine } from "@/lib/types";
-import { extractCatalog } from "@/lib/api";
+import type { ExtractResponse, ExtractV2Response, ExtractedVariantRow, LogLine, OfferV2 } from "@/lib/types";
+import { extractCatalog, extractCatalogV2 } from "@/lib/api";
 import { buildCsv, buildProductCsv, downloadTextFile } from "@/lib/csv";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
@@ -19,17 +19,94 @@ const EMPTY_VARIANTS: ExtractedVariantRow[] = [];
 const EMPTY_LOGS: LogLine[] = [];
 const DEFAULT_BATCH_LIMIT = 10;
 const DEFAULT_MAX_BATCH_ROUNDS = 60;
+const DEFAULT_V2_MARKETS = ["US"];
 
 function computeMergedPricing(variants: ExtractedVariantRow[]) {
   const nums = variants
     .map((v) => Number.parseFloat(v.price))
     .filter((n) => Number.isFinite(n));
-  if (nums.length === 0) return { currency: "USD" as const, min: 0, max: 0, avg: 0 };
+  const currency = variants.find((v) => Boolean(v.currency))?.currency || "";
+  if (nums.length === 0) return { currency, min: 0, max: 0, avg: 0 };
 
   const min = Math.min(...nums);
   const max = Math.max(...nums);
   const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
-  return { currency: "USD" as const, min, max, avg: Number(avg.toFixed(2)) };
+  return { currency, min, max, avg: Number(avg.toFixed(2)) };
+}
+
+function toLegacyStock(availability?: string) {
+  const lower = (availability || "").toLowerCase();
+  if (lower.includes("out")) return "Out of Stock" as const;
+  if (lower.includes("low")) return "Low Stock" as const;
+  return "In Stock" as const;
+}
+
+function toLegacyVariant(offer: OfferV2, brand: string, index: number): ExtractedVariantRow {
+  const bestPriceText =
+    offer.price_amount !== null
+      ? String(offer.price_amount)
+      : (offer.price_display_raw || "").replace(/[^\d.,-]/g, "").trim();
+  const expectedCurrency = offer.market_context_debug.expected_currency || "";
+  const currency = offer.price_currency || expectedCurrency || "";
+
+  return {
+    id: `${offer.source_product_id}-${offer.market_id}-${index}`,
+    sku: offer.source_product_id,
+    url: offer.url_canonical,
+    option_name: "Market",
+    option_value: offer.market_id,
+    price: bestPriceText || "0",
+    currency,
+    stock: toLegacyStock(offer.availability),
+    description: `price_type=${offer.price_type}; switch=${offer.market_switch_status}; confidence=${offer.currency_confidence}`,
+    image_url: "",
+    ad_copy: "",
+    brand,
+    product_title: offer.source_product_id,
+    product_url: offer.url_canonical,
+    deep_link: offer.url_canonical,
+    simulated: false,
+  };
+}
+
+function convertV2ResponseToLegacy(v2: ExtractV2Response, brand: string): ExtractResponse {
+  const variants = v2.offers_v2.map((offer, idx) => toLegacyVariant(offer, brand, idx));
+  const productsMap = new Map<string, { title: string; url: string; variants: ExtractResponse["products"][number]["variants"] }>();
+
+  for (const row of variants) {
+    const key = `${row.product_url}|${row.product_title}`;
+    const existing = productsMap.get(key) || {
+      title: row.product_title,
+      url: row.product_url,
+      variants: [],
+    };
+    existing.variants.push({
+      id: row.id,
+      sku: row.sku,
+      url: row.url,
+      option_name: row.option_name,
+      option_value: row.option_value,
+      price: row.price,
+      currency: row.currency,
+      stock: row.stock,
+      description: row.description,
+      image_url: row.image_url,
+      ad_copy: row.ad_copy,
+    });
+    productsMap.set(key, existing);
+  }
+
+  return {
+    brand: v2.brand,
+    domain: v2.domain,
+    generated_at: v2.generated_at,
+    mode: v2.mode,
+    products: Array.from(productsMap.values()),
+    variants,
+    pricing: computeMergedPricing(variants),
+    ad_copy: { by_variant_id: {} },
+    logs: v2.logs,
+  };
 }
 
 function mergeExtractResponses(base: ExtractResponse | null, next: ExtractResponse): ExtractResponse {
@@ -127,7 +204,7 @@ export function CatalogIntelligenceApp() {
           mode: "simulation",
           products: [],
           variants: [],
-          pricing: { currency: "USD", min: 0, max: 0, avg: 0 },
+          pricing: { currency: "", min: 0, max: 0, avg: 0 },
           ad_copy: { by_variant_id: {} },
           logs: [],
         } satisfies ExtractResponse);
@@ -145,6 +222,12 @@ export function CatalogIntelligenceApp() {
 
     // Lightweight UI pacing to match the prototype feel.
     const t0 = Date.now();
+    const v2Enabled = (process.env.NEXT_PUBLIC_EXTRACT_V2_ENABLED || "0") === "1";
+    const configuredMarkets = (process.env.NEXT_PUBLIC_EXTRACT_V2_MARKETS || "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean);
+    const v2Markets = configuredMarkets.length > 0 ? configuredMarkets : DEFAULT_V2_MARKETS;
     const batchLimitRaw = Number(process.env.NEXT_PUBLIC_EXTRACT_BATCH_LIMIT || DEFAULT_BATCH_LIMIT);
     const maxRoundsRaw = Number(process.env.NEXT_PUBLIC_EXTRACT_MAX_BATCH_ROUNDS || DEFAULT_MAX_BATCH_ROUNDS);
     const batchLimit = Number.isFinite(batchLimitRaw) ? Math.max(1, Math.floor(batchLimitRaw)) : DEFAULT_BATCH_LIMIT;
@@ -153,7 +236,13 @@ export function CatalogIntelligenceApp() {
     appendLocalLogs([
       { at: new Date().toISOString(), type: "info", msg: `Initializing Pivota Extraction for: ${brand}` },
       { at: new Date().toISOString(), type: "info", msg: `Checking connectivity to ${domain}...` },
-      { at: new Date().toISOString(), type: "info", msg: `Batch mode enabled: limit=${batchLimit}` },
+      {
+        at: new Date().toISOString(),
+        type: "info",
+        msg: v2Enabled
+          ? `V2 mode enabled: endpoint=/api/extract/v2, markets=${v2Markets.join(",")}`
+          : `Batch mode enabled: limit=${batchLimit}`,
+      },
     ]);
 
     const stepTimer1 = window.setTimeout(() => setActiveStep(1), 700);
@@ -161,6 +250,21 @@ export function CatalogIntelligenceApp() {
 
     let merged: ExtractResponse | null = null;
     try {
+      if (v2Enabled) {
+        appendLocalLogs([
+          {
+            at: new Date().toISOString(),
+            type: "info",
+            msg: `POST /api/extract/v2 (markets=${v2Markets.join(",")}, limit=${batchLimit})`,
+          },
+        ]);
+
+        const v2Result = await extractCatalogV2({ brand, domain, offset: 0, limit: batchLimit, markets: v2Markets });
+        merged = convertV2ResponseToLegacy(v2Result, brand);
+        setData(merged);
+        setActiveStep(-1);
+        showToast(`V2 extraction complete (${merged.variants.length} rows).`);
+      } else {
       let offset = 0;
       for (let round = 0; round < maxRounds; round++) {
         appendLocalLogs([
@@ -180,9 +284,10 @@ export function CatalogIntelligenceApp() {
         offset = page.next_offset;
       }
 
-      if (!merged) throw new Error("Extraction returned no data.");
-      setActiveStep(-1);
-      showToast(`Extraction complete (${merged.variants.length} rows).`);
+        if (!merged) throw new Error("Extraction returned no data.");
+        setActiveStep(-1);
+        showToast(`Extraction complete (${merged.variants.length} rows).`);
+      }
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(err);

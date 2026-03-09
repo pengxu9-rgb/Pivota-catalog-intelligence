@@ -13,11 +13,22 @@ const TRACKING_QUERY_PARAM_RE = /^(utm_|fbclid$|gclid$|mc_|_ga$|_gl$|ref$|source
 const STATIC_ASSET_EXT_RE =
   /\.(?:css|js|mjs|map|png|jpe?g|gif|webp|svg|ico|pdf|xml|txt|woff2?|ttf|eot|otf|mp3|wav|mp4|webm|zip|gz|tar|json)(?:$|[?#])/i;
 const NEGATIVE_PATH_RE =
-  /(?:^|\/)(?:c|collections?|collection|category|catalogsearch|search|cart|account|customer|blog|blogs|pages?|faq|privacy|terms|wishlist|gift(?:ing)?|store-locator|customer-service|all-products)(?:\/|$)/i;
+  /(?:^|\/)(?:c|collections?|collection|category|catalogsearch|search|cart|account|customer|blog|blogs|pages?|faq|privacy|terms|wishlist|gift(?:ing)?|store-locator|customer-service|all-products|appointments?|booking|online-booking|locations?)(?:\/|$)/i;
 const PRODUCT_SIGNAL_RE =
   /"@type"\s*:\s*(?:"Product"|\[[^\]]*"Product")|application\/ld\+json|add to cart|buy now|quick shop|price(?:currency)?|itemprop=["']price["']/i;
 const PRICE_SIGNAL_RE = /[$€£¥]\s?\d|price(?:currency)?|sale price|from\s+[$€£¥]/i;
 const CATEGORY_TEXT_RE = /\b(shop|bestsellers|skincare|haircare|bodycare|fragrance|makeup|collections?)\b/i;
+const COOKIE_ACTION_LABEL_PATTERNS = [
+  /^accept all$/,
+  /^accept all cookies$/,
+  /^allow all$/,
+  /^allow all cookies$/,
+  /^accept cookies$/,
+  /^accept$/,
+  /^i agree$/,
+  /^agree$/,
+  /^(ok|okay)$/,
+] as const;
 
 const MARKET_KEYWORDS: Record<MarketId, string[]> = {
   US: ["usa", "united states", "us"],
@@ -842,18 +853,6 @@ async function waitForPageSettle(page: Page): Promise<void> {
 export async function dismissCookieBanner(page: Page): Promise<void> {
   await page
     .evaluate(() => {
-      const preferred = [
-        "accept all",
-        "allow all",
-        "allow all cookies",
-        "accept cookies",
-        "accept",
-        "i agree",
-        "agree",
-        "continue",
-        "ok",
-      ];
-
       const elements = Array.from(
         document.querySelectorAll<HTMLElement>("button, [role='button'], a, input[type='button'], input[type='submit']"),
       );
@@ -869,12 +868,32 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
           .trim()
           .toLowerCase();
         if (!label) continue;
-        if (!preferred.some((token) => label.includes(token))) continue;
+        if (
+          ![
+            /^accept all$/,
+            /^accept all cookies$/,
+            /^allow all$/,
+            /^allow all cookies$/,
+            /^accept cookies$/,
+            /^accept$/,
+            /^i agree$/,
+            /^agree$/,
+            /^(ok|okay)$/,
+          ].some((pattern) => pattern.test(label))
+        ) {
+          continue;
+        }
         element.click();
         return;
       }
     })
     .catch(() => undefined);
+}
+
+export function isCookieActionLabel(label: string): boolean {
+  const normalized = label.trim().toLowerCase();
+  if (!normalized) return false;
+  return COOKIE_ACTION_LABEL_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 export async function gotoPageOrThrow(page: Page, params: {

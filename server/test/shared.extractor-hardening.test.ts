@@ -10,6 +10,7 @@ import {
   createDiagnostics,
   detectBlockProvider,
   discoverProductUrls,
+  isCookieActionLabel,
   looksLikeProductPageHtml,
   resolveStorefrontFromHtml,
   runBrowserTaskWithFallback,
@@ -178,6 +179,12 @@ test("looksLikeProductPageHtml distinguishes PDPs from price-only non-product pa
     ),
     false,
   );
+});
+
+test("isCookieActionLabel does not confuse 'Book' CTAs with cookie consent buttons", () => {
+  assert.equal(isCookieActionLabel("Book a Spa Treatment"), false);
+  assert.equal(isCookieActionLabel("OK"), true);
+  assert.equal(isCookieActionLabel("Accept all cookies"), true);
 });
 
 test("detectBlockProvider classifies Cloudflare challenge pages", () => {

@@ -914,6 +914,16 @@ function stableId(input: string) {
   return createHash("sha1").update(input).digest("hex").slice(0, 12);
 }
 
+function stripProductTitlePrefix(productTitle: string, variantTitle: string): string {
+  const normalizedProductTitle = productTitle.trim().toLowerCase();
+  const normalizedVariantTitle = variantTitle.trim().toLowerCase();
+  if (!normalizedProductTitle || !normalizedVariantTitle) return "";
+  if (!normalizedVariantTitle.startsWith(normalizedProductTitle)) return variantTitle.trim();
+
+  const suffix = variantTitle.slice(productTitle.length).trim().replace(/^[-–—:|/]+/, "").trim();
+  return suffix || variantTitle.trim();
+}
+
 function normalizePrice(raw: unknown) {
   if (typeof raw === "number" && Number.isFinite(raw)) return raw.toFixed(2);
   if (typeof raw === "string" && raw.trim()) return raw.trim();
@@ -1119,10 +1129,13 @@ async function scrapeProductPage(params: {
     }
 
     const productObj = objects.find((o) => isType(o, "Product"));
+    const productGroupObj = objects.find((o) => isType(o, "ProductGroup"));
+    const variantProducts = normalizeJsonLdObjects(productGroupObj?.hasVariant).filter((o) => isType(o, "Product"));
+    const primaryProductObj = productObj || variantProducts[0] || productGroupObj || null;
     if (!productObj && params.verbose) {
       params.log("warn", "> No JSON-LD Product schema found. Falling back to title/meta/price extraction.");
     }
-    if (!productObj && !pageLooksLikeProduct) {
+    if (!primaryProductObj && !pageLooksLikeProduct) {
       if (params.verbose) {
         params.log("warn", `> Skipping non-product candidate: ${params.url}`);
       }
@@ -1130,14 +1143,14 @@ async function scrapeProductPage(params: {
     }
 
     const productTitle = (
-      typeof productObj?.name === "string" ? productObj.name : extracted.title
+      typeof productGroupObj?.name === "string" ? productGroupObj.name : typeof primaryProductObj?.name === "string" ? primaryProductObj.name : extracted.title
     ).trim() || extracted.title;
     const productUrl = canonicalizeUrlShared(
-      toAbsoluteUrlShared(params.baseUrl, typeof productObj?.url === "string" ? productObj.url : extracted.canonical),
+      toAbsoluteUrlShared(params.baseUrl, typeof primaryProductObj?.url === "string" ? primaryProductObj.url : extracted.canonical),
       params.baseUrl,
     );
 
-    const imageRaw = productObj?.image;
+    const imageRaw = primaryProductObj?.image ?? productGroupObj?.image;
     const imageUrl = (() => {
       if (typeof imageRaw === "string") return toAbsoluteUrl(params.baseUrl, imageRaw);
       if (Array.isArray(imageRaw) && typeof imageRaw[0] === "string") return toAbsoluteUrl(params.baseUrl, imageRaw[0]);
@@ -1148,9 +1161,12 @@ async function scrapeProductPage(params: {
     })();
 
     const officialText =
-      (typeof productObj?.description === "string" ? productObj.description : undefined) || extracted.metaDescription || undefined;
+      (typeof primaryProductObj?.description === "string" ? primaryProductObj.description : undefined) ||
+      (typeof productGroupObj?.description === "string" ? productGroupObj.description : undefined) ||
+      extracted.metaDescription ||
+      undefined;
 
-    const offersRaw = productObj?.offers;
+    const offersRaw = primaryProductObj?.offers;
     const offers = normalizeJsonLdOffers(offersRaw);
 
     const domMetaBySku = new Map<string, DomVariantMeta>();
@@ -1166,9 +1182,76 @@ async function scrapeProductPage(params: {
       typeof extracted.ingredientsDisclaimerText === "string" ? extracted.ingredientsDisclaimerText.trim() : undefined;
 
     const variants: ExtractedVariant[] =
-      offers.length > 0
+      variantProducts.length > 1
+        ? variantProducts.map((variantProduct, idx) => {
+            const variantOffer = normalizeJsonLdOffers(variantProduct.offers)[0];
+            const skuRaw =
+              (typeof variantProduct.sku === "string" && variantProduct.sku.trim()) ||
+              (typeof variantProduct.mpn === "string" && variantProduct.mpn.trim()) ||
+              (typeof variantOffer?.sku === "string" && variantOffer.sku.trim()) ||
+              "";
+            const sku = skuRaw || `AUTO-${stableId(`${productUrl}|${idx}`)}`;
+            const variantName = typeof variantProduct.name === "string" ? variantProduct.name.trim() : "";
+            const optionValue =
+              (typeof variantProduct.color === "string" && variantProduct.color.trim()) ||
+              stripProductTitlePrefix(productTitle, variantName) ||
+              variantName ||
+              sku;
+            const offerUrl = toAbsoluteUrlShared(
+              params.baseUrl,
+              typeof variantOffer?.url === "string"
+                ? variantOffer.url
+                : typeof variantProduct.url === "string"
+                  ? variantProduct.url
+                  : productUrl,
+            );
+            const price = normalizePrice(
+              variantOffer?.price ??
+                (variantOffer?.priceSpecification as any)?.price ??
+                (variantOffer?.priceSpecification as any)?.priceSpecification?.price ??
+                extracted.priceTexts[idx] ??
+                extracted.priceTexts[0],
+            );
+            const stock = stockFromAvailability(variantOffer?.availability);
+            const id = stableId(`${productUrl}|${sku}|${price}`);
+            const variantImageRaw = variantProduct.image;
+            const variantImageUrl = (() => {
+              if (typeof variantImageRaw === "string" && variantImageRaw.trim()) return toAbsoluteUrl(params.baseUrl, variantImageRaw);
+              if (Array.isArray(variantImageRaw) && typeof variantImageRaw[0] === "string") return toAbsoluteUrl(params.baseUrl, variantImageRaw[0]);
+              if (variantImageRaw && typeof variantImageRaw === "object" && typeof (variantImageRaw as any).url === "string") {
+                return toAbsoluteUrl(params.baseUrl, (variantImageRaw as any).url);
+              }
+              return imageUrl;
+            })();
+
+            return {
+              id,
+              sku,
+              url: offerUrl,
+              option_name: "Variant",
+              option_value: optionValue,
+              price,
+              currency: "USD",
+              stock,
+              description: getMergedDescription({
+                title: productTitle,
+                overview:
+                  (typeof variantProduct.description === "string" ? variantProduct.description : undefined) || officialText,
+                howToUse: howToUseText,
+                ingredientsAndSafety:
+                  [ingredientsMarkdownText, ingredientsDisclaimerText].filter(Boolean).join("\n\n") || undefined,
+              }),
+              image_url: variantImageUrl,
+              ad_copy: generateMockAdCopy(productTitle, optionValue, price),
+            };
+          })
+        : offers.length > 0
         ? offers.map((offer, idx) => {
-            const skuRaw = typeof offer.sku === "string" ? offer.sku.trim() : "";
+            const skuRaw =
+              (typeof offer.sku === "string" && offer.sku.trim()) ||
+              (typeof primaryProductObj?.sku === "string" && primaryProductObj.sku.trim()) ||
+              (typeof primaryProductObj?.mpn === "string" && primaryProductObj.mpn.trim()) ||
+              "";
             const sku = skuRaw || `AUTO-${stableId(`${productUrl}|${idx}`)}`;
 
             const domMeta = domMetaBySku.get(sku);
@@ -1249,6 +1332,8 @@ async function scrapeProductPage(params: {
     if (params.verbose) {
       if (productObj) {
         params.log("data", "> Found JSON-LD 'Product' Schema");
+      } else if (productGroupObj) {
+        params.log("data", "> Found JSON-LD 'ProductGroup' Schema");
       }
       params.log("success", `> Extracted ${variants.length} offers/variants`);
     }

@@ -18,6 +18,7 @@ const PRODUCT_SIGNAL_RE =
   /"@type"\s*:\s*(?:"Product"|\[[^\]]*"Product")|application\/ld\+json|add to cart|buy now|quick shop|price(?:currency)?|itemprop=["']price["']/i;
 const PRICE_SIGNAL_RE = /[$€£¥]\s?\d|price(?:currency)?|sale price|from\s+[$€£¥]/i;
 const CATEGORY_TEXT_RE = /\b(shop|bestsellers|skincare|haircare|bodycare|fragrance|makeup|collections?)\b/i;
+const STOREFRONT_RESOLUTION_MIN_SCORE = 4;
 const COOKIE_ACTION_LABEL_PATTERNS = [
   /^accept all$/,
   /^accept all cookies$/,
@@ -333,6 +334,22 @@ function hyphenCount(value: string): number {
   return (value.match(/-/g) || []).length;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function containsMarketToken(haystack: string, token: string): boolean {
+  const normalizedHaystack = haystack.toLowerCase();
+  const normalizedToken = token.toLowerCase();
+  if (!normalizedHaystack || !normalizedToken) return false;
+
+  if (/^[a-z0-9-]+$/.test(normalizedToken)) {
+    return new RegExp(`(^|[^a-z0-9])${escapeRegExp(normalizedToken)}(?=$|[^a-z0-9])`, "i").test(normalizedHaystack);
+  }
+
+  return normalizedHaystack.includes(normalizedToken);
+}
+
 export function isStaticAssetUrl(rawUrl: string, baseUrl: string): boolean {
   const parsed = parseHttpUrl(rawUrl, baseUrl);
   if (!parsed) return true;
@@ -644,9 +661,9 @@ function scoreStorefrontCandidate(url: string, label: string, requestedBaseUrl: 
 
   let score = 0;
   for (const token of MARKET_KEYWORDS[marketId] || []) {
-    if (normalizedLabel.includes(token)) score += 5;
-    if (normalizedHost.startsWith(`${token}.`) || normalizedHost.includes(`.${token}.`)) score += 4;
-    if (normalizedPath.includes(`/${token}/`) || normalizedPath.endsWith(`/${token}`)) score += 2;
+    if (containsMarketToken(normalizedLabel, token)) score += 5;
+    if (containsMarketToken(normalizedHost, token)) score += 4;
+    if (containsMarketToken(normalizedPath, token)) score += 2;
   }
 
   if (normalizedHost !== requested.host.toLowerCase()) score += 1;
@@ -678,7 +695,11 @@ export function resolveStorefrontFromHtml(html: string, requestedBaseUrl: string
     }
   }
 
-  return { url: best?.url || null, selectorRoot };
+  if (!selectorRoot || !best || best.score < STOREFRONT_RESOLUTION_MIN_SCORE) {
+    return { url: null, selectorRoot };
+  }
+
+  return { url: best.url, selectorRoot };
 }
 
 export async function resolveStorefrontTarget(params: {
@@ -1035,8 +1056,8 @@ export async function discoverProductUrls(params: {
 
     if (seed.body) {
       const directProductCandidate =
-        looksLikeProductPageHtml(seed.body) ||
-        (seed.ok && scoreProductCandidateUrl(seedDiscoveryUrl, params.baseUrl) >= 4 && PRODUCT_SIGNAL_RE.test(seed.body));
+        /"@type"\s*:\s*(?:"Product"|\[[^\]]*"Product")/i.test(seed.body) ||
+        (seed.ok && scoreProductCandidateUrl(seedDiscoveryUrl, params.baseUrl) >= 4 && looksLikeProductPageHtml(seed.body));
       if (directProductCandidate) {
         setDiscoveryStrategy(params.diagnostics, "seed_page");
         return {

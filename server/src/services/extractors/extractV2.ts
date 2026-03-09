@@ -50,7 +50,7 @@ const TRACKING_QUERY_PARAM_RE = /^(utm_|fbclid$|gclid$|mc_|_ga$|_gl$|ref$|source
 
 type Logger = (type: ExtractV2Response["logs"][number]["type"], msg: string) => void;
 
-type RequestContext = {
+export type RequestContext = {
   market_id: MarketId;
   headers: Record<string, string>;
   cookies: Record<string, string>;
@@ -110,7 +110,7 @@ type ShopifyVariant = {
   inventory_quantity?: number | null;
 };
 
-type ScrapedPageData = {
+export type ScrapedPageData = {
   title: string;
   canonical: string;
   metaDescription: string;
@@ -551,7 +551,7 @@ async function scrapeProductPageV2(params: {
   }
 }
 
-function buildOffersFromScrapedPage(params: {
+export function buildOffersFromScrapedPage(params: {
   baseUrl: string;
   sourceSite: string;
   context: RequestContext;
@@ -573,23 +573,107 @@ function buildOffersFromScrapedPage(params: {
   }
 
   const productObj = objects.find((obj) => isType(obj, "Product"));
+  const productGroupObj = objects.find((obj) => isType(obj, "ProductGroup"));
+  const variantProducts = normalizeJsonLdObjects(productGroupObj?.hasVariant).filter((obj) => isType(obj, "Product"));
+  const primaryProductObj = productObj || variantProducts[0] || productGroupObj || null;
   const productTitle =
-    (typeof productObj?.name === "string" ? productObj.name.trim() : params.extracted.title.trim()) ||
+    (typeof productGroupObj?.name === "string" ? productGroupObj.name.trim() : null) ||
+    (typeof primaryProductObj?.name === "string" ? primaryProductObj.name.trim() : params.extracted.title.trim()) ||
     params.extracted.title.trim();
   const productDescription =
-    normalizeDescriptionText(typeof productObj?.description === "string" ? productObj.description : null) ||
+    normalizeDescriptionText(typeof primaryProductObj?.description === "string" ? primaryProductObj.description : null) ||
+    normalizeDescriptionText(typeof productGroupObj?.description === "string" ? productGroupObj.description : null) ||
     normalizeDescriptionText(params.extracted.metaDescription);
 
   const rawCanonical =
-    (typeof productObj?.url === "string" ? productObj.url : params.extracted.canonical) || params.extracted.canonical;
+    (typeof primaryProductObj?.url === "string" ? primaryProductObj.url : params.extracted.canonical) || params.extracted.canonical;
   const canonicalUrl = canonicalizeUrl(toAbsoluteUrl(params.baseUrl, rawCanonical), params.baseUrl);
-  const productIdCandidate = extractProductId(productObj);
+  const productIdCandidate = extractProductId(primaryProductObj);
 
-  const offersRaw = normalizeJsonLdOffers(productObj?.offers);
+  const offersRaw = normalizeJsonLdOffers(primaryProductObj?.offers);
   const fallbackPriceDisplay = params.extracted.priceTexts[0] || null;
 
+  if (variantProducts.length > 1) {
+    return variantProducts.map((variantProduct, idx) => {
+      const variantOffer = normalizeJsonLdOffers(variantProduct.offers)[0];
+      const skuRaw =
+        (typeof variantProduct.sku === "string" && variantProduct.sku.trim()) ||
+        (typeof variantProduct.mpn === "string" && variantProduct.mpn.trim()) ||
+        (typeof variantOffer?.sku === "string" && variantOffer.sku.trim()) ||
+        null;
+      const priceDisplayRaw =
+        stringifyPriceRaw(
+          variantOffer?.price ??
+            ((variantOffer?.priceSpecification as Record<string, unknown> | undefined)?.price ??
+              ((variantOffer?.priceSpecification as Record<string, unknown> | undefined)?.priceSpecification as
+                | Record<string, unknown>
+                | undefined)?.price),
+        ) || fallbackPriceDisplay;
+      const parsed = parsePrice(priceDisplayRaw);
+      const structuredCurrency =
+        normalizeCurrencyCode(readCurrencyFromOffer(variantOffer || {})) ||
+        normalizeCurrencyCode(
+          ((variantOffer?.priceSpecification as Record<string, unknown> | undefined)?.priceCurrency as string | undefined) || null,
+        ) ||
+        normalizeCurrencyCode(
+          ((variantOffer?.priceSpecification as Record<string, unknown> | undefined)?.priceSpecification as
+            | Record<string, unknown>
+            | undefined)?.priceCurrency as string | undefined,
+        );
+      const resolvedCurrency = resolveCurrency({
+        structuredCurrency,
+        metaCurrencyCandidates: params.extracted.metaCurrencies,
+        priceDisplayRaw,
+        marketId: params.context.market_id,
+      });
+      const status = resolveMarketSwitchStatus(resolvedCurrency.code, params.context.expected_currency, false);
+      const rawVariantUrl =
+        (typeof variantOffer?.url === "string" ? variantOffer.url : null) ||
+        (typeof variantProduct.url === "string" ? variantProduct.url : null) ||
+        canonicalUrl;
+      const canonicalVariantUrl = canonicalizeUrl(toAbsoluteUrl(params.baseUrl, rawVariantUrl), params.baseUrl);
+
+      return {
+        source_site: params.sourceSite,
+        source_product_id: buildSourceProductId({
+          sourceSite: params.sourceSite,
+          siteProductId: productIdCandidate,
+          canonicalUrl,
+          sku: skuRaw,
+        }),
+        url_canonical: canonicalVariantUrl,
+        product_title: productTitle || null,
+        product_description:
+          normalizeDescriptionText(typeof variantProduct.description === "string" ? variantProduct.description : null) || productDescription,
+        variant_sku: skuRaw,
+        market_id: params.context.market_id,
+        price_amount: parsed.price_amount,
+        price_currency: resolvedCurrency.code,
+        price_display_raw: priceDisplayRaw,
+        price_type: parsed.price_type,
+        range_min: parsed.range_min,
+        range_max: parsed.range_max,
+        tax_included: normalizeTaxIncluded(
+          (variantOffer?.priceSpecification as Record<string, unknown> | undefined)?.valueAddedTaxIncluded,
+        ),
+        availability: normalizeAvailability((variantOffer?.availability as string | undefined) || undefined),
+        captured_at: params.capturedAt,
+        currency_confidence: resolvedCurrency.confidence,
+        market_switch_status: status,
+        market_context_debug: {
+          headers: { ...params.context.headers },
+          cookies: { ...params.context.cookies },
+          url_params: { ...params.context.url_params },
+          geo_hint: params.context.geo_hint,
+          expected_currency: params.context.expected_currency,
+          observed_currency: resolvedCurrency.code,
+        },
+      } satisfies OfferV2;
+    });
+  }
+
   if (offersRaw.length === 0) {
-    if (!productObj && !looksLikeProductPageHtml(params.pageHtml)) {
+    if (!primaryProductObj && !looksLikeProductPageHtml(params.pageHtml)) {
       return [];
     }
 
@@ -644,7 +728,11 @@ function buildOffersFromScrapedPage(params: {
 
   for (let idx = 0; idx < offersRaw.length; idx++) {
     const offer = offersRaw[idx]!;
-    const skuRaw = typeof offer.sku === "string" ? offer.sku.trim() : "";
+    const skuRaw =
+      (typeof offer.sku === "string" && offer.sku.trim()) ||
+      (typeof primaryProductObj?.sku === "string" && primaryProductObj.sku.trim()) ||
+      (typeof primaryProductObj?.mpn === "string" && primaryProductObj.mpn.trim()) ||
+      "";
     const sku = skuRaw || `AUTO-${stableHash(`${canonicalUrl}|${idx}`)}`;
 
     const priceRawUnknown =

@@ -61,6 +61,22 @@ test("resolveStorefrontFromHtml resolves selector roots to the requested market 
   assert.equal(resolved.url, "https://us.caudalie.com/");
 });
 
+test("resolveStorefrontFromHtml ignores same-brand service links without market storefront signals", () => {
+  const html = `
+    <html>
+      <body>
+        <h1>Select your country</h1>
+        <a href="https://fentybeauty.setmore.com/">Still confused? Book an appointment</a>
+      </body>
+    </html>
+  `;
+
+  const resolved = resolveStorefrontFromHtml(html, "https://fentybeauty.com", "US");
+
+  assert.equal(resolved.selectorRoot, true);
+  assert.equal(resolved.url, null);
+});
+
 test("discoverProductUrls uses landing-page HTML discovery for slug PDPs", async () => {
   const homepageHtml = readFixture("augustinus-homepage.html");
   const diagnostics = createDiagnostics("augustinusbader.com", "https://augustinusbader.com");
@@ -86,6 +102,41 @@ test("discoverProductUrls uses landing-page HTML discovery for slug PDPs", async
         "https://augustinusbader.com/the-geranium-rose-body-cream",
         "https://augustinusbader.com/the-rich-cream",
       ]);
+    },
+  );
+});
+
+test("discoverProductUrls does not treat a homepage as a direct PDP when it only has merchandising signals", async () => {
+  const diagnostics = createDiagnostics("www.guerlain.com", "https://www.guerlain.com");
+  const homepageHtml = `
+    <html>
+      <body>
+        <h1>Guerlain</h1>
+        <button>Buy now</button>
+        <span class="price">$165.00</span>
+        <a href="/us/en-us/p/abeille-royale-youth-watery-oil-serum-P062033.html">Abeille Royale</a>
+      </body>
+    </html>
+  `;
+
+  await withMockFetch(
+    {
+      "https://www.guerlain.com": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: homepageHtml,
+      },
+    },
+    async () => {
+      const discovered = await discoverProductUrls({
+        baseUrl: "https://www.guerlain.com",
+        maxProducts: 5,
+        context: {},
+        diagnostics,
+      });
+
+      assert.equal(diagnostics.discovery_strategy, "seed_page");
+      assert.deepEqual(discovered.productUrls, ["https://www.guerlain.com/us/en-us/p/abeille-royale-youth-watery-oil-serum-P062033.html"]);
     },
   );
 });

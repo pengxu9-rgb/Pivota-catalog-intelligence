@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildOffersFromScrapedPage,
   buildSourceProductId,
   computeCounters,
   parsePrice,
@@ -159,4 +160,115 @@ test("parsePrice detects range", () => {
   assert.equal(out.price_type, "range");
   assert.equal(out.range_min, 12);
   assert.equal(out.range_max, 20);
+});
+
+test("buildOffersFromScrapedPage extracts variant SKUs from ProductGroup hasVariant JSON-LD", () => {
+  const offers = buildOffersFromScrapedPage({
+    baseUrl: "https://www.guerlain.com",
+    sourceSite: "www.guerlain.com",
+    context: {
+      market_id: "SG",
+      headers: {},
+      cookies: {},
+      url_params: {},
+      expected_currency: "SGD",
+    },
+    extracted: {
+      title: "PARURE GOLD SKIN MESH CUSHION",
+      canonical: "https://www.guerlain.com/sg/en-sg/p/parure-gold-skin-mesh-cushion-P062104.html",
+      metaDescription: "Foundation",
+      scripts: [
+        JSON.stringify({
+          "@context": "https://schema.org/",
+          "@type": "ProductGroup",
+          name: "PARURE GOLD SKIN MESH CUSHION",
+          url: "https://www.guerlain.com/sg/en-sg/p/parure-gold-skin-mesh-cushion-P062104.html",
+          hasVariant: [
+            {
+              "@type": "Product",
+              name: "PARURE GOLD SKIN MESH CUSHION 00N Beige",
+              sku: "G062104",
+              color: "00N Beige",
+              offers: {
+                "@type": "Offer",
+                url: "https://www.guerlain.com/sg/en-sg/p/parure-gold-skin-mesh-cushion-P062104.html?v=G062104",
+                availability: "http://schema.org/InStock",
+              },
+            },
+            {
+              "@type": "Product",
+              name: "PARURE GOLD SKIN MESH CUSHION 01N Pale Beige",
+              sku: "G062105",
+              color: "01N Pale Beige",
+              offers: {
+                "@type": "Offer",
+                url: "https://www.guerlain.com/sg/en-sg/p/parure-gold-skin-mesh-cushion-P062104.html?v=G062105",
+                availability: "http://schema.org/OutOfStock",
+              },
+            },
+          ],
+        }),
+      ],
+      metaCurrencies: ["SGD"],
+      priceTexts: ["SGD 92"],
+    },
+    pageHtml: "<html><body><h1>Parure Gold</h1></body></html>",
+    capturedAt: "2026-03-09T00:00:00.000Z",
+  });
+
+  assert.equal(offers.length, 2);
+  assert.deepEqual(
+    offers.map((offer) => offer.variant_sku),
+    ["G062104", "G062105"],
+  );
+  assert.deepEqual(
+    offers.map((offer) => offer.url_canonical),
+    [
+      "https://www.guerlain.com/sg/en-sg/p/parure-gold-skin-mesh-cushion-P062104.html?v=G062104",
+      "https://www.guerlain.com/sg/en-sg/p/parure-gold-skin-mesh-cushion-P062104.html?v=G062105",
+    ],
+  );
+});
+
+test("buildOffersFromScrapedPage falls back to Product.sku when Offer.sku is missing", () => {
+  const offers = buildOffersFromScrapedPage({
+    baseUrl: "https://www.guerlain.com",
+    sourceSite: "www.guerlain.com",
+    context: {
+      market_id: "US",
+      headers: {},
+      cookies: {},
+      url_params: {},
+      expected_currency: "USD",
+    },
+    extracted: {
+      title: "AQUA ALLEGORIA PERLE",
+      canonical: "https://www.guerlain.com/us/en-us/p/aqua-allegoria-perle-florabloom-perle---eau-de-parfum-P062203.html",
+      metaDescription: "Fragrance",
+      scripts: [
+        JSON.stringify({
+          "@context": "http://schema.org/",
+          "@type": "Product",
+          name: "AQUA ALLEGORIA PERLE Florabloom Perle - Eau de Parfum 125 ML / 4.22 OZ",
+          sku: "G062203",
+          url: "https://www.guerlain.com/us/en-us/p/aqua-allegoria-perle-florabloom-perle---eau-de-parfum-P062203.html",
+          offers: {
+            "@type": "Offer",
+            url: "https://www.guerlain.com/us/en-us/p/aqua-allegoria-perle-florabloom-perle---eau-de-parfum-P062203.html?v=G062203",
+            priceCurrency: "USD",
+            price: "176.00",
+            availability: "http://schema.org/InStock",
+          },
+        }),
+      ],
+      metaCurrencies: ["USD"],
+      priceTexts: ["$176.00"],
+    },
+    pageHtml: "<html><body><h1>AQUA ALLEGORIA PERLE</h1></body></html>",
+    capturedAt: "2026-03-09T00:00:00.000Z",
+  });
+
+  assert.equal(offers.length, 1);
+  assert.equal(offers[0]?.variant_sku, "G062203");
+  assert.equal(offers[0]?.price_amount, 176);
 });

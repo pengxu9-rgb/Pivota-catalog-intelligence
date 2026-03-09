@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import puppeteer, { type Browser } from "puppeteer";
+import { type Browser } from "puppeteer";
 
 import type {
   ExtractInput,
@@ -10,6 +10,32 @@ import type {
   Extractor,
   StockStatus,
 } from "./types";
+import {
+  BotChallengeError,
+  canonicalizeUrl as canonicalizeUrlShared,
+  clampInt as clampIntShared,
+  clampOptionalInt as clampOptionalIntShared,
+  createDiagnostics,
+  detectBlockProvider,
+  discoverProductUrls as discoverProductUrlsShared,
+  dismissCookieBanner,
+  extractProductUrlsFromHtml as extractProductUrlsFromHtmlShared,
+  fetchJsonTracked,
+  gotoPageOrThrow,
+  isLikelyProductUrl as isLikelyProductUrlShared,
+  isStaticAssetUrl as isStaticAssetUrlShared,
+  mapWithConcurrency as mapWithConcurrencyShared,
+  normalizeMarketId,
+  parseTarget as parseTargetShared,
+  preparePage,
+  resolveStorefrontTarget,
+  runBrowserTaskWithFallback,
+  setDiscoveryStrategy,
+  setFailureCategory,
+  toAbsoluteUrl as toAbsoluteUrlShared,
+  withTimeout as withTimeoutShared,
+  type LoggerFn,
+} from "./shared";
 
 const DEFAULT_BATCH_LIMIT = 10;
 const DEFAULT_MAX_TOTAL_PRODUCTS = 500;
@@ -25,29 +51,40 @@ export class PuppeteerExtractor implements Extractor {
     const generatedAt = new Date().toISOString();
 
     const logs: ExtractResponse["logs"] = [];
-    const log = (type: ExtractResponse["logs"][number]["type"], msg: string) => {
+    const log: LoggerFn = (type, msg) => {
       logs.push({ at: new Date().toISOString(), type, msg });
     };
 
-    const target = parseTarget(input.domain);
-    const baseUrl = target.baseUrl;
-    const batchOffset = clampOptionalInt(input.offset, 0, 0, 100_000);
-    const batchLimit = clampOptionalInt(
+    const requestedTarget = parseTargetShared(input.domain);
+    const diagnostics = createDiagnostics(requestedTarget.domain, requestedTarget.baseUrl);
+    const marketId = normalizeMarketId(input.market);
+    const batchOffset = clampOptionalIntShared(input.offset, 0, 0, 100_000);
+    const batchLimit = clampOptionalIntShared(
       input.limit,
-      clampInt(process.env.BATCH_LIMIT || process.env.MAX_PRODUCTS, DEFAULT_BATCH_LIMIT, 1, 200),
+      clampIntShared(process.env.BATCH_LIMIT || process.env.MAX_PRODUCTS, DEFAULT_BATCH_LIMIT, 1, 200),
       1,
       200,
     );
-    const maxProductsTotal = clampInt(process.env.MAX_TOTAL_PRODUCTS, DEFAULT_MAX_TOTAL_PRODUCTS, 1, 10_000);
-    const discoveryReserve = clampInt(process.env.PRODUCT_URL_RESERVE, DEFAULT_PRODUCT_URL_RESERVE, 0, 100);
+    const maxProductsTotal = clampIntShared(process.env.MAX_TOTAL_PRODUCTS, DEFAULT_MAX_TOTAL_PRODUCTS, 1, 10_000);
+    const discoveryReserve = clampIntShared(process.env.PRODUCT_URL_RESERVE, DEFAULT_PRODUCT_URL_RESERVE, 0, 100);
     const discoveryLimit = Math.min(maxProductsTotal, batchOffset + batchLimit + discoveryReserve);
 
     log("info", `Initializing Puppeteer extraction for: ${input.brand}`);
-    log("info", `Target: ${baseUrl}`);
+    log("info", `Requested target: ${requestedTarget.baseUrl} (market=${marketId})`);
     log("info", `Batch window: offset=${batchOffset}, limit=${batchLimit}, max_total=${maxProductsTotal}`);
-    if (target.seedUrl) log("info", `Seed URL: ${target.seedUrl}`);
+    if (requestedTarget.seedUrl) log("info", `Seed URL: ${requestedTarget.seedUrl}`);
 
     try {
+      const resolved = await resolveStorefrontTarget({
+        target: requestedTarget,
+        marketId,
+        context: {},
+        diagnostics,
+        log,
+      });
+      const target = resolved.target;
+      const baseUrl = target.baseUrl;
+
       // 1) Fast path: Shopify JSON feed (no browser required).
       const shopify = await tryExtractShopify({
         brand: input.brand,
@@ -57,17 +94,33 @@ export class PuppeteerExtractor implements Extractor {
         maxProducts: maxProductsTotal,
         offset: batchOffset,
         limit: batchLimit,
+        diagnostics,
         log,
       });
-      if (shopify) return { ...shopify, generated_at: generatedAt, logs };
+      if (shopify) {
+        return {
+          ...shopify,
+          generated_at: generatedAt,
+          logs,
+          diagnostics,
+        };
+      }
 
-      // 2) Generic path: sitemap discovery + JSON-LD parsing with Puppeteer.
-      log("info", "Shopify feed not detected. Falling back to Sitemap + JSON-LD extraction.");
-      const discovered = await discoverProductUrls({ baseUrl, maxProducts: discoveryLimit, seedUrl: target.seedUrl, log });
+      // 2) Generic path: direct PDP/seed discovery -> sitemaps -> browser fallback.
+      log("info", "Shopify feed not detected. Falling back to direct page, sitemap, and browser discovery.");
+      const discovered = await discoverProductUrlsShared({
+        baseUrl,
+        maxProducts: discoveryLimit,
+        seedUrl: target.seedUrl,
+        context: {},
+        diagnostics,
+        selectorRootDetected: resolved.selectorRootDetected && !resolved.storefrontResolved,
+        log,
+      });
       const batchCandidates = discovered.productUrls.slice(batchOffset, batchOffset + batchLimit + discoveryReserve);
 
       if (batchCandidates.length === 0) {
-        log("error", "No product URLs discovered (robots/sitemap).");
+        log("error", "No product URLs discovered.");
         const nextOffset = batchOffset + batchLimit;
         const reachedDiscoveryCap = discovered.productUrls.length >= discoveryLimit && discoveryLimit < maxProductsTotal;
         const hasMore =
@@ -91,6 +144,7 @@ export class PuppeteerExtractor implements Extractor {
             discovered_urls: discovered.productUrls.length,
           },
           logs,
+          diagnostics,
         };
       }
 
@@ -99,73 +153,87 @@ export class PuppeteerExtractor implements Extractor {
         `Discovered ${discovered.productUrls.length} product URLs. Scraping batch candidates: ${batchCandidates.length}.`,
       );
 
-      const concurrency = clampInt(process.env.PUPPETEER_CONCURRENCY, DEFAULT_CONCURRENCY, 1, 6);
-      const navigationTimeoutMs = clampInt(process.env.PUPPETEER_NAV_TIMEOUT_MS, DEFAULT_NAV_TIMEOUT_MS, 5_000, 120_000);
-      const launchTimeoutMs = clampInt(process.env.PUPPETEER_LAUNCH_TIMEOUT_MS, DEFAULT_LAUNCH_TIMEOUT_MS, 5_000, 120_000);
-      const scrapeTimeoutMs = clampInt(process.env.PUPPETEER_SCRAPE_TIMEOUT_MS, DEFAULT_SCRAPE_TIMEOUT_MS, 10_000, 300_000);
+      const concurrency = clampIntShared(process.env.PUPPETEER_CONCURRENCY, DEFAULT_CONCURRENCY, 1, 6);
+      const navigationTimeoutMs = clampIntShared(process.env.PUPPETEER_NAV_TIMEOUT_MS, DEFAULT_NAV_TIMEOUT_MS, 5_000, 120_000);
+      const scrapeTimeoutMs = clampIntShared(process.env.PUPPETEER_SCRAPE_TIMEOUT_MS, DEFAULT_SCRAPE_TIMEOUT_MS, 10_000, 300_000);
 
-      const browser = await withTimeout(
-        puppeteer.launch({
-          headless: true,
-          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-          args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-        }),
-        launchTimeoutMs,
-        "Puppeteer launch",
+      const browserRun = await runBrowserTaskWithFallback(
+        async (browser) =>
+          withTimeoutShared(
+            mapWithConcurrencyShared(batchCandidates, concurrency, async (url, idx) => {
+              const verbose = idx < 3;
+              return scrapeProductPage({
+                browser,
+                url,
+                baseUrl,
+                navigationTimeoutMs,
+                verbose,
+                log,
+                diagnostics,
+                context: {},
+              });
+            }),
+            scrapeTimeoutMs,
+            "Product scraping",
+          ),
+        { diagnostics, log },
       );
 
-      try {
-        const scrapedProducts = await withTimeout(
-          mapWithConcurrency(batchCandidates, concurrency, async (url, idx) => {
-            const verbose = idx < 3;
-            return scrapeProductPage({ browser, url, baseUrl, navigationTimeoutMs, verbose, log });
-          }),
-          scrapeTimeoutMs,
-          "Product scraping",
-        );
+      const products = browserRun.result.filter((product): product is ExtractedProduct => Boolean(product)).slice(0, batchLimit);
+      const { variants, adCopyById } = flattenVariants({
+        brand: input.brand,
+        products,
+        simulated: false,
+      });
 
-        const products = scrapedProducts.filter((p): p is ExtractedProduct => Boolean(p)).slice(0, batchLimit);
-        const { variants, adCopyById } = flattenVariants({
-          brand: input.brand,
-          products,
-          simulated: false,
-        });
-
-        const nextOffset = batchOffset + batchLimit;
-        const reachedDiscoveryCap = discovered.productUrls.length >= discoveryLimit && discoveryLimit < maxProductsTotal;
-        const hasMore = nextOffset < maxProductsTotal && (nextOffset < discovered.productUrls.length || reachedDiscoveryCap);
-        const pricing = computePricingStats(variants);
-        log("success", `Extraction Complete. ${variants.length} variants processed successfully.`);
-
-        return {
-          brand: input.brand,
-          domain: target.domain,
-          generated_at: generatedAt,
-          mode: "puppeteer",
-          platform: "JSON-LD / Sitemap",
-          sitemap: discovered.sitemapUrl,
-          products,
-          variants,
-          pricing,
-          ad_copy: { by_variant_id: adCopyById },
-          pagination: {
-            offset: batchOffset,
-            limit: batchLimit,
-            next_offset: hasMore ? nextOffset : null,
-            has_more: hasMore,
-            discovered_urls: discovered.productUrls.length,
-          },
-          logs,
-        };
-      } finally {
-        await browser.close();
+      if (products.length === 0 && !diagnostics.failure_category && diagnostics.block_provider) {
+        setFailureCategory(diagnostics, "bot_challenge");
+      } else if (products.length === 0 && !diagnostics.failure_category) {
+        setFailureCategory(diagnostics, "product_schema_missing");
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      log("error", `Puppeteer extraction failed: ${msg}`);
+
+      const nextOffset = batchOffset + batchLimit;
+      const reachedDiscoveryCap = discovered.productUrls.length >= discoveryLimit && discoveryLimit < maxProductsTotal;
+      const hasMore = nextOffset < maxProductsTotal && (nextOffset < discovered.productUrls.length || reachedDiscoveryCap);
+      const pricing = computePricingStats(variants);
+      log("success", `Extraction Complete. ${variants.length} variants processed successfully.`);
+
       return {
         brand: input.brand,
         domain: target.domain,
+        generated_at: generatedAt,
+        mode: "puppeteer",
+        platform: browserRun.mode === "managed" ? "Managed Browser / Generic" : "Generic Website",
+        sitemap: discovered.sitemapUrl,
+        products,
+        variants,
+        pricing,
+        ad_copy: { by_variant_id: adCopyById },
+        pagination: {
+          offset: batchOffset,
+          limit: batchLimit,
+          next_offset: hasMore ? nextOffset : null,
+          has_more: hasMore,
+          discovered_urls: discovered.productUrls.length,
+        },
+        logs,
+        diagnostics,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      if (!diagnostics.failure_category) {
+        if (err instanceof BotChallengeError) {
+          setFailureCategory(diagnostics, "bot_challenge");
+        } else if (err instanceof Error && /timed out/i.test(err.message)) {
+          setFailureCategory(diagnostics, "timeout");
+        } else {
+          setFailureCategory(diagnostics, "unknown");
+        }
+      }
+      log("error", `Puppeteer extraction failed: ${msg}`);
+      return {
+        brand: input.brand,
+        domain: requestedTarget.domain,
         generated_at: generatedAt,
         mode: "puppeteer",
         platform: "Error",
@@ -181,6 +249,7 @@ export class PuppeteerExtractor implements Extractor {
           discovered_urls: 0,
         },
         logs,
+        diagnostics,
       };
     }
   }
@@ -456,6 +525,7 @@ async function tryExtractShopify(params: {
   maxProducts: number;
   offset: number;
   limit: number;
+  diagnostics: ExtractResponse["diagnostics"];
   log: Logger;
 }): Promise<Omit<ExtractResponse, "generated_at" | "logs"> | null> {
   const log = params.log;
@@ -465,22 +535,23 @@ async function tryExtractShopify(params: {
     : `${params.baseUrl}/products.json?limit=1`;
 
   log("info", `Checking Shopify feed: ${probeUrl}`);
-  const probe = await fetchJson<ShopifyProductsResponse>(probeUrl);
-  if (!probe || !Array.isArray(probe.products)) {
+  const probe = await fetchJsonTracked<ShopifyProductsResponse>(probeUrl, {}, params.diagnostics!);
+  if (!probe.data || !Array.isArray(probe.data.products)) {
     log("warn", "Shopify feed not found.");
     return null;
   }
 
   log("success", "Shopify feed detected.");
+  setDiscoveryStrategy(params.diagnostics!, "shopify_json");
 
   const allProducts: ShopifyProduct[] = [];
-  const maxPages = clampInt(process.env.SHOPIFY_MAX_PAGES, 20, 1, 200);
+  const maxPages = clampIntShared(process.env.SHOPIFY_MAX_PAGES, 20, 1, 200);
   const feedPrefix = params.collectionHandle ? `/collections/${params.collectionHandle}` : "";
 
   for (let page = 1; page <= maxPages; page++) {
     const url = `${params.baseUrl}${feedPrefix}/products.json?limit=250&page=${page}`;
-    const batch = await fetchJson<ShopifyProductsResponse>(url);
-    const products = batch?.products;
+    const batch = await fetchJsonTracked<ShopifyProductsResponse>(url, {}, params.diagnostics!);
+    const products = batch.data?.products;
     if (!products || products.length === 0) break;
     allProducts.push(...products);
     if (products.length < 250) break;
@@ -615,6 +686,7 @@ async function tryExtractShopify(params: {
       has_more: hasMore,
       discovered_urls: extractedProducts.length,
     },
+    diagnostics: params.diagnostics,
   };
 }
 
@@ -682,31 +754,7 @@ async function fetchText(url: string): Promise<string | null> {
 }
 
 export function extractProductUrlsFromHtml(html: string, baseUrl: string) {
-  const hrefUrls = new Set<string>();
-  for (const match of html.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["']/gi)) {
-    const rawHref = match[1]?.trim();
-    if (!rawHref) continue;
-    if (/^(#|mailto:|tel:|javascript:)/i.test(rawHref)) continue;
-    hrefUrls.add(toAbsoluteUrl(baseUrl, rawHref.replace(/&amp;/gi, "&")));
-  }
-
-  const hrefProducts = Array.from(hrefUrls).filter((u) => isLikelyProductUrl(u, baseUrl));
-  if (hrefProducts.length > 0) return hrefProducts;
-
-  const urls = new Set<string>();
-  const fallbackPatterns = [
-    /["'](\/product\/[^"'?#\s<]+)["']/gi,
-    /["'](\/products\/[^"'?#\s<]+)["']/gi,
-    /["'](https?:\/\/[^"'?#\s<]+)["']/gi,
-  ];
-  for (const pattern of fallbackPatterns) {
-    for (const match of html.matchAll(pattern)) {
-      const candidate = match[1] || match[0];
-      const absolute = toAbsoluteUrl(baseUrl, candidate);
-      if (isLikelyProductUrl(absolute, baseUrl)) urls.add(absolute);
-    }
-  }
-  return Array.from(urls);
+  return extractProductUrlsFromHtmlShared(html, baseUrl);
 }
 
 const STATIC_ASSET_EXT_RE =
@@ -723,26 +771,11 @@ function parseHttpUrl(rawUrl: string, baseUrl: string): URL | null {
 }
 
 export function isStaticAssetUrl(rawUrl: string, baseUrl: string) {
-  const parsed = parseHttpUrl(rawUrl, baseUrl);
-  if (!parsed) return true;
-  return STATIC_ASSET_EXT_RE.test(parsed.pathname);
+  return isStaticAssetUrlShared(rawUrl, baseUrl);
 }
 
 export function isLikelyProductUrl(rawUrl: string, baseUrl: string) {
-  const parsed = parseHttpUrl(rawUrl, baseUrl);
-  if (!parsed) return false;
-
-  const baseHost = parseHttpUrl(baseUrl, baseUrl)?.host.toLowerCase();
-  if (baseHost && parsed.host.toLowerCase() !== baseHost) return false;
-  if (isStaticAssetUrl(parsed.toString(), baseUrl)) return false;
-
-  const path = parsed.pathname.toLowerCase();
-  if (path === "/" || path === "") return false;
-  if (/\/products?\//.test(path)) return true;
-  if (/[-_]\d{4,}\.html$/.test(path)) return true;
-  if (/\/p\/[^/]+$/.test(path)) return true;
-
-  return false;
+  return isLikelyProductUrlShared(rawUrl, baseUrl);
 }
 
 function extractSitemapUrlsFromRobots(robotsText: string) {
@@ -897,18 +930,27 @@ async function scrapeProductPage(params: {
   browser: Browser;
   url: string;
   baseUrl: string;
+  context: {};
+  diagnostics: ExtractResponse["diagnostics"];
   navigationTimeoutMs: number;
   verbose: boolean;
   log: Logger;
 }): Promise<ExtractedProduct | null> {
   const page = await params.browser.newPage();
-  await page.setUserAgent(process.env.PUPPETEER_USER_AGENT || "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
-  page.setDefaultNavigationTimeout(params.navigationTimeoutMs);
 
   try {
     if (params.verbose) params.log("info", `Scraping: ${params.url}`);
-
-    await page.goto(params.url, { waitUntil: "domcontentloaded" });
+    await preparePage(page, {
+      baseUrl: params.baseUrl,
+      context: params.context,
+      navigationTimeoutMs: params.navigationTimeoutMs,
+    });
+    await gotoPageOrThrow(page, {
+      url: params.url,
+      baseUrl: params.baseUrl,
+      context: params.context,
+      diagnostics: params.diagnostics!,
+    });
 
     const extracted = await page.evaluate(() => {
       const title =
@@ -922,9 +964,35 @@ async function scrapeProductPage(params: {
         document.querySelector('meta[property="og:url"]')?.getAttribute("content") ||
         location.href;
 
+      const metaDescription =
+        document.querySelector('meta[name="description"]')?.getAttribute("content")?.trim() ||
+        document.querySelector('meta[property="og:description"]')?.getAttribute("content")?.trim() ||
+        "";
+
       const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
         .map((s) => s.textContent || "")
         .filter(Boolean);
+
+      const priceSelectors = [
+        '[itemprop="price"]',
+        '[class*="price"]',
+        '[data-price]',
+        'meta[property="og:price:amount"]',
+        'meta[property="product:price:amount"]',
+      ];
+      const priceTexts: string[] = [];
+      for (const selector of priceSelectors) {
+        const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 8);
+        for (const node of nodes) {
+          const text =
+            (node as HTMLElement).getAttribute?.("content") ||
+            (node as HTMLElement).getAttribute?.("data-price") ||
+            (node as HTMLElement).textContent ||
+            "";
+          const trimmed = text.trim();
+          if (trimmed) priceTexts.push(trimmed);
+        }
+      }
 
       const domVariants = (() => {
         const el = document.querySelector("[data-product-skus-value]") as HTMLElement | null;
@@ -1026,6 +1094,8 @@ async function scrapeProductPage(params: {
       return {
         title,
         canonical,
+        metaDescription,
+        priceTexts,
         scripts,
         domVariants,
         howToUseText,
@@ -1047,15 +1117,19 @@ async function scrapeProductPage(params: {
     }
 
     const productObj = objects.find((o) => isType(o, "Product"));
-    if (!productObj) {
-      if (params.verbose) params.log("warn", "> No JSON-LD Product schema found.");
-      return null;
+    if (!productObj && params.verbose) {
+      params.log("warn", "> No JSON-LD Product schema found. Falling back to title/meta/price extraction.");
     }
 
-    const productTitle = (typeof productObj.name === "string" ? productObj.name : extracted.title).trim() || extracted.title;
-    const productUrl = toAbsoluteUrl(params.baseUrl, typeof productObj.url === "string" ? productObj.url : extracted.canonical);
+    const productTitle = (
+      typeof productObj?.name === "string" ? productObj.name : extracted.title
+    ).trim() || extracted.title;
+    const productUrl = canonicalizeUrlShared(
+      toAbsoluteUrlShared(params.baseUrl, typeof productObj?.url === "string" ? productObj.url : extracted.canonical),
+      params.baseUrl,
+    );
 
-    const imageRaw = productObj.image;
+    const imageRaw = productObj?.image;
     const imageUrl = (() => {
       if (typeof imageRaw === "string") return toAbsoluteUrl(params.baseUrl, imageRaw);
       if (Array.isArray(imageRaw) && typeof imageRaw[0] === "string") return toAbsoluteUrl(params.baseUrl, imageRaw[0]);
@@ -1065,9 +1139,10 @@ async function scrapeProductPage(params: {
       return "";
     })();
 
-    const officialText = typeof productObj.description === "string" ? productObj.description : undefined;
+    const officialText =
+      (typeof productObj?.description === "string" ? productObj.description : undefined) || extracted.metaDescription || undefined;
 
-    const offersRaw = productObj.offers;
+    const offersRaw = productObj?.offers;
     const offers = normalizeJsonLdOffers(offersRaw);
 
     const domMetaBySku = new Map<string, DomVariantMeta>();
@@ -1091,8 +1166,8 @@ async function scrapeProductPage(params: {
             const domMeta = domMetaBySku.get(sku);
 
             const offerUrl = (() => {
-              if (domMeta?.url_path) return toAbsoluteUrl(params.baseUrl, domMeta.url_path);
-              return toAbsoluteUrl(params.baseUrl, typeof offer.url === "string" ? offer.url : productUrl);
+              if (domMeta?.url_path) return toAbsoluteUrlShared(params.baseUrl, domMeta.url_path);
+              return toAbsoluteUrlShared(params.baseUrl, typeof offer.url === "string" ? offer.url : productUrl);
             })();
 
             const price = normalizePrice(
@@ -1148,7 +1223,7 @@ async function scrapeProductPage(params: {
               url: productUrl,
               option_name: "Offer",
               option_value: "Default",
-              price: "0.00",
+              price: normalizePrice(extracted.priceTexts[0]),
               currency: "USD",
               stock: "In Stock",
               description: getMergedDescription({
@@ -1159,7 +1234,7 @@ async function scrapeProductPage(params: {
                   [ingredientsMarkdownText, ingredientsDisclaimerText].filter(Boolean).join("\n\n") || undefined,
               }),
               image_url: imageUrl,
-              ad_copy: generateMockAdCopy(productTitle, "Default", "0.00"),
+              ad_copy: generateMockAdCopy(productTitle, "Default", normalizePrice(extracted.priceTexts[0])),
             },
           ];
 
@@ -1174,6 +1249,9 @@ async function scrapeProductPage(params: {
       variants,
     };
   } catch (err) {
+    if (err instanceof BotChallengeError) {
+      throw err;
+    }
     params.log("warn", `Failed to scrape ${params.url}`);
     return null;
   } finally {

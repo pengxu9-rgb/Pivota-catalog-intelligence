@@ -27,6 +27,7 @@ test("isLikelyProductUrl supports .html and /products/ PDP URLs", () => {
     true,
   );
   assert.equal(isLikelyProductUrl("https://theordinary.com/products/squalane-face-cleanser", BASE_URL), true);
+  assert.equal(isLikelyProductUrl("https://theordinary.com/the-geranium-rose-body-cream", BASE_URL), true);
   assert.equal(isLikelyProductUrl("https://theordinary.com/", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://theordinary.com/en-us", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://cdn.example.com/de-de/foo-100436.html", BASE_URL), false);

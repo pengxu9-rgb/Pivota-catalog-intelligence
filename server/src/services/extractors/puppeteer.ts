@@ -910,6 +910,55 @@ function toAbsoluteUrl(baseUrl: string, href: string) {
   }
 }
 
+const INVALID_IMAGE_URL_RE =
+  /(placeholder\.svg|\/favicon|\/apple-touch-icon|\/logo(?:[._/-]|$)|\/sprite(?:[._/-]|$)|tracking|teads\.tv)/i;
+
+function normalizeImageUrlCandidate(baseUrl: string, raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+
+  const firstSrcsetEntry = trimmed.split(",")[0]?.trim().split(/\s+/)[0] || "";
+  if (!firstSrcsetEntry) return "";
+
+  const absolute = toAbsoluteUrl(baseUrl, firstSrcsetEntry);
+  if (!/^https?:\/\//i.test(absolute)) return "";
+  if (INVALID_IMAGE_URL_RE.test(absolute)) return "";
+  return absolute;
+}
+
+export function resolveStructuredImageUrl(baseUrl: string, value: unknown): string {
+  if (!value) return "";
+
+  if (typeof value === "string") {
+    return normalizeImageUrlCandidate(baseUrl, value);
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const resolved = resolveStructuredImageUrl(baseUrl, item);
+      if (resolved) return resolved;
+    }
+    return "";
+  }
+
+  if (typeof value !== "object") return "";
+
+  const obj = value as Record<string, unknown>;
+  const directKeys = ["url", "src", "contentUrl", "contentURL", "secureUrl", "secure_url"] as const;
+  for (const key of directKeys) {
+    const resolved = resolveStructuredImageUrl(baseUrl, obj[key]);
+    if (resolved) return resolved;
+  }
+
+  const nestedKeys = ["thumbnail", "primaryImage", "image"] as const;
+  for (const key of nestedKeys) {
+    const resolved = resolveStructuredImageUrl(baseUrl, obj[key]);
+    if (resolved) return resolved;
+  }
+
+  return "";
+}
+
 function stableId(input: string) {
   return createHash("sha1").update(input).digest("hex").slice(0, 12);
 }
@@ -1005,6 +1054,75 @@ async function scrapeProductPage(params: {
           if (trimmed) priceTexts.push(trimmed);
         }
       }
+
+      const imageCandidates = (() => {
+        const selectors = [
+          "img.zoom-newPDPImage",
+          "[zoom-src]",
+          "[data-zoom-src]",
+          "[data-zoom-image]",
+          ".gallery-top-product img",
+          ".gallery-thumbs-new-pdp img",
+          '[class*="gallery"] img',
+          '[class*="swiper"] img',
+          'meta[property="og:image"]',
+          'meta[name="twitter:image"]',
+          'meta[itemprop="image"]',
+          "img[data-src]",
+          "img[srcset]",
+          "img[src]",
+        ];
+        const invalidUrlRe =
+          /(placeholder\.svg|\/favicon|\/apple-touch-icon|\/logo(?:[._/-]|$)|\/sprite(?:[._/-]|$)|tracking|teads\.tv|\/MenuBanner\/|\/Library-Sites-)/i;
+        const seen = new Set<string>();
+        const out: string[] = [];
+
+        const push = (raw: string | null | undefined) => {
+          const trimmed = typeof raw === "string" ? raw.trim() : "";
+          if (!trimmed) return;
+
+          const candidates = trimmed
+            .split(",")
+            .map((part) => part.trim().split(/\s+/)[0] || "")
+            .filter(Boolean);
+
+          for (const candidate of candidates) {
+            try {
+              const absolute = new URL(candidate, location.href).toString();
+              if (!/^https?:\/\//i.test(absolute)) continue;
+              if (invalidUrlRe.test(absolute)) continue;
+              if (seen.has(absolute)) continue;
+              seen.add(absolute);
+              out.push(absolute);
+            } catch {
+              // ignore invalid image candidates
+            }
+          }
+        };
+
+        for (const selector of selectors) {
+          const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 24);
+          for (const node of nodes) {
+            if (node instanceof HTMLMetaElement) {
+              push(node.content);
+              continue;
+            }
+
+            const el = node as HTMLElement;
+            push(el.getAttribute("data-src"));
+            push(el.getAttribute("zoom-src"));
+            push(el.getAttribute("data-zoom-src"));
+            push(el.getAttribute("data-zoom-image"));
+            push(el.getAttribute("data-large-image"));
+            push(el.getAttribute("srcset"));
+            push(el.getAttribute("src"));
+          }
+
+          if (out.length >= 8) break;
+        }
+
+        return out;
+      })();
 
       const domVariants = (() => {
         const el = document.querySelector("[data-product-skus-value]") as HTMLElement | null;
@@ -1108,6 +1226,7 @@ async function scrapeProductPage(params: {
         canonical,
         metaDescription,
         priceTexts,
+        imageCandidates,
         scripts,
         domVariants,
         howToUseText,
@@ -1151,14 +1270,7 @@ async function scrapeProductPage(params: {
     );
 
     const imageRaw = primaryProductObj?.image ?? productGroupObj?.image;
-    const imageUrl = (() => {
-      if (typeof imageRaw === "string") return toAbsoluteUrl(params.baseUrl, imageRaw);
-      if (Array.isArray(imageRaw) && typeof imageRaw[0] === "string") return toAbsoluteUrl(params.baseUrl, imageRaw[0]);
-      if (imageRaw && typeof imageRaw === "object" && typeof (imageRaw as any).url === "string") {
-        return toAbsoluteUrl(params.baseUrl, (imageRaw as any).url);
-      }
-      return "";
-    })();
+    const imageUrl = resolveStructuredImageUrl(params.baseUrl, [imageRaw, extracted.imageCandidates]);
 
     const officialText =
       (typeof primaryProductObj?.description === "string" ? primaryProductObj.description : undefined) ||
@@ -1215,14 +1327,7 @@ async function scrapeProductPage(params: {
             const stock = stockFromAvailability(variantOffer?.availability);
             const id = stableId(`${productUrl}|${sku}|${price}`);
             const variantImageRaw = variantProduct.image;
-            const variantImageUrl = (() => {
-              if (typeof variantImageRaw === "string" && variantImageRaw.trim()) return toAbsoluteUrl(params.baseUrl, variantImageRaw);
-              if (Array.isArray(variantImageRaw) && typeof variantImageRaw[0] === "string") return toAbsoluteUrl(params.baseUrl, variantImageRaw[0]);
-              if (variantImageRaw && typeof variantImageRaw === "object" && typeof (variantImageRaw as any).url === "string") {
-                return toAbsoluteUrl(params.baseUrl, (variantImageRaw as any).url);
-              }
-              return imageUrl;
-            })();
+            const variantImageUrl = resolveStructuredImageUrl(params.baseUrl, [variantImageRaw, imageRaw, extracted.imageCandidates]);
 
             return {
               id,
@@ -1287,8 +1392,8 @@ async function scrapeProductPage(params: {
 
             const offerImageRaw = offer.image;
             const offerImageUrl = (() => {
-              if (typeof offerImageRaw === "string" && offerImageRaw.trim()) return toAbsoluteUrl(params.baseUrl, offerImageRaw);
-              if (Array.isArray(offerImageRaw) && typeof offerImageRaw[0] === "string") return toAbsoluteUrl(params.baseUrl, offerImageRaw[0]);
+              const structuredImageUrl = resolveStructuredImageUrl(params.baseUrl, [offerImageRaw, imageRaw, extracted.imageCandidates]);
+              if (structuredImageUrl) return structuredImageUrl;
               if (domMeta?.image_url) return toAbsoluteUrl(params.baseUrl, domMeta.image_url);
               return imageUrl;
             })();

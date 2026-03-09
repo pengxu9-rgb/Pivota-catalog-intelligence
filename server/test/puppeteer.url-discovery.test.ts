@@ -5,6 +5,7 @@ import {
   extractProductUrlsFromHtml,
   isLikelyProductUrl,
   isStaticAssetUrl,
+  resolveStructuredImageUrl,
 } from "../src/services/extractors/puppeteer";
 
 const BASE_URL = "https://theordinary.com";
@@ -96,4 +97,35 @@ test("extractProductUrlsFromHtml ignores external social links", () => {
   const urls = extractProductUrlsFromHtml(html, BASE_URL);
 
   assert.deepEqual(urls, ["https://theordinary.com/the-geranium-rose-body-cream"]);
+});
+
+test("resolveStructuredImageUrl reads the first usable URL from ImageObject arrays", () => {
+  const url = resolveStructuredImageUrl("https://www.guerlain.com", [
+    {
+      "@type": "ImageObject",
+      url: "https://www.guerlain.com/dw/image/v2/BDCZ_PRD/on/demandware.static/-/Sites-GSA_master_catalog/default/dwf327011b/01-ProductsViewer/P062033/P062033_G062033_E01_hi-res.jpg?sw=655&sh=655&sfrm=png",
+    },
+    {
+      "@type": "ImageObject",
+      url: "https://www.guerlain.com/dw/image/v2/BDCZ_PRD/on/demandware.static/-/Sites-GSA_master_catalog/default/dw97b9f8d5/01-ProductsViewer/P062033/P062033_E02_hi-res.jpg?sw=655&sh=655&sfrm=jpg",
+    },
+  ]);
+
+  assert.equal(
+    url,
+    "https://www.guerlain.com/dw/image/v2/BDCZ_PRD/on/demandware.static/-/Sites-GSA_master_catalog/default/dwf327011b/01-ProductsViewer/P062033/P062033_G062033_E01_hi-res.jpg?sw=655&sh=655&sfrm=png",
+  );
+});
+
+test("resolveStructuredImageUrl skips placeholder and favicon candidates when falling back", () => {
+  const url = resolveStructuredImageUrl("https://www.guerlain.com", [
+    "https://www.guerlain.com/on/demandware.static/Sites-Guerlain_US-Site/-/default/dw84c3d99e/images/placeholder.svg",
+    "https://www.guerlain.com/on/demandware.static/Sites-Guerlain_US-Site/-/default/dw9fbf37fc/images/favicons/favicon-144x144.png",
+    "https://www.guerlain.com/dw/image/v2/BDCZ_PRD/on/demandware.static/-/Sites-GSA_master_catalog/default/dwf327011b/01-ProductsViewer/P062033/P062033_G062033_E01_hi-res.png?sw=900&sh=900",
+  ]);
+
+  assert.equal(
+    url,
+    "https://www.guerlain.com/dw/image/v2/BDCZ_PRD/on/demandware.static/-/Sites-GSA_master_catalog/default/dwf327011b/01-ProductsViewer/P062033/P062033_G062033_E01_hi-res.png?sw=900&sh=900",
+  );
 });

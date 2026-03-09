@@ -470,16 +470,31 @@ export function detectBlockProvider(params: {
   const title = (params.title || "").toLowerCase();
   const body = (params.body || "").toLowerCase();
   const joined = `${title}\n${body}`;
+  const status = params.status ?? 0;
+  const blockedStatus = status === 401 || status === 403 || status === 429 || status === 503;
+  const server = (headers["server"] || "").toLowerCase();
+  const cloudflareChallengeText =
+    /just a moment|performing security verification|attention required|verify you are human|ray id|challenge-platform|please enable javascript and cookies/i;
+  const akamaiChallengeText = /access denied|reference #|bot manager|_abck|bm_sz|ak_bmsc|akamai/i;
+  const perimeterxChallengeText = /_px|perimeterx|press & hold|human verification|px-captcha/i;
 
-  if (headers["cf-mitigated"] || headers["cf-ray"] || /cloudflare|just a moment|performing security verification|ray id/.test(joined)) {
+  if (
+    headers["cf-mitigated"] ||
+    cloudflareChallengeText.test(joined) ||
+    (blockedStatus && Boolean(headers["cf-ray"]) && /cloudflare|challenge|captcha|security verification|verify you are human/i.test(joined)) ||
+    (blockedStatus && server.includes("cloudflare") && cloudflareChallengeText.test(joined))
+  ) {
     return "cloudflare";
   }
 
-  if (headers["server"]?.toLowerCase().includes("akamai") || /akamai|_abck|bm_sz/.test(joined)) {
+  if (
+    /_abck|bm_sz|ak_bmsc/.test(joined) ||
+    (blockedStatus && server.includes("akamai") && akamaiChallengeText.test(joined))
+  ) {
     return "akamai";
   }
 
-  if (/_px|perimeterx|press & hold|human verification/.test(joined)) {
+  if (perimeterxChallengeText.test(joined) && (blockedStatus || /press & hold|human verification|captcha/i.test(joined))) {
     return "perimeterx";
   }
 

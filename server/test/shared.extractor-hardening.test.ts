@@ -185,6 +185,21 @@ test("detectBlockProvider classifies Cloudflare challenge pages", () => {
   assert.equal(provider, "cloudflare");
 });
 
+test("detectBlockProvider does not classify normal Cloudflare-served pages from cf-ray alone", () => {
+  const provider = detectBlockProvider({
+    status: 200,
+    headers: {
+      "cf-ray": "1234567890-SJC",
+      server: "cloudflare",
+    },
+    body: "<html><head><title>Shop</title></head><body><h1>Products</h1></body></html>",
+    title: "Shop",
+    url: "https://example.com/products",
+  });
+
+  assert.equal(provider, null);
+});
+
 test("runBrowserTaskWithFallback retries once with a managed browser after a bot challenge", async () => {
   const diagnostics = createDiagnostics("www.laroche-posay.us", "https://www.laroche-posay.us");
   const originalLaunch = puppeteer.launch;

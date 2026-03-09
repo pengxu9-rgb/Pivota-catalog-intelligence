@@ -23,6 +23,7 @@ import {
   fetchJsonTracked,
   fetchTextTracked,
   gotoPageOrThrow,
+  looksLikeProductPageHtml,
   mapWithConcurrency as mapWithConcurrencyShared,
   normalizeMarketId,
   parseTarget as parseTargetShared,
@@ -464,7 +465,7 @@ async function scrapeProductPageV2(params: {
       context: params.context,
       navigationTimeoutMs: params.navigationTimeoutMs,
     });
-    await gotoPageOrThrow(page, {
+    const visit = await gotoPageOrThrow(page, {
       url: params.url,
       baseUrl: params.baseUrl,
       context: params.context,
@@ -537,6 +538,7 @@ async function scrapeProductPageV2(params: {
       sourceSite: params.sourceSite,
       context: params.context,
       extracted,
+      pageHtml: visit.content,
       capturedAt: params.capturedAt,
     });
   } catch {
@@ -554,6 +556,7 @@ function buildOffersFromScrapedPage(params: {
   sourceSite: string;
   context: RequestContext;
   extracted: ScrapedPageData;
+  pageHtml: string;
   capturedAt: string;
 }): OfferV2[] {
   const objects: JsonObject[] = [];
@@ -586,6 +589,10 @@ function buildOffersFromScrapedPage(params: {
   const fallbackPriceDisplay = params.extracted.priceTexts[0] || null;
 
   if (offersRaw.length === 0) {
+    if (!productObj && !looksLikeProductPageHtml(params.pageHtml)) {
+      return [];
+    }
+
     const parsed = parsePrice(fallbackPriceDisplay);
     const resolvedCurrency = resolveCurrency({
       structuredCurrency: null,

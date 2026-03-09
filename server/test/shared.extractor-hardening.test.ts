@@ -10,6 +10,7 @@ import {
   createDiagnostics,
   detectBlockProvider,
   discoverProductUrls,
+  looksLikeProductPageHtml,
   resolveStorefrontFromHtml,
   runBrowserTaskWithFallback,
 } from "../src/services/extractors/shared";
@@ -166,6 +167,16 @@ test("discoverProductUrls treats a direct PDP input as a product page", async ()
       assert.equal(diagnostics.discovery_strategy, "seed_page");
       assert.deepEqual(discovered.productUrls, ["https://augustinusbader.com/the-rich-cream"]);
     },
+  );
+});
+
+test("looksLikeProductPageHtml distinguishes PDPs from price-only non-product pages", () => {
+  assert.equal(looksLikeProductPageHtml(readFixture("direct-product-page.html")), true);
+  assert.equal(
+    looksLikeProductPageHtml(
+      "<html><head><title>Spa Vinotherapie</title></head><body><h1>Spa Vinotherapie</h1><p>Starting at $250</p></body></html>",
+    ),
+    false,
   );
 });
 

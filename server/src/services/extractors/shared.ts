@@ -13,7 +13,7 @@ const TRACKING_QUERY_PARAM_RE = /^(utm_|fbclid$|gclid$|mc_|_ga$|_gl$|ref$|source
 const STATIC_ASSET_EXT_RE =
   /\.(?:css|js|mjs|map|png|jpe?g|gif|webp|svg|ico|pdf|xml|txt|woff2?|ttf|eot|otf|mp3|wav|mp4|webm|zip|gz|tar|json)(?:$|[?#])/i;
 const NEGATIVE_PATH_RE =
-  /(?:^|\/)(?:collections?|collection|category|catalogsearch|search|cart|account|customer|blog|blogs|pages?|faq|privacy|terms|wishlist|gift(?:ing)?|store-locator|customer-service)(?:\/|$)/i;
+  /(?:^|\/)(?:c|collections?|collection|category|catalogsearch|search|cart|account|customer|blog|blogs|pages?|faq|privacy|terms|wishlist|gift(?:ing)?|store-locator|customer-service|all-products)(?:\/|$)/i;
 const PRODUCT_SIGNAL_RE =
   /"@type"\s*:\s*(?:"Product"|\[[^\]]*"Product")|application\/ld\+json|add to cart|buy now|quick shop|price(?:currency)?|itemprop=["']price["']/i;
 const PRICE_SIGNAL_RE = /[$€£¥]\s?\d|price(?:currency)?|sale price|from\s+[$€£¥]/i;
@@ -224,7 +224,7 @@ export function withUrlParams(rawUrl: string, urlParams: Record<string, string> 
 
 export function toAbsoluteUrl(baseUrl: string, href: string): string {
   try {
-    return new URL(href, baseUrl).toString();
+    return new URL(decodeHtmlEntities(href), baseUrl).toString();
   } catch {
     return href;
   }
@@ -279,6 +279,23 @@ function textFromHtml(fragment: string): string {
     .replace(/&nbsp;/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_match, hex) => {
+      const codePoint = Number.parseInt(hex, 16);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : _match;
+    })
+    .replace(/&#([0-9]+);/g, (_match, decimal) => {
+      const codePoint = Number.parseInt(decimal, 10);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : _match;
+    })
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
 }
 
 function extractPrimaryBrandToken(host: string): string {
@@ -369,6 +386,8 @@ export function isLikelyProductUrl(rawUrl: string, baseUrl: string): boolean {
 function isLikelyCategoryUrl(rawUrl: string, baseUrl: string): boolean {
   const parsed = parseHttpUrl(rawUrl, baseUrl);
   if (!parsed) return false;
+  const baseHost = parseHttpUrl(baseUrl, baseUrl)?.host.toLowerCase();
+  if (baseHost && parsed.host.toLowerCase() !== baseHost) return false;
   if (isStaticAssetUrl(parsed.toString(), baseUrl)) return false;
   if (NEGATIVE_PATH_RE.test(parsed.pathname)) return false;
   if (isLikelyProductUrl(parsed.toString(), baseUrl)) return false;
@@ -421,7 +440,7 @@ function extractAnchorCandidates(html: string, baseUrl: string): AnchorCandidate
     if (!rawHref) continue;
     if (/^(#|mailto:|tel:|javascript:)/i.test(rawHref)) continue;
     out.push({
-      href: toAbsoluteUrl(baseUrl, rawHref.replace(/&amp;/gi, "&")),
+      href: toAbsoluteUrl(baseUrl, decodeHtmlEntities(rawHref)),
       text: textFromHtml(match[2] || ""),
       html: match[0] || "",
     });
@@ -431,7 +450,7 @@ function extractAnchorCandidates(html: string, baseUrl: string): AnchorCandidate
     const rawHref = match[1]?.trim();
     if (!rawHref || /^(#|javascript:)/i.test(rawHref)) continue;
     out.push({
-      href: toAbsoluteUrl(baseUrl, rawHref.replace(/&amp;/gi, "&")),
+      href: toAbsoluteUrl(baseUrl, decodeHtmlEntities(rawHref)),
       text: textFromHtml(match[2] || ""),
       html: match[0] || "",
     });

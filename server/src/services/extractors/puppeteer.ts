@@ -24,6 +24,7 @@ import {
   gotoPageOrThrow,
   isLikelyProductUrl as isLikelyProductUrlShared,
   isStaticAssetUrl as isStaticAssetUrlShared,
+  looksLikeProductPageHtml,
   mapWithConcurrency as mapWithConcurrencyShared,
   normalizeMarketId,
   parseTarget as parseTargetShared,
@@ -945,12 +946,13 @@ async function scrapeProductPage(params: {
       context: params.context,
       navigationTimeoutMs: params.navigationTimeoutMs,
     });
-    await gotoPageOrThrow(page, {
+    const visit = await gotoPageOrThrow(page, {
       url: params.url,
       baseUrl: params.baseUrl,
       context: params.context,
       diagnostics: params.diagnostics!,
     });
+    const pageLooksLikeProduct = looksLikeProductPageHtml(visit.content);
 
     const extracted = await page.evaluate(() => {
       const title =
@@ -1120,6 +1122,12 @@ async function scrapeProductPage(params: {
     if (!productObj && params.verbose) {
       params.log("warn", "> No JSON-LD Product schema found. Falling back to title/meta/price extraction.");
     }
+    if (!productObj && !pageLooksLikeProduct) {
+      if (params.verbose) {
+        params.log("warn", `> Skipping non-product candidate: ${params.url}`);
+      }
+      return null;
+    }
 
     const productTitle = (
       typeof productObj?.name === "string" ? productObj.name : extracted.title
@@ -1239,7 +1247,9 @@ async function scrapeProductPage(params: {
           ];
 
     if (params.verbose) {
-      params.log("data", "> Found JSON-LD 'Product' Schema");
+      if (productObj) {
+        params.log("data", "> Found JSON-LD 'Product' Schema");
+      }
       params.log("success", `> Extracted ${variants.length} offers/variants`);
     }
 

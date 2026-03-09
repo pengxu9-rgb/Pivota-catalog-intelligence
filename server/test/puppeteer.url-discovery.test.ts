@@ -28,6 +28,7 @@ test("isLikelyProductUrl supports .html and /products/ PDP URLs", () => {
   );
   assert.equal(isLikelyProductUrl("https://theordinary.com/products/squalane-face-cleanser", BASE_URL), true);
   assert.equal(isLikelyProductUrl("https://theordinary.com/the-geranium-rose-body-cream", BASE_URL), true);
+  assert.equal(isLikelyProductUrl("https://us.caudalie.com/c/all-products.html", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://theordinary.com/", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://theordinary.com/en-us", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://cdn.example.com/de-de/foo-100436.html", BASE_URL), false);
@@ -72,4 +73,26 @@ test("extractProductUrlsFromHtml regex fallback still excludes static resources"
       "https://theordinary.com/product/mini-discovery-set",
     ]),
   );
+});
+
+test("extractProductUrlsFromHtml decodes HTML-entity encoded absolute hrefs", () => {
+  const html = `
+    <a href="https&#x3A;&#x2F;&#x2F;theordinary.com&#x2F;the-geranium-rose-body-cream">Encoded PDP</a>
+  `;
+
+  const urls = extractProductUrlsFromHtml(html, BASE_URL);
+
+  assert.deepEqual(urls, ["https://theordinary.com/the-geranium-rose-body-cream"]);
+});
+
+test("extractProductUrlsFromHtml ignores external social links", () => {
+  const html = `
+    <a href="https://www.instagram.com/theordinary/">Instagram</a>
+    <a href="https://www.facebook.com/theordinary/">Facebook</a>
+    <a href="/the-geranium-rose-body-cream">Product</a>
+  `;
+
+  const urls = extractProductUrlsFromHtml(html, BASE_URL);
+
+  assert.deepEqual(urls, ["https://theordinary.com/the-geranium-rose-body-cream"]);
 });

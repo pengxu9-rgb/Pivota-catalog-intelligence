@@ -48,7 +48,7 @@ export type ExtractRequestBody = {
 
 export type ExtractInput = ExtractRequestBody;
 
-export type CurrencyCode = "USD";
+export type CurrencyCode = "USD" | "EUR" | "SGD" | "JPY";
 export type StockStatus = "In Stock" | "Low Stock" | "Out of Stock";
 
 export type ExtractedVariant = {

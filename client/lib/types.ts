@@ -1,3 +1,5 @@
+export type CurrencyCode = "USD" | "EUR" | "SGD" | "JPY";
+
 export type LogLine = {
   at: string;
   type: "info" | "success" | "warn" | "error" | "data";
@@ -11,7 +13,7 @@ export type ExtractedVariantRow = {
   option_name: string;
   option_value: string;
   price: string;
-  currency: "USD";
+  currency: CurrencyCode;
   stock: "In Stock" | "Low Stock" | "Out of Stock";
   description: string;
   image_url: string;
@@ -38,7 +40,7 @@ export type ExtractedProduct = {
     option_name: string;
     option_value: string;
     price: string;
-    currency: "USD";
+    currency: CurrencyCode;
     stock: "In Stock" | "Low Stock" | "Out of Stock";
     description: string;
     image_url: string;
@@ -57,7 +59,7 @@ export type ExtractResponse = {
   products: ExtractedProduct[];
   variants: ExtractedVariantRow[];
   pricing: {
-    currency: "USD";
+    currency: CurrencyCode;
     min: number;
     max: number;
     avg: number;

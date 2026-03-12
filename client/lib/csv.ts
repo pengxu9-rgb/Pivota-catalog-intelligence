@@ -1,4 +1,4 @@
-import type { ExtractedProduct, ExtractedVariantRow } from "./types";
+import type { CurrencyCode, ExtractedProduct, ExtractedVariantRow } from "./types";
 
 function escapeCsvField(value: string) {
   const escaped = value.replace(/\"/g, '\"\"');
@@ -76,7 +76,7 @@ type ProductAggregate = {
   variantCount: number;
   minPrice: number;
   maxPrice: number;
-  currency: "USD";
+  currency: CurrencyCode;
   stockSummary: string;
   imageUrl: string;
   imageUrls: string[];

@@ -21,6 +21,7 @@ import {
   dismissCookieBanner,
   extractProductUrlsFromHtml as extractProductUrlsFromHtmlShared,
   fetchJsonTracked,
+  fetchTextTracked,
   gotoPageOrThrow,
   isLikelyProductUrl as isLikelyProductUrlShared,
   isStaticAssetUrl as isStaticAssetUrlShared,
@@ -428,12 +429,12 @@ function computePricingStats(variants: ExtractedVariantRow[]) {
   const nums = variants
     .map((v) => Number.parseFloat(v.price))
     .filter((n) => Number.isFinite(n));
-
-  if (nums.length === 0) return { currency: "USD" as const, min: 0, max: 0, avg: 0 };
+  const currency = variants[0]?.currency || "USD";
+  if (nums.length === 0) return { currency, min: 0, max: 0, avg: 0 };
   const min = Math.min(...nums);
   const max = Math.max(...nums);
   const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
-  return { currency: "USD" as const, min, max, avg: Number(avg.toFixed(2)) };
+  return { currency, min, max, avg: Number(avg.toFixed(2)) };
 }
 
 function dedupeStringList(values: Array<string | undefined | null>) {
@@ -635,6 +636,71 @@ type ShopifyImage = {
   variant_ids?: number[];
 };
 
+const ZERO_DECIMAL_CURRENCIES = new Set(["JPY"]);
+
+function normalizeCurrencyCode(raw: unknown): ExtractedVariant["currency"] | null {
+  const normalized = String(raw || "").trim().toUpperCase();
+  if (normalized === "USD" || normalized === "EUR" || normalized === "SGD" || normalized === "JPY") {
+    return normalized;
+  }
+  return null;
+}
+
+function extractCurrencyHintFromHtml(html: string): ExtractedVariant["currency"] | null {
+  const regexes = [
+    /"priceCurrency"\s*:\s*"([A-Za-z]{3})"/i,
+    /meta[^>]+property=["']og:price:currency["'][^>]+content=["']([A-Za-z]{3})["']/i,
+    /meta[^>]+property=["']product:price:currency["'][^>]+content=["']([A-Za-z]{3})["']/i,
+    /data-currency=["']([A-Za-z]{3})["']/i,
+    /Shopify\.currency\s*=\s*\{[^}]*"active"\s*:\s*"([A-Za-z]{3})"/i,
+    /currencyCode"\s*:\s*"([A-Za-z]{3})"/i,
+    /window\.ShopifyAnalytics\.meta\.currency\s*=\s*['"]([A-Za-z]{3})['"]/i,
+    /cart_currency=([A-Za-z]{3})/i,
+  ];
+
+  for (const pattern of regexes) {
+    const matched = html.match(pattern)?.[1];
+    const normalized = normalizeCurrencyCode(matched);
+    if (normalized) return normalized;
+  }
+
+  return null;
+}
+
+async function fetchShopifyCurrencyHint(
+  urlCandidates: Array<string | undefined>,
+  diagnostics: NonNullable<ExtractResponse["diagnostics"]>,
+): Promise<ExtractedVariant["currency"] | null> {
+  for (const candidate of urlCandidates) {
+    const url = String(candidate || "").trim();
+    if (!url) continue;
+    const outcome = await fetchTextTracked(url, {}, diagnostics);
+    if (!outcome.body) continue;
+    const hint = extractCurrencyHintFromHtml(outcome.body);
+    if (hint) return hint;
+  }
+  return null;
+}
+
+function normalizeShopifyPrice(raw: unknown, currency: ExtractedVariant["currency"]) {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    if (Number.isInteger(raw) && !ZERO_DECIMAL_CURRENCIES.has(currency)) {
+      return (raw / 100).toFixed(2);
+    }
+    return raw.toFixed(2);
+  }
+
+  if (typeof raw === "string" && raw.trim()) {
+    const trimmed = raw.trim();
+    if (/^-?\d+$/.test(trimmed) && !ZERO_DECIMAL_CURRENCIES.has(currency)) {
+      return (Number(trimmed) / 100).toFixed(2);
+    }
+    return trimmed;
+  }
+
+  return "0.00";
+}
+
 function isDefaultShopifyVariant(variant: ShopifyVariant): boolean {
   const fields = [variant.title, variant.option1, variant.option2, variant.option3]
     .map((v) => (v || "").trim().toLowerCase())
@@ -656,6 +722,7 @@ async function tryExtractShopify(params: {
 }): Promise<Omit<ExtractResponse, "generated_at" | "logs"> | null> {
   const log = params.log;
   const directHandle = extractShopifyProductHandle(params.seedUrl, params.baseUrl);
+  const currencyHintUrls = dedupeStringList([params.seedUrl, params.baseUrl]);
 
   if (directHandle) {
     const directUrl = `${params.baseUrl}/products/${directHandle}.js`;
@@ -664,8 +731,10 @@ async function tryExtractShopify(params: {
     if (directProduct.data && typeof directProduct.data.id === "number") {
       log("success", `Shopify direct product detected for handle: ${directHandle}`);
       setDiscoveryStrategy(params.diagnostics!, "shopify_json");
+      const currencyHint = await fetchShopifyCurrencyHint(currencyHintUrls, params.diagnostics!);
       const response = buildShopifyResponse({
         ...params,
+        currencyHint,
         products: [directProduct.data],
         platformLabel: "Shopify (Direct PDP)",
       });
@@ -694,6 +763,7 @@ async function tryExtractShopify(params: {
 
   log("success", "Shopify feed detected.");
   setDiscoveryStrategy(params.diagnostics!, "shopify_json");
+  const currencyHint = await fetchShopifyCurrencyHint(currencyHintUrls, params.diagnostics!);
 
   const allProducts: ShopifyProduct[] = [];
   const maxPages = clampIntShared(process.env.SHOPIFY_MAX_PAGES, 20, 1, 200);
@@ -713,6 +783,7 @@ async function tryExtractShopify(params: {
 
   return buildShopifyResponse({
     ...params,
+    currencyHint,
     products: limitedProducts,
     platformLabel: params.collectionHandle ? `Shopify (Collection: ${params.collectionHandle})` : "Shopify",
   });
@@ -789,6 +860,7 @@ function buildShopifyResponse(params: {
   baseUrl: string;
   products: ShopifyProduct[];
   platformLabel: string;
+  currencyHint: ExtractedVariant["currency"] | null;
   offset: number;
   limit: number;
   diagnostics: ExtractResponse["diagnostics"];
@@ -842,6 +914,7 @@ function buildShopifyResponse(params: {
       ? "Variant"
       : product.options?.map((o) => o.name).filter((n): n is string => Boolean(n && n.trim())).join(" / ") || "Variant";
     const officialText = product.body_html;
+    const currency = params.currencyHint || "USD";
 
     const extractedVariants: ExtractedVariant[] = (product.variants || []).map((v) => {
       const optionValue = treatAsPseudoVariant
@@ -851,7 +924,7 @@ function buildShopifyResponse(params: {
           "Default";
 
       const sku = (v.sku || "").trim() || `SHOPIFY-${v.id}`;
-      const price = normalizePrice(v.price);
+      const price = normalizeShopifyPrice(v.price, currency);
       const stock = toStockStatus(v.available, v.inventory_quantity);
       const imageUrls = resolveShopifyVariantImageUrls(params.baseUrl, product, v);
       const imageUrl = imageUrls[0] || "";
@@ -865,7 +938,7 @@ function buildShopifyResponse(params: {
         option_name: optionName,
         option_value: optionValue,
         price,
-        currency: "USD",
+        currency,
         stock,
         description,
         image_url: imageUrl,

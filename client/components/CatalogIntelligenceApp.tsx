@@ -24,12 +24,13 @@ function computeMergedPricing(variants: ExtractedVariantRow[]) {
   const nums = variants
     .map((v) => Number.parseFloat(v.price))
     .filter((n) => Number.isFinite(n));
-  if (nums.length === 0) return { currency: "USD" as const, min: 0, max: 0, avg: 0 };
+  const currency = variants[0]?.currency || "USD";
+  if (nums.length === 0) return { currency, min: 0, max: 0, avg: 0 };
 
   const min = Math.min(...nums);
   const max = Math.max(...nums);
   const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
-  return { currency: "USD" as const, min, max, avg: Number(avg.toFixed(2)) };
+  return { currency, min, max, avg: Number(avg.toFixed(2)) };
 }
 
 function mergeStringLists(...lists: Array<string[] | undefined>) {

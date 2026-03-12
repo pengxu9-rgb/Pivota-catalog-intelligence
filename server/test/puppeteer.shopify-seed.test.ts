@@ -49,7 +49,7 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
         sku: "OH-VC-001",
         title: "Default Title",
         option1: "Default Title",
-        price: 68,
+        price: 6800,
         available: true,
         inventory_quantity: 12,
       },
@@ -68,6 +68,11 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
         headers: { "content-type": "application/json; charset=utf-8" },
         body: JSON.stringify(directProduct),
       },
+      "https://olehenriksen.com/products/banana-bright-vitamin-c-serum": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
     },
     async () => {
       const result = await extractor.extract({
@@ -79,6 +84,8 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
       assert.equal(result.products.length, 1);
       assert.equal(result.products[0]?.url, "https://olehenriksen.com/products/banana-bright-vitamin-c-serum");
       assert.deepEqual(result.products[0]?.variant_skus, ["OH-VC-001"]);
+      assert.equal(result.variants[0]?.price, "68.00");
+      assert.equal(result.variants[0]?.currency, "USD");
       assert.deepEqual(result.products[0]?.image_urls, [
         "https://cdn.example.com/banana-1.jpg",
         "https://cdn.example.com/banana-2.jpg",
@@ -122,6 +129,11 @@ test("PuppeteerExtractor supports string-based Shopify direct PDP image arrays",
         headers: { "content-type": "application/json; charset=utf-8" },
         body: JSON.stringify(directProduct),
       },
+      "https://pixibeauty.com/products/glow-getter-set": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
     },
     async () => {
       const result = await extractor.extract({
@@ -141,6 +153,80 @@ test("PuppeteerExtractor supports string-based Shopify direct PDP image arrays",
         result.products[0]?.image_url,
         "https://cdn.shopify.com/s/files/1/1463/5858/files/AAV1_PJUL02_BundlesMinis_01_Ruby_BaseBrush.jpg?v=1752708261",
       );
+      assert.equal(result.variants[0]?.price, "62.00");
+      assert.equal(result.variants[0]?.currency, "USD");
+    },
+  );
+});
+
+test("PuppeteerExtractor normalizes Shopify direct PDP cents and HTML currency hints", async () => {
+  const extractor = new PuppeteerExtractor();
+  const directProduct = {
+    id: 303,
+    title: "Mousse Nettoyante Détox",
+    handle: "mousse-nettoyante-detox",
+    body_html: "<p>Detox foam cleanser</p>",
+    variants: [
+      {
+        id: 3001,
+        sku: "P1126",
+        title: "150 ml",
+        option1: "150 ml",
+        price: 1590,
+        available: true,
+        inventory_quantity: 60,
+      },
+      {
+        id: 3002,
+        sku: "P6126",
+        title: "50 ml",
+        option1: "50 ml",
+        price: 790,
+        available: true,
+        inventory_quantity: 60,
+      },
+    ],
+    options: [{ name: "Size" }],
+    images: [{ src: "https://cdn.example.com/patyka-1.jpg" }],
+  };
+
+  await withMockFetch(
+    {
+      "https://patyka.com/products/mousse-nettoyante-detox.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify(directProduct),
+      },
+      "https://patyka.com/products/mousse-nettoyante-detox": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `
+          <html>
+            <head>
+              <meta property="og:price:currency" content="EUR">
+              <script>Shopify.currency = {"active":"EUR","rate":"1.0"};</script>
+            </head>
+            <body></body>
+          </html>
+        `,
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Patyka",
+        domain: "https://patyka.com/products/mousse-nettoyante-detox",
+        limit: 5,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.variants.length, 2);
+      assert.equal(result.variants[0]?.price, "15.90");
+      assert.equal(result.variants[0]?.currency, "EUR");
+      assert.equal(result.variants[1]?.price, "7.90");
+      assert.equal(result.variants[1]?.currency, "EUR");
+      assert.equal(result.pricing.currency, "EUR");
+      assert.equal(result.pricing.min, 7.9);
+      assert.equal(result.pricing.max, 15.9);
     },
   );
 });

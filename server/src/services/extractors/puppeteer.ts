@@ -541,7 +541,7 @@ async function tryExtractShopify(params: {
   maxProducts: number;
   offset: number;
   limit: number;
-  diagnostics: ExtractResponse["diagnostics"];
+  diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
   log: Logger;
 }): Promise<Omit<ExtractResponse, "generated_at" | "logs"> | null> {
   const log = params.log;
@@ -554,10 +554,18 @@ async function tryExtractShopify(params: {
     if (directProduct.data && typeof directProduct.data.id === "number") {
       log("success", `Shopify direct product detected for handle: ${directHandle}`);
       setDiscoveryStrategy(params.diagnostics!, "shopify_json");
-      return buildShopifyResponse({
+      const response = buildShopifyResponse({
         ...params,
         products: [directProduct.data],
         platformLabel: "Shopify (Direct PDP)",
+      });
+      return enrichDirectShopifyPdpResponse({
+        brand: params.brand,
+        baseUrl: params.baseUrl,
+        seedUrl: params.seedUrl,
+        response,
+        diagnostics: params.diagnostics,
+        log,
       });
     }
     log("warn", `Shopify direct product feed not found for handle: ${directHandle}. Falling back to collection/site feed.`);
@@ -598,6 +606,60 @@ async function tryExtractShopify(params: {
     products: limitedProducts,
     platformLabel: params.collectionHandle ? `Shopify (Collection: ${params.collectionHandle})` : "Shopify",
   });
+}
+
+async function enrichDirectShopifyPdpResponse(params: {
+  brand: string;
+  baseUrl: string;
+  seedUrl?: string;
+  response: Omit<ExtractResponse, "generated_at" | "logs">;
+  diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
+  log: Logger;
+}): Promise<Omit<ExtractResponse, "generated_at" | "logs">> {
+  const product = params.response.products[0];
+  if (!params.seedUrl || !product || params.response.products.length !== 1) return params.response;
+
+  const productMissingImages = product.image_urls.length === 0;
+  const variantMissingImages = product.variants.some((variant) => variant.image_urls.length === 0);
+  if (!productMissingImages && !variantMissingImages) return params.response;
+
+  params.log("info", `Shopify direct PDP returned incomplete image data. Attempting browser enrichment: ${params.seedUrl}`);
+
+  const navigationTimeoutMs = clampIntShared(process.env.PUPPETEER_NAV_TIMEOUT_MS, DEFAULT_NAV_TIMEOUT_MS, 5_000, 120_000);
+  const scrapeTimeoutMs = clampIntShared(process.env.PUPPETEER_SCRAPE_TIMEOUT_MS, DEFAULT_SCRAPE_TIMEOUT_MS, 10_000, 300_000);
+
+  const browserRun = await runBrowserTaskWithFallback<ExtractedProduct | null>(
+    async (browser) =>
+      withTimeoutShared(
+        scrapeProductPage({
+          browser,
+          url: params.seedUrl!,
+          baseUrl: params.baseUrl,
+          navigationTimeoutMs,
+          verbose: false,
+          log: params.log,
+          diagnostics: params.diagnostics!,
+          context: {},
+        }),
+        scrapeTimeoutMs,
+        "Shopify direct PDP image enrichment",
+      ),
+    { diagnostics: params.diagnostics, log: params.log },
+  );
+
+  if (!browserRun.result) {
+    params.log("warn", `Browser enrichment did not recover images for Shopify PDP: ${params.seedUrl}`);
+    return params.response;
+  }
+
+  const merged = mergeShopifyDirectPdpFallback(params.brand, params.response, browserRun.result);
+  if ((merged.products[0]?.image_urls.length || 0) > (product.image_urls.length || 0)) {
+    params.log(
+      "success",
+      `Recovered ${merged.products[0]?.image_urls.length || 0} Shopify PDP images via browser enrichment: ${params.seedUrl}`,
+    );
+  }
+  return merged;
 }
 
 function extractShopifyProductHandle(seedUrl: string | undefined, baseUrl: string): string | null {
@@ -773,6 +835,96 @@ function buildShopifyResponse(params: {
       discovered_urls: extractedProducts.length,
     },
     diagnostics: params.diagnostics,
+  };
+}
+
+export function mergeShopifyDirectPdpFallback(
+  brand: string,
+  response: Omit<ExtractResponse, "generated_at" | "logs">,
+  fallbackProduct: ExtractedProduct,
+): Omit<ExtractResponse, "generated_at" | "logs"> {
+  if (!response.products[0]) return response;
+
+  const mergedProducts = response.products.map((product, idx) => {
+    if (idx !== 0) return product;
+
+    const mergedProduct: ExtractedProduct = {
+      ...product,
+      image_urls: [...product.image_urls],
+      variant_skus: [...product.variant_skus],
+      variants: product.variants.map((variant) => ({
+        ...variant,
+        image_urls: [...variant.image_urls],
+      })),
+    };
+
+    const fallbackProductImages = dedupeStringList([
+      ...fallbackProduct.image_urls,
+      fallbackProduct.image_url,
+      ...fallbackProduct.variants.flatMap((variant) => variant.image_urls),
+      ...fallbackProduct.variants.map((variant) => variant.image_url),
+    ]);
+
+    const fallbackBySku = new Map(
+      fallbackProduct.variants
+        .filter((variant) => variant.sku)
+        .map((variant) => [variant.sku, variant] as const),
+    );
+    const fallbackByOption = new Map(
+      fallbackProduct.variants
+        .filter((variant) => variant.option_name || variant.option_value)
+        .map((variant) => [`${variant.option_name}::${variant.option_value}`, variant] as const),
+    );
+
+    mergedProduct.variants = mergedProduct.variants.map((variant) => {
+      const matchedFallback =
+        fallbackBySku.get(variant.sku) ||
+        fallbackByOption.get(`${variant.option_name}::${variant.option_value}`) ||
+        fallbackProduct.variants[0];
+
+      const mergedVariantImages = dedupeStringList([
+        ...variant.image_urls,
+        variant.image_url,
+        ...(matchedFallback?.image_urls || []),
+        matchedFallback?.image_url,
+        ...fallbackProductImages,
+      ]);
+
+      return {
+        ...variant,
+        image_urls: mergedVariantImages,
+        image_url: mergedVariantImages[0] || variant.image_url || mergedProduct.image_url,
+      };
+    });
+
+    mergedProduct.image_urls = dedupeStringList([
+      ...mergedProduct.image_urls,
+      mergedProduct.image_url,
+      ...fallbackProductImages,
+      ...mergedProduct.variants.flatMap((variant) => variant.image_urls),
+      ...mergedProduct.variants.map((variant) => variant.image_url),
+    ]);
+    mergedProduct.image_url = mergedProduct.image_urls[0] || mergedProduct.image_url || "";
+    mergedProduct.variant_skus = dedupeStringList([
+      ...mergedProduct.variant_skus,
+      ...fallbackProduct.variant_skus,
+      ...mergedProduct.variants.map((variant) => variant.sku),
+    ]);
+
+    return mergedProduct;
+  });
+
+  const { variants, adCopyById } = flattenVariants({
+    brand,
+    products: mergedProducts,
+    simulated: false,
+  });
+
+  return {
+    ...response,
+    products: mergedProducts,
+    variants,
+    ad_copy: { by_variant_id: adCopyById },
   };
 }
 

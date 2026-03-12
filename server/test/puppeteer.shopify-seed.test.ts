@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { PuppeteerExtractor } from "../src/services/extractors/puppeteer";
+import { PuppeteerExtractor, mergeShopifyDirectPdpFallback } from "../src/services/extractors/puppeteer";
 
 type MockRoute = {
   status?: number;
@@ -143,4 +143,107 @@ test("PuppeteerExtractor supports string-based Shopify direct PDP image arrays",
       );
     },
   );
+});
+
+test("mergeShopifyDirectPdpFallback fills Shopify direct PDP images from fallback scrape data", () => {
+  const response = {
+    brand: "Pixi",
+    domain: "pixibeauty.com",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Glow Getter Set",
+        url: "https://pixibeauty.com/products/glow-getter-set",
+        image_url: "",
+        image_urls: [],
+        variant_skus: ["84357"],
+        variants: [
+          {
+            id: "v1",
+            sku: "84357",
+            url: "https://pixibeauty.com/products/glow-getter-set",
+            option_name: "Title",
+            option_value: "Default Title",
+            price: "62.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "desc",
+            image_url: "",
+            image_urls: [],
+            ad_copy: "copy",
+          },
+        ],
+      },
+    ],
+    variants: [
+      {
+        id: "v1",
+        sku: "84357",
+        url: "https://pixibeauty.com/products/glow-getter-set",
+        option_name: "Title",
+        option_value: "Default Title",
+        price: "62.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "desc",
+        image_url: "",
+        image_urls: [],
+        ad_copy: "copy",
+        brand: "Pixi",
+        product_title: "Glow Getter Set",
+        product_url: "https://pixibeauty.com/products/glow-getter-set",
+        deep_link: "https://pixibeauty.com/products/glow-getter-set?variant=v1",
+        simulated: false,
+      },
+    ],
+    pricing: { currency: "USD" as const, min: 62, max: 62, avg: 62 },
+    ad_copy: { by_variant_id: { v1: "copy" } },
+    pagination: { offset: 0, limit: 1, next_offset: null, has_more: false, discovered_urls: 1 },
+    diagnostics: {
+      requested_domain: "pixibeauty.com",
+      resolved_base_url: "https://pixibeauty.com",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  const fallbackProduct = {
+    title: "Glow Getter Set",
+    url: "https://pixibeauty.com/products/glow-getter-set",
+    image_url: "https://cdn.shopify.com/a.jpg",
+    image_urls: ["https://cdn.shopify.com/a.jpg", "https://cdn.shopify.com/b.jpg"],
+    variant_skus: ["84357"],
+    variants: [
+      {
+        id: "fallback-v1",
+        sku: "84357",
+        url: "https://pixibeauty.com/products/glow-getter-set",
+        option_name: "Title",
+        option_value: "Default Title",
+        price: "62.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "desc",
+        image_url: "https://cdn.shopify.com/a.jpg",
+        image_urls: ["https://cdn.shopify.com/a.jpg", "https://cdn.shopify.com/b.jpg"],
+        ad_copy: "copy",
+      },
+    ],
+  };
+
+  const merged = mergeShopifyDirectPdpFallback("Pixi", response, fallbackProduct);
+
+  assert.deepEqual(merged.products[0]?.image_urls, [
+    "https://cdn.shopify.com/a.jpg",
+    "https://cdn.shopify.com/b.jpg",
+  ]);
+  assert.equal(merged.products[0]?.image_url, "https://cdn.shopify.com/a.jpg");
+  assert.deepEqual(merged.products[0]?.variants[0]?.image_urls, [
+    "https://cdn.shopify.com/a.jpg",
+    "https://cdn.shopify.com/b.jpg",
+  ]);
+  assert.equal(merged.variants[0]?.image_url, "https://cdn.shopify.com/a.jpg");
 });

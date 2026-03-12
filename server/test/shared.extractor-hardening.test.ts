@@ -266,7 +266,7 @@ test("discoverProductUrls does not fall through from an invalid direct PDP to un
 
       assert.equal(diagnostics.discovery_strategy, "seed_page");
       assert.equal(diagnostics.failure_category, "no_product_urls");
-      assert.deepEqual(discovered.productUrls, ["https://theordinary.com/en-us/the-clear-set-100630.html"]);
+      assert.deepEqual(discovered.productUrls, []);
     },
   );
 });

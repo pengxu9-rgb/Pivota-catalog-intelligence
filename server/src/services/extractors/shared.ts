@@ -1108,7 +1108,7 @@ export async function discoverProductUrls(params: {
         }
         return {
           sitemapUrl: undefined,
-          productUrls: [canonicalizeUrl(seedDiscoveryUrl, params.baseUrl)],
+          productUrls: seed.ok ? [canonicalizeUrl(seedDiscoveryUrl, params.baseUrl)] : [],
           deadSitemapDetected,
           challengeDetected,
         };
@@ -1131,7 +1131,7 @@ export async function discoverProductUrls(params: {
       }
       return {
         sitemapUrl: undefined,
-        productUrls: [canonicalizeUrl(seedDiscoveryUrl, params.baseUrl)],
+        productUrls: [],
         deadSitemapDetected,
         challengeDetected,
       };

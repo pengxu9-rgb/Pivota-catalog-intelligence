@@ -213,8 +213,11 @@ test("mergeShopifyDirectPdpFallback fills Shopify direct PDP images from fallbac
   const fallbackProduct = {
     title: "Glow Getter Set",
     url: "https://pixibeauty.com/products/glow-getter-set",
-    image_url: "https://cdn.shopify.com/a.jpg",
-    image_urls: ["https://cdn.shopify.com/a.jpg", "https://cdn.shopify.com/b.jpg"],
+    image_url: "https://cdn.shopify.com/glow-getter-set-main.jpg",
+    image_urls: [
+      "https://cdn.shopify.com/glow-getter-set-main.jpg",
+      "https://cdn.shopify.com/glow-getter-set-side.jpg",
+    ],
     variant_skus: ["84357"],
     variants: [
       {
@@ -227,8 +230,11 @@ test("mergeShopifyDirectPdpFallback fills Shopify direct PDP images from fallbac
         currency: "USD",
         stock: "In Stock",
         description: "desc",
-        image_url: "https://cdn.shopify.com/a.jpg",
-        image_urls: ["https://cdn.shopify.com/a.jpg", "https://cdn.shopify.com/b.jpg"],
+        image_url: "https://cdn.shopify.com/glow-getter-set-main.jpg",
+        image_urls: [
+          "https://cdn.shopify.com/glow-getter-set-main.jpg",
+          "https://cdn.shopify.com/glow-getter-set-side.jpg",
+        ],
         ad_copy: "copy",
       },
     ],
@@ -237,13 +243,128 @@ test("mergeShopifyDirectPdpFallback fills Shopify direct PDP images from fallbac
   const merged = mergeShopifyDirectPdpFallback("Pixi", response, fallbackProduct);
 
   assert.deepEqual(merged.products[0]?.image_urls, [
-    "https://cdn.shopify.com/a.jpg",
-    "https://cdn.shopify.com/b.jpg",
+    "https://cdn.shopify.com/glow-getter-set-main.jpg",
+    "https://cdn.shopify.com/glow-getter-set-side.jpg",
   ]);
-  assert.equal(merged.products[0]?.image_url, "https://cdn.shopify.com/a.jpg");
+  assert.equal(merged.products[0]?.image_url, "https://cdn.shopify.com/glow-getter-set-main.jpg");
   assert.deepEqual(merged.products[0]?.variants[0]?.image_urls, [
-    "https://cdn.shopify.com/a.jpg",
-    "https://cdn.shopify.com/b.jpg",
+    "https://cdn.shopify.com/glow-getter-set-main.jpg",
+    "https://cdn.shopify.com/glow-getter-set-side.jpg",
   ]);
-  assert.equal(merged.variants[0]?.image_url, "https://cdn.shopify.com/a.jpg");
+  assert.equal(merged.variants[0]?.image_url, "https://cdn.shopify.com/glow-getter-set-main.jpg");
+});
+
+test("mergeShopifyDirectPdpFallback discards unrelated fallback page images", () => {
+  const response = {
+    brand: "PATYKA",
+    domain: "patyka.com",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Peeling Nuit Renovateur Eclat 10ml",
+        url: "https://patyka.com/products/peeling-nuit-renovateur-eclat-10ml",
+        image_url: "",
+        image_urls: [],
+        variant_skus: ["PATYKA-PEELING"],
+        variants: [
+          {
+            id: "v1",
+            sku: "PATYKA-PEELING",
+            url: "https://patyka.com/products/peeling-nuit-renovateur-eclat-10ml",
+            option_name: "Title",
+            option_value: "Default Title",
+            price: "0.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "desc",
+            image_url: "",
+            image_urls: [],
+            ad_copy: "copy",
+          },
+        ],
+      },
+    ],
+    variants: [
+      {
+        id: "v1",
+        sku: "PATYKA-PEELING",
+        url: "https://patyka.com/products/peeling-nuit-renovateur-eclat-10ml",
+        option_name: "Title",
+        option_value: "Default Title",
+        price: "0.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "desc",
+        image_url: "",
+        image_urls: [],
+        ad_copy: "copy",
+        brand: "PATYKA",
+        product_title: "Peeling Nuit Renovateur Eclat 10ml",
+        product_url: "https://patyka.com/products/peeling-nuit-renovateur-eclat-10ml",
+        deep_link: "https://patyka.com/products/peeling-nuit-renovateur-eclat-10ml?variant=v1",
+        simulated: false,
+      },
+    ],
+    pricing: { currency: "USD" as const, min: 0, max: 0, avg: 0 },
+    ad_copy: { by_variant_id: { v1: "copy" } },
+    pagination: { offset: 0, limit: 1, next_offset: null, has_more: false, discovered_urls: 1 },
+    diagnostics: {
+      requested_domain: "patyka.com",
+      resolved_base_url: "https://patyka.com",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  const fallbackProduct = {
+    title: "Peeling Nuit Renovateur Eclat 10ml",
+    url: "https://patyka.com/products/peeling-nuit-renovateur-eclat-10ml",
+    image_url: "https://patyka.com/cdn/shop/files/Header_Solaire-Teinte-Mobile-2.png?v=1",
+    image_urls: [
+      "https://patyka.com/cdn/shop/files/Header_Solaire-Teinte-Mobile-2.png?v=1",
+      "https://patyka.com/cdn/shop/files/02-RechargePeeling-beauty.jpg?v=1",
+      "https://patyka.com/cdn/shop/files/PATYKA_2025_institute_card.jpg?v=1",
+    ],
+    variant_skus: ["PATYKA-PEELING"],
+    variants: [
+      {
+        id: "fallback-v1",
+        sku: "PATYKA-PEELING",
+        url: "https://patyka.com/products/peeling-nuit-renovateur-eclat-10ml",
+        option_name: "Title",
+        option_value: "Default Title",
+        price: "0.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "desc",
+        image_url: "https://patyka.com/cdn/shop/files/02-RechargePeeling-beauty.jpg?v=1",
+        image_urls: [
+          "https://patyka.com/cdn/shop/files/Header_Solaire-Teinte-Mobile-2.png?v=1",
+          "https://patyka.com/cdn/shop/files/02-RechargePeeling-beauty.jpg?v=1",
+          "https://patyka.com/cdn/shop/files/PATYKA_2025_institute_card.jpg?v=1",
+        ],
+        ad_copy: "copy",
+      },
+    ],
+  };
+
+  const merged = mergeShopifyDirectPdpFallback("PATYKA", response, fallbackProduct);
+
+  assert.deepEqual(merged.products[0]?.image_urls, [
+    "https://patyka.com/cdn/shop/files/02-RechargePeeling-beauty.jpg?v=1",
+  ]);
+  assert.equal(
+    merged.products[0]?.image_url,
+    "https://patyka.com/cdn/shop/files/02-RechargePeeling-beauty.jpg?v=1",
+  );
+  assert.deepEqual(merged.products[0]?.variants[0]?.image_urls, [
+    "https://patyka.com/cdn/shop/files/02-RechargePeeling-beauty.jpg?v=1",
+  ]);
+  assert.equal(
+    merged.variants[0]?.image_url,
+    "https://patyka.com/cdn/shop/files/02-RechargePeeling-beauty.jpg?v=1",
+  );
 });

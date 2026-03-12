@@ -446,6 +446,116 @@ function dedupeStringList(values: Array<string | undefined | null>) {
   return out;
 }
 
+const IMAGE_HINT_STOPWORDS = new Set([
+  "with",
+  "from",
+  "your",
+  "that",
+  "this",
+  "default",
+  "title",
+  "shop",
+  "beauty",
+  "cream",
+  "serum",
+  "body",
+  "face",
+  "gift",
+  "card",
+  "sample",
+  "products",
+  "product",
+  "collections",
+]);
+
+function tokenizeImageHints(values: Array<string | undefined | null>) {
+  const tokens = new Set<string>();
+  for (const value of values) {
+    const decoded = decodeURIComponent(String(value || "").toLowerCase());
+    const matches = decoded.match(/[\p{L}\p{N}]+/gu) || [];
+    for (const match of matches) {
+      if (match.length < 4) continue;
+      if (IMAGE_HINT_STOPWORDS.has(match)) continue;
+      if (/^\d+$/.test(match)) continue;
+      tokens.add(match);
+    }
+  }
+  return Array.from(tokens);
+}
+
+function imageUrlMatchScore(url: string, tokens: string[]) {
+  const haystack = decodeURIComponent(url.toLowerCase());
+  let score = 0;
+  for (const token of tokens) {
+    if (haystack.includes(token)) score += token.length >= 8 ? 3 : 2;
+  }
+  return score;
+}
+
+function preferredImageVariant(existingUrl: string | undefined, candidateUrl: string) {
+  if (!existingUrl) return candidateUrl;
+
+  const readWidth = (rawUrl: string) => {
+    try {
+      const parsed = new URL(rawUrl);
+      const width = Number(parsed.searchParams.get("width") || parsed.searchParams.get("w") || parsed.searchParams.get("sw") || 0);
+      return Number.isFinite(width) ? width : 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  return readWidth(candidateUrl) >= readWidth(existingUrl) ? candidateUrl : existingUrl;
+}
+
+function selectRelevantFallbackImageUrls(product: { title: string; url: string }, candidates: string[]) {
+  const hintValues = [product.title];
+  try {
+    const parsed = new URL(product.url);
+    hintValues.push(parsed.pathname, parsed.search);
+  } catch {
+    hintValues.push(product.url);
+  }
+
+  const hintTokens = tokenizeImageHints(hintValues);
+  if (hintTokens.length === 0) return [];
+
+  const bestByCanonical = new Map<string, { url: string; score: number }>();
+  for (const candidate of candidates) {
+    const score = imageUrlMatchScore(candidate, hintTokens);
+    if (score <= 0) continue;
+
+    try {
+      const parsed = new URL(candidate);
+      parsed.searchParams.delete("width");
+      parsed.searchParams.delete("w");
+      parsed.searchParams.delete("sw");
+      parsed.searchParams.delete("height");
+      parsed.searchParams.delete("h");
+      parsed.searchParams.delete("sh");
+      const canonical = parsed.toString();
+      const prev = bestByCanonical.get(canonical);
+      if (!prev) {
+        bestByCanonical.set(canonical, { url: candidate, score });
+        continue;
+      }
+      bestByCanonical.set(canonical, {
+        url: preferredImageVariant(prev.url, candidate),
+        score: Math.max(prev.score, score),
+      });
+    } catch {
+      const prev = bestByCanonical.get(candidate);
+      if (!prev) {
+        bestByCanonical.set(candidate, { url: candidate, score });
+      }
+    }
+  }
+
+  return Array.from(bestByCanonical.values())
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.url);
+}
+
 function flattenVariants(params: {
   brand: string;
   products: ExtractedProduct[];
@@ -858,12 +968,21 @@ export function mergeShopifyDirectPdpFallback(
       })),
     };
 
-    const fallbackProductImages = dedupeStringList([
+    const rawFallbackProductImages = dedupeStringList([
       ...fallbackProduct.image_urls,
       fallbackProduct.image_url,
       ...fallbackProduct.variants.flatMap((variant) => variant.image_urls),
       ...fallbackProduct.variants.map((variant) => variant.image_url),
     ]);
+    const fallbackProductImages = selectRelevantFallbackImageUrls(
+      {
+        title: mergedProduct.title,
+        url: mergedProduct.url,
+      },
+      rawFallbackProductImages,
+    );
+
+    if (fallbackProductImages.length === 0) return product;
 
     const fallbackBySku = new Map(
       fallbackProduct.variants
@@ -881,13 +1000,22 @@ export function mergeShopifyDirectPdpFallback(
         fallbackBySku.get(variant.sku) ||
         fallbackByOption.get(`${variant.option_name}::${variant.option_value}`) ||
         fallbackProduct.variants[0];
+      const relevantVariantFallbackImages = selectRelevantFallbackImageUrls(
+        {
+          title: [mergedProduct.title, variant.option_name, variant.option_value].filter(Boolean).join(" "),
+          url: variant.url || mergedProduct.url,
+        },
+        dedupeStringList([
+          ...(matchedFallback?.image_urls || []),
+          matchedFallback?.image_url,
+          ...fallbackProductImages,
+        ]),
+      );
 
       const mergedVariantImages = dedupeStringList([
         ...variant.image_urls,
         variant.image_url,
-        ...(matchedFallback?.image_urls || []),
-        matchedFallback?.image_url,
-        ...fallbackProductImages,
+        ...relevantVariantFallbackImages,
       ]);
 
       return {

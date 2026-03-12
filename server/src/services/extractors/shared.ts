@@ -1,5 +1,6 @@
 import puppeteer, { type Browser, type HTTPResponse, type Page } from "puppeteer";
 
+import { getMarketProfile } from "./marketProfiles";
 import type {
   BlockProvider,
   DiscoveryStrategy,
@@ -10,6 +11,7 @@ import type {
 } from "./types";
 
 const TRACKING_QUERY_PARAM_RE = /^(utm_|fbclid$|gclid$|mc_|_ga$|_gl$|ref$|source$)/i;
+const LOCALE_PATH_SEGMENT_RE = /^[a-z]{2}(?:-|_)[a-z]{2}$/i;
 const STATIC_ASSET_EXT_RE =
   /\.(?:css|js|mjs|map|png|jpe?g|gif|webp|svg|ico|pdf|xml|txt|woff2?|ttf|eot|otf|mp3|wav|mp4|webm|zip|gz|tar|json)(?:$|[?#])/i;
 const NEGATIVE_PATH_RE =
@@ -255,6 +257,30 @@ export function canonicalizeUrl(rawUrl: string, baseUrl?: string): string {
     return parsed.toString();
   } catch {
     return rawUrl;
+  }
+}
+
+export function normalizeSeedUrlForMarket(seedUrl: string | undefined, marketId: MarketId): string | undefined {
+  if (!seedUrl) return seedUrl;
+
+  try {
+    const parsed = new URL(seedUrl);
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    const firstSegment = segments[0];
+    if (!firstSegment || !LOCALE_PATH_SEGMENT_RE.test(firstSegment)) {
+      return parsed.toString();
+    }
+
+    const desiredLocaleSegment = getMarketProfile(marketId).locale.replace(/_/g, "-").toLowerCase();
+    if (firstSegment.toLowerCase() === desiredLocaleSegment) {
+      return parsed.toString();
+    }
+
+    segments[0] = desiredLocaleSegment;
+    parsed.pathname = `/${segments.join("/")}${parsed.pathname.endsWith("/") ? "/" : ""}`;
+    return parsed.toString();
+  } catch {
+    return seedUrl;
   }
 }
 
@@ -711,9 +737,15 @@ export async function resolveStorefrontTarget(params: {
 }): Promise<StorefrontResolution> {
   const { target, diagnostics, marketId, context, log } = params;
   if (target.seedUrl) {
-    diagnostics.resolved_base_url = target.baseUrl;
+    const normalizedSeedUrl = normalizeSeedUrlForMarket(target.seedUrl, marketId);
+    const normalizedTarget =
+      normalizedSeedUrl && normalizedSeedUrl !== target.seedUrl ? parseTarget(normalizedSeedUrl) : target;
+    if (normalizedSeedUrl && normalizedSeedUrl !== target.seedUrl) {
+      log?.("info", `Normalized seed URL locale ${target.seedUrl} -> ${normalizedSeedUrl} for market=${marketId}`);
+    }
+    diagnostics.resolved_base_url = normalizedTarget.baseUrl;
     return {
-      target,
+      target: normalizedTarget,
       selectorRootDetected: false,
       storefrontResolved: false,
     };

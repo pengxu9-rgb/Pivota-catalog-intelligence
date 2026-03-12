@@ -12,7 +12,9 @@ import {
   discoverProductUrls,
   isCookieActionLabel,
   looksLikeProductPageHtml,
+  parseTarget,
   resolveStorefrontFromHtml,
+  resolveStorefrontTarget,
   runBrowserTaskWithFallback,
 } from "../src/services/extractors/shared";
 
@@ -75,6 +77,19 @@ test("resolveStorefrontFromHtml ignores same-brand service links without market 
 
   assert.equal(resolved.selectorRoot, true);
   assert.equal(resolved.url, null);
+});
+
+test("resolveStorefrontTarget normalizes locale-prefixed seed URLs to the requested market", async () => {
+  const diagnostics = createDiagnostics("theordinary.com", "https://theordinary.com");
+  const resolved = await resolveStorefrontTarget({
+    target: parseTarget("https://theordinary.com/de-de/uv-filters-spf-45-serum-100720.html"),
+    marketId: "US",
+    context: {},
+    diagnostics,
+  });
+
+  assert.equal(resolved.target.seedUrl, "https://theordinary.com/en-us/uv-filters-spf-45-serum-100720.html");
+  assert.equal(resolved.target.baseUrl, "https://theordinary.com");
 });
 
 test("discoverProductUrls uses landing-page HTML discovery for slug PDPs", async () => {

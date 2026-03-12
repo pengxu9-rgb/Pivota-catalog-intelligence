@@ -15,6 +15,7 @@ export type ExtractedVariantRow = {
   stock: "In Stock" | "Low Stock" | "Out of Stock";
   description: string;
   image_url: string;
+  image_urls: string[];
   ad_copy: string;
 
   brand: string;
@@ -27,6 +28,9 @@ export type ExtractedVariantRow = {
 export type ExtractedProduct = {
   title: string;
   url: string;
+  image_url: string;
+  image_urls: string[];
+  variant_skus: string[];
   variants: Array<{
     id: string;
     sku: string;
@@ -38,6 +42,7 @@ export type ExtractedProduct = {
     stock: "In Stock" | "Low Stock" | "Out of Stock";
     description: string;
     image_url: string;
+    image_urls: string[];
     ad_copy: string;
   }>;
 };

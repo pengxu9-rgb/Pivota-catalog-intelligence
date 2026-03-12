@@ -62,12 +62,16 @@ export type ExtractedVariant = {
   stock: StockStatus;
   description: string;
   image_url: string;
+  image_urls: string[];
   ad_copy: string;
 };
 
 export type ExtractedProduct = {
   title: string;
   url: string;
+  image_url: string;
+  image_urls: string[];
+  variant_skus: string[];
   variants: ExtractedVariant[];
 };
 

@@ -91,6 +91,7 @@ export class PuppeteerExtractor implements Extractor {
         brand: input.brand,
         domain: target.domain,
         baseUrl,
+        seedUrl: target.seedUrl,
         collectionHandle: target.collectionHandle,
         maxProducts: maxProductsTotal,
         offset: batchOffset,
@@ -264,6 +265,7 @@ type DomVariantMeta = {
   option_value?: string;
   url_path?: string;
   image_url?: string;
+  image_urls?: string[];
   price?: string;
   ingredients?: string;
 };
@@ -434,6 +436,16 @@ function computePricingStats(variants: ExtractedVariantRow[]) {
   return { currency: "USD" as const, min, max, avg: Number(avg.toFixed(2)) };
 }
 
+function dedupeStringList(values: Array<string | undefined | null>) {
+  const out: string[] = [];
+  for (const value of values) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed || out.includes(trimmed)) continue;
+    out.push(trimmed);
+  }
+  return out;
+}
+
 function flattenVariants(params: {
   brand: string;
   products: ExtractedProduct[];
@@ -522,6 +534,7 @@ async function tryExtractShopify(params: {
   brand: string;
   domain: string;
   baseUrl: string;
+  seedUrl?: string;
   collectionHandle?: string;
   maxProducts: number;
   offset: number;
@@ -530,6 +543,23 @@ async function tryExtractShopify(params: {
   log: Logger;
 }): Promise<Omit<ExtractResponse, "generated_at" | "logs"> | null> {
   const log = params.log;
+  const directHandle = extractShopifyProductHandle(params.seedUrl, params.baseUrl);
+
+  if (directHandle) {
+    const directUrl = `${params.baseUrl}/products/${directHandle}.js`;
+    log("info", `Checking Shopify direct product feed: ${directUrl}`);
+    const directProduct = await fetchJsonTracked<ShopifyProduct>(directUrl, {}, params.diagnostics!);
+    if (directProduct.data && typeof directProduct.data.id === "number") {
+      log("success", `Shopify direct product detected for handle: ${directHandle}`);
+      setDiscoveryStrategy(params.diagnostics!, "shopify_json");
+      return buildShopifyResponse({
+        ...params,
+        products: [directProduct.data],
+        platformLabel: "Shopify (Direct PDP)",
+      });
+    }
+    log("warn", `Shopify direct product feed not found for handle: ${directHandle}. Falling back to collection/site feed.`);
+  }
 
   const probeUrl = params.collectionHandle
     ? `${params.baseUrl}/collections/${params.collectionHandle}/products.json?limit=1`
@@ -561,11 +591,42 @@ async function tryExtractShopify(params: {
   const limitedProducts = allProducts.slice(0, params.maxProducts);
   log("data", `Loaded ${limitedProducts.length} products from Shopify feed.`);
 
+  return buildShopifyResponse({
+    ...params,
+    products: limitedProducts,
+    platformLabel: params.collectionHandle ? `Shopify (Collection: ${params.collectionHandle})` : "Shopify",
+  });
+}
+
+function extractShopifyProductHandle(seedUrl: string | undefined, baseUrl: string): string | null {
+  if (!seedUrl) return null;
+  try {
+    const parsed = new URL(seedUrl, baseUrl);
+    const match = parsed.pathname.match(/^\/products\/([^/?#]+)/i);
+    return match?.[1] ? decodeURIComponent(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildShopifyResponse(params: {
+  brand: string;
+  domain: string;
+  baseUrl: string;
+  products: ShopifyProduct[];
+  platformLabel: string;
+  offset: number;
+  limit: number;
+  diagnostics: ExtractResponse["diagnostics"];
+  log: Logger;
+}) {
+  const log = params.log;
+
   const variantDiscoverySetting = (process.env.SHOPIFY_VARIANT_DISCOVERY || "auto").toLowerCase().trim();
   const forceDiscoveryOff = ["0", "false", "no", "off", "none"].includes(variantDiscoverySetting);
   const forceDiscoveryOn = ["1", "true", "yes", "on", "title"].includes(variantDiscoverySetting);
 
-  const discoveryCandidates = limitedProducts
+  const discoveryCandidates = params.products
     .map((p) => {
       const split = splitTitleIntoBaseAndVariant(p.title);
       const isSingleDefault = (p.variants || []).length === 1 && isDefaultShopifyVariant(p.variants[0]!);
@@ -573,21 +634,21 @@ async function tryExtractShopify(params: {
     })
     .filter(Boolean).length;
 
-  const discoveryRate = limitedProducts.length > 0 ? discoveryCandidates / limitedProducts.length : 0;
+  const discoveryRate = params.products.length > 0 ? discoveryCandidates / params.products.length : 0;
   const autoDiscoveryOn = discoveryRate >= 0.2;
 
   const enableTitleDiscovery = !forceDiscoveryOff && (forceDiscoveryOn || (variantDiscoverySetting === "auto" && autoDiscoveryOn));
   if (enableTitleDiscovery && discoveryCandidates > 0) {
     log(
-      "info",
-      `Variant discovery enabled (mode=${variantDiscoverySetting}). Candidates: ${discoveryCandidates}/${limitedProducts.length} (${Math.round(
+        "info",
+      `Variant discovery enabled (mode=${variantDiscoverySetting}). Candidates: ${discoveryCandidates}/${params.products.length} (${Math.round(
         discoveryRate * 100,
       )}%).`,
     );
   } else {
     log(
       "info",
-      `Variant discovery disabled (mode=${variantDiscoverySetting}). Candidates: ${discoveryCandidates}/${limitedProducts.length} (${Math.round(
+      `Variant discovery disabled (mode=${variantDiscoverySetting}). Candidates: ${discoveryCandidates}/${params.products.length} (${Math.round(
         discoveryRate * 100,
       )}%).`,
     );
@@ -595,8 +656,9 @@ async function tryExtractShopify(params: {
 
   const extractedByTitle = new Map<string, ExtractedProduct>();
 
-  for (const product of limitedProducts) {
+  for (const product of params.products) {
     const productUrl = `${params.baseUrl}/products/${product.handle}`;
+    const productImageUrls = resolveShopifyProductImageUrls(product);
     const titleSplit = enableTitleDiscovery ? splitTitleIntoBaseAndVariant(product.title) : null;
     const treatAsPseudoVariant =
       Boolean(titleSplit) && (product.variants || []).length === 1 && isDefaultShopifyVariant(product.variants[0]!);
@@ -615,9 +677,10 @@ async function tryExtractShopify(params: {
           "Default";
 
       const sku = (v.sku || "").trim() || `SHOPIFY-${v.id}`;
-      const price = (v.price || "0.00").trim();
+      const price = normalizePrice(v.price);
       const stock = toStockStatus(v.available, v.inventory_quantity);
-      const imageUrl = resolveShopifyVariantImageUrl(product, v) || "";
+      const imageUrls = resolveShopifyVariantImageUrls(product, v);
+      const imageUrl = imageUrls[0] || "";
       const description = getMergedDescription({ title: canonicalProductTitle, overview: officialText });
       const adCopy = generateMockAdCopy(canonicalProductTitle, optionValue, price);
 
@@ -632,6 +695,7 @@ async function tryExtractShopify(params: {
         stock,
         description,
         image_url: imageUrl,
+        image_urls: imageUrls,
         ad_copy: adCopy,
       };
     });
@@ -641,10 +705,29 @@ async function tryExtractShopify(params: {
       ({
         title: canonicalProductTitle,
         url: productUrl,
+        image_url: productImageUrls[0] || "",
+        image_urls: productImageUrls,
+        variant_skus: [],
         variants: [],
       } satisfies ExtractedProduct);
 
-    existing.variants.push(...extractedVariants);
+    const seenVariants = new Set(existing.variants.map((variant) => `${variant.id}|${variant.sku}|${variant.url}`));
+    for (const variant of extractedVariants) {
+      const key = `${variant.id}|${variant.sku}|${variant.url}`;
+      if (seenVariants.has(key)) continue;
+      seenVariants.add(key);
+      existing.variants.push(variant);
+    }
+    existing.image_urls = dedupeStringList([
+      ...existing.image_urls,
+      ...productImageUrls,
+      ...extractedVariants.flatMap((variant) => variant.image_urls),
+    ]);
+    existing.image_url = existing.image_urls[0] || existing.image_url || "";
+    existing.variant_skus = dedupeStringList([
+      ...existing.variant_skus,
+      ...extractedVariants.map((variant) => variant.sku),
+    ]);
     extractedByTitle.set(canonicalProductTitle, existing);
   }
 
@@ -674,8 +757,8 @@ async function tryExtractShopify(params: {
   return {
     brand: params.brand,
     domain: params.domain,
-    mode: "puppeteer",
-    platform: params.collectionHandle ? `Shopify (Collection: ${params.collectionHandle})` : "Shopify",
+    mode: "puppeteer" as const,
+    platform: params.platformLabel,
     products: pagedProducts,
     variants,
     pricing,
@@ -691,15 +774,25 @@ async function tryExtractShopify(params: {
   };
 }
 
-function resolveShopifyVariantImageUrl(product: ShopifyProduct, variant: ShopifyVariant): string | undefined {
-  const direct = variant.featured_image?.src;
-  if (direct) return direct;
+function resolveShopifyProductImageUrls(product: ShopifyProduct) {
+  return dedupeStringList((product.images || []).map((image) => image.src));
+}
 
+function resolveShopifyVariantImageUrls(product: ShopifyProduct, variant: ShopifyVariant) {
   const images = product.images || [];
-  const match = images.find((img) => (img.variant_ids || []).includes(variant.id));
-  if (match?.src) return match.src;
+  const matchedImages = images
+    .filter((image) => (image.variant_ids || []).includes(variant.id))
+    .map((image) => image.src);
 
-  return images[0]?.src;
+  return dedupeStringList([
+    variant.featured_image?.src,
+    ...matchedImages,
+    ...resolveShopifyProductImageUrls(product),
+  ]);
+}
+
+function resolveShopifyVariantImageUrl(product: ShopifyProduct, variant: ShopifyVariant): string | undefined {
+  return resolveShopifyVariantImageUrls(product, variant)[0];
 }
 
 function toStockStatus(available?: boolean, inventoryQuantity?: number | null): StockStatus {
@@ -926,37 +1019,42 @@ function normalizeImageUrlCandidate(baseUrl: string, raw: string) {
   return absolute;
 }
 
-export function resolveStructuredImageUrl(baseUrl: string, value: unknown): string {
-  if (!value) return "";
+export function resolveStructuredImageUrls(baseUrl: string, value: unknown): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
 
-  if (typeof value === "string") {
-    return normalizeImageUrlCandidate(baseUrl, value);
-  }
+  const visit = (candidate: unknown) => {
+    if (!candidate) return;
 
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const resolved = resolveStructuredImageUrl(baseUrl, item);
-      if (resolved) return resolved;
+    if (typeof candidate === "string") {
+      const normalized = normalizeImageUrlCandidate(baseUrl, candidate);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      out.push(normalized);
+      return;
     }
-    return "";
-  }
 
-  if (typeof value !== "object") return "";
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) visit(item);
+      return;
+    }
 
-  const obj = value as Record<string, unknown>;
-  const directKeys = ["url", "src", "contentUrl", "contentURL", "secureUrl", "secure_url"] as const;
-  for (const key of directKeys) {
-    const resolved = resolveStructuredImageUrl(baseUrl, obj[key]);
-    if (resolved) return resolved;
-  }
+    if (typeof candidate !== "object") return;
 
-  const nestedKeys = ["thumbnail", "primaryImage", "image"] as const;
-  for (const key of nestedKeys) {
-    const resolved = resolveStructuredImageUrl(baseUrl, obj[key]);
-    if (resolved) return resolved;
-  }
+    const obj = candidate as Record<string, unknown>;
+    const directKeys = ["url", "src", "contentUrl", "contentURL", "secureUrl", "secure_url"] as const;
+    const nestedKeys = ["thumbnail", "primaryImage", "image", "images"] as const;
 
-  return "";
+    for (const key of directKeys) visit(obj[key]);
+    for (const key of nestedKeys) visit(obj[key]);
+  };
+
+  visit(value);
+  return out;
+}
+
+export function resolveStructuredImageUrl(baseUrl: string, value: unknown): string {
+  return resolveStructuredImageUrls(baseUrl, value)[0] || "";
 }
 
 function stableId(input: string) {
@@ -1133,6 +1231,7 @@ async function scrapeProductPage(params: {
           option_value?: string;
           url_path?: string;
           image_url?: string;
+          image_urls?: string[];
           price?: string;
           ingredients?: string;
         }>;
@@ -1166,8 +1265,13 @@ async function scrapeProductPage(params: {
               const ingredients = typeof obj.ingredients === "string" ? obj.ingredients.trim() : "";
 
               const images = Array.isArray(obj.images) ? obj.images : [];
-              const firstImage = images[0] as Record<string, unknown> | undefined;
-              const imageUrl = typeof firstImage?.src === "string" ? firstImage.src.trim() : "";
+              const imageUrls = images
+                .map((image) => {
+                  const next = image as Record<string, unknown>;
+                  return typeof next?.src === "string" ? next.src.trim() : "";
+                })
+                .filter(Boolean);
+              const imageUrl = imageUrls[0] || "";
 
               const price =
                 (typeof obj.price_with_discount === "number" && Number.isFinite(obj.price_with_discount)
@@ -1184,6 +1288,7 @@ async function scrapeProductPage(params: {
                 option_value: optionValue,
                 url_path: urlPath || undefined,
                 image_url: imageUrl || undefined,
+                image_urls: imageUrls.length > 0 ? imageUrls : undefined,
                 price: price || undefined,
                 ingredients: ingredients || undefined,
               };
@@ -1270,7 +1375,11 @@ async function scrapeProductPage(params: {
     );
 
     const imageRaw = primaryProductObj?.image ?? productGroupObj?.image;
-    const imageUrl = resolveStructuredImageUrl(params.baseUrl, [imageRaw, extracted.imageCandidates]);
+    const productImageUrls = dedupeStringList([
+      ...resolveStructuredImageUrls(params.baseUrl, [imageRaw, productGroupObj?.image, extracted.imageCandidates]),
+      ...variantProducts.flatMap((variantProduct) => resolveStructuredImageUrls(params.baseUrl, variantProduct.image)),
+    ]);
+    const imageUrl = productImageUrls[0] || "";
 
     const officialText =
       (typeof primaryProductObj?.description === "string" ? primaryProductObj.description : undefined) ||
@@ -1303,10 +1412,12 @@ async function scrapeProductPage(params: {
               (typeof variantOffer?.sku === "string" && variantOffer.sku.trim()) ||
               "";
             const sku = skuRaw || `AUTO-${stableId(`${productUrl}|${idx}`)}`;
+            const domMeta = domMetaBySku.get(sku);
             const variantName = typeof variantProduct.name === "string" ? variantProduct.name.trim() : "";
             const optionValue =
               (typeof variantProduct.color === "string" && variantProduct.color.trim()) ||
               stripProductTitlePrefix(productTitle, variantName) ||
+              domMeta?.option_value ||
               variantName ||
               sku;
             const offerUrl = toAbsoluteUrlShared(
@@ -1327,13 +1438,18 @@ async function scrapeProductPage(params: {
             const stock = stockFromAvailability(variantOffer?.availability);
             const id = stableId(`${productUrl}|${sku}|${price}`);
             const variantImageRaw = variantProduct.image;
-            const variantImageUrl = resolveStructuredImageUrl(params.baseUrl, [variantImageRaw, imageRaw, extracted.imageCandidates]);
+            const variantImageUrls = dedupeStringList([
+              ...resolveStructuredImageUrls(params.baseUrl, [variantImageRaw, variantOffer?.image]),
+              ...resolveStructuredImageUrls(params.baseUrl, [domMeta?.image_urls, domMeta?.image_url]),
+              ...productImageUrls,
+            ]);
+            const variantImageUrl = variantImageUrls[0] || imageUrl;
 
             return {
               id,
               sku,
               url: offerUrl,
-              option_name: "Variant",
+              option_name: domMeta?.option_name || "Variant",
               option_value: optionValue,
               price,
               currency: "USD",
@@ -1347,6 +1463,7 @@ async function scrapeProductPage(params: {
                   [ingredientsMarkdownText, ingredientsDisclaimerText].filter(Boolean).join("\n\n") || undefined,
               }),
               image_url: variantImageUrl,
+              image_urls: variantImageUrls,
               ad_copy: generateMockAdCopy(productTitle, optionValue, price),
             };
           })
@@ -1391,12 +1508,11 @@ async function scrapeProductPage(params: {
             const adCopy = generateMockAdCopy(productTitle, optionValue, price);
 
             const offerImageRaw = offer.image;
-            const offerImageUrl = (() => {
-              const structuredImageUrl = resolveStructuredImageUrl(params.baseUrl, [offerImageRaw, imageRaw, extracted.imageCandidates]);
-              if (structuredImageUrl) return structuredImageUrl;
-              if (domMeta?.image_url) return toAbsoluteUrl(params.baseUrl, domMeta.image_url);
-              return imageUrl;
-            })();
+            const offerImageUrls = dedupeStringList([
+              ...resolveStructuredImageUrls(params.baseUrl, [offerImageRaw, domMeta?.image_urls, domMeta?.image_url, imageRaw, extracted.imageCandidates]),
+              ...productImageUrls,
+            ]);
+            const offerImageUrl = offerImageUrls[0] || imageUrl;
 
             return {
               id,
@@ -1409,6 +1525,7 @@ async function scrapeProductPage(params: {
               stock,
               description,
               image_url: offerImageUrl,
+              image_urls: offerImageUrls,
               ad_copy: adCopy,
             };
           })
@@ -1430,9 +1547,17 @@ async function scrapeProductPage(params: {
                   [ingredientsMarkdownText, ingredientsDisclaimerText].filter(Boolean).join("\n\n") || undefined,
               }),
               image_url: imageUrl,
+              image_urls: productImageUrls,
               ad_copy: generateMockAdCopy(productTitle, "Default", normalizePrice(extracted.priceTexts[0])),
             },
           ];
+
+    const finalProductImageUrls = dedupeStringList([
+      ...productImageUrls,
+      ...variants.flatMap((variant) => variant.image_urls),
+      ...variants.map((variant) => variant.image_url),
+    ]);
+    const finalProductImageUrl = finalProductImageUrls[0] || imageUrl;
 
     if (params.verbose) {
       if (productObj) {
@@ -1446,6 +1571,9 @@ async function scrapeProductPage(params: {
     return {
       title: productTitle,
       url: productUrl,
+      image_url: finalProductImageUrl,
+      image_urls: finalProductImageUrls,
+      variant_skus: dedupeStringList(variants.map((variant) => variant.sku)),
       variants,
     };
   } catch (err) {

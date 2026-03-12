@@ -49,6 +49,16 @@ function getMergedDescription(title: string, variantValue: string) {
   return `OFFICIAL: ${official} /// SOCIAL HIGHLIGHTS: ${social}`;
 }
 
+function dedupeStringList(values: Array<string | undefined | null>) {
+  const out: string[] = [];
+  for (const value of values) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed || out.includes(trimmed)) continue;
+    out.push(trimmed);
+  }
+  return out;
+}
+
 function generateMockAdCopy(title: string, variantValue: string, price: string) {
   const subject = pick(AD_SUBJECT_TEMPLATES).replace("{title}", title).replace("{variant}", variantValue);
   const caption = pick(AD_CAPTION_TEMPLATES).replace("{title}", title).replace("{variant}", variantValue);
@@ -232,6 +242,12 @@ function createVariantIdFactory(startAt = 100_000) {
   return () => String(current++);
 }
 
+type SimulatedProductSeed = {
+  title: string;
+  url: string;
+  variants: ExtractedVariant[];
+};
+
 function createVariants(params: {
   title: string;
   baseSku: string;
@@ -245,6 +261,7 @@ function createVariants(params: {
   const baseUrl = params.url ?? getSafeProductUrl(params.title);
   return params.options.map((opt, i) => {
     const sku = `${params.baseSku}-${String(i).padStart(3, "0")}`;
+    const imageUrl = params.imageUrlForSku ? params.imageUrlForSku(sku) : getImageUrl(sku);
     return {
       id: params.nextId(),
       sku,
@@ -255,15 +272,35 @@ function createVariants(params: {
       currency: "USD",
       stock: randomStock(),
       description: getMergedDescription(params.title, opt),
-      image_url: params.imageUrlForSku ? params.imageUrlForSku(sku) : getImageUrl(sku),
+      image_url: imageUrl,
+      image_urls: [imageUrl],
       ad_copy: generateMockAdCopy(params.title, opt, params.price),
     };
   });
 }
 
+function finalizeProduct(product: SimulatedProductSeed): ExtractedProduct {
+  const imageUrls = dedupeStringList([
+    ...product.variants.flatMap((variant) => variant.image_urls),
+    ...product.variants.map((variant) => variant.image_url),
+  ]);
+
+  return {
+    title: product.title,
+    url: product.url,
+    image_url: imageUrls[0] || "",
+    image_urls: imageUrls,
+    variant_skus: dedupeStringList(product.variants.map((variant) => variant.sku)),
+    variants: product.variants.map((variant) => ({
+      ...variant,
+      image_urls: variant.image_urls.length > 0 ? variant.image_urls : imageUrls,
+    })),
+  };
+}
+
 function buildTomFordCatalog(targetVariants: number) {
   const nextId = createVariantIdFactory(100_000);
-  const catalog: ExtractedProduct[] = [];
+  const catalog: SimulatedProductSeed[] = [];
 
   // Worked example first
   catalog.push({
@@ -274,6 +311,7 @@ function buildTomFordCatalog(targetVariants: number) {
       if (size === "50ml") price = "295.00";
       if (size === "100ml") price = "425.00";
       const sku = `TFB-FIGUE-${String(idx).padStart(2, "0")}`;
+      const imageUrl = getImageUrl(sku);
       return {
         id: String(900_000 + idx),
         sku,
@@ -284,7 +322,8 @@ function buildTomFordCatalog(targetVariants: number) {
         currency: "USD",
         stock: "In Stock",
         description: getMergedDescription("Figue Érotique Eau de Parfum", size),
-        image_url: getImageUrl(sku),
+        image_url: imageUrl,
+        image_urls: [imageUrl],
         ad_copy: generateMockAdCopy("Figue Érotique Eau de Parfum", size, price),
       };
     }),
@@ -303,6 +342,7 @@ function buildTomFordCatalog(targetVariants: number) {
         if (size === "100ml") price = "425.00";
         if (size.includes("250ml")) price = "850.00";
         const sku = `TFB-PB-${String(i).padStart(2, "0")}-${idx}`;
+        const imageUrl = getImageUrl(sku);
         return {
           id: String(200_000 + i * 100 + idx),
           sku,
@@ -313,7 +353,8 @@ function buildTomFordCatalog(targetVariants: number) {
           currency: "USD",
           stock: "In Stock",
           description: getMergedDescription(title, size),
-          image_url: getImageUrl(sku),
+          image_url: imageUrl,
+          image_urls: [imageUrl],
           ad_copy: generateMockAdCopy(title, size, price),
         };
       }),
@@ -330,6 +371,7 @@ function buildTomFordCatalog(targetVariants: number) {
       variants: (["50ml", "100ml"] as const).map((size, idx) => {
         const price = size === "50ml" ? "150.00" : "210.00";
         const sku = `TFB-SIG-${String(i).padStart(2, "0")}-${idx}`;
+        const imageUrl = getImageUrl(sku);
         return {
           id: String(300_000 + i * 100 + idx),
           sku,
@@ -340,7 +382,8 @@ function buildTomFordCatalog(targetVariants: number) {
           currency: "USD",
           stock: "In Stock",
           description: getMergedDescription(title, size),
-          image_url: getImageUrl(sku),
+          image_url: imageUrl,
+          image_urls: [imageUrl],
           ad_copy: generateMockAdCopy(title, size, price),
         };
       }),
@@ -508,7 +551,7 @@ function buildTomFordCatalog(targetVariants: number) {
 
   const countVariants = () => catalog.reduce((acc, p) => acc + p.variants.length, 0);
   const baseCount = countVariants();
-  if (baseCount >= targetVariants) return { catalog, baseCount };
+  if (baseCount >= targetVariants) return { catalog: catalog.map(finalizeProduct), baseCount };
 
   // Pad the catalog to satisfy "massive data" simulation needs.
   const optionSets: Array<{ type: string; options: readonly string[]; price: string; prefix: string }> = [
@@ -539,7 +582,7 @@ function buildTomFordCatalog(targetVariants: number) {
     n++;
   }
 
-  return { catalog, baseCount };
+  return { catalog: catalog.map(finalizeProduct), baseCount };
 }
 
 function computePricingStats(variants: ExtractedVariantRow[]) {
@@ -603,7 +646,7 @@ export class SimulationExtractor implements Extractor {
       // Simple generic simulation: generate 20 products × 10 variants = 200 rows.
       const nextId = createVariantIdFactory(500_000);
       const baseTitle = brand || "Brand";
-      const genericProducts: ExtractedProduct[] = [];
+      const genericProducts: SimulatedProductSeed[] = [];
       for (let i = 0; i < 20; i++) {
         const title = `${baseTitle} Product ${String(i + 1).padStart(3, "0")}`;
         const productUrl = `https://${domain}/products/${encodeURIComponent(title.toLowerCase().replace(/\s+/g, "-"))}`;
@@ -623,7 +666,7 @@ export class SimulationExtractor implements Extractor {
           }),
         });
       }
-      products = genericProducts;
+      products = genericProducts.map(finalizeProduct);
     }
 
     pushLog("info", "Beginning Variant Extraction (Enriching Data)...");

@@ -6,6 +6,7 @@ import {
   isLikelyProductUrl,
   isStaticAssetUrl,
   resolveStructuredImageUrl,
+  resolveStructuredImageUrls,
 } from "../src/services/extractors/puppeteer";
 
 const BASE_URL = "https://theordinary.com";
@@ -128,4 +129,26 @@ test("resolveStructuredImageUrl skips placeholder and favicon candidates when fa
     url,
     "https://www.guerlain.com/dw/image/v2/BDCZ_PRD/on/demandware.static/-/Sites-GSA_master_catalog/default/dwf327011b/01-ProductsViewer/P062033/P062033_G062033_E01_hi-res.png?sw=900&sh=900",
   );
+});
+
+test("resolveStructuredImageUrls preserves gallery order and filters invalid assets", () => {
+  const urls = resolveStructuredImageUrls("https://www.guerlain.com", [
+    {
+      "@type": "ImageObject",
+      url: "https://www.guerlain.com/on/demandware.static/Sites-Guerlain_US-Site/-/default/dw84c3d99e/images/placeholder.svg",
+    },
+    {
+      "@type": "ImageObject",
+      url: "https://www.guerlain.com/dw/image/v2/BDCZ_PRD/on/demandware.static/-/Sites-GSA_master_catalog/default/dwf327011b/01-ProductsViewer/P062033/P062033_G062033_E01_hi-res.png?sw=900&sh=900",
+    },
+    {
+      "@type": "ImageObject",
+      url: "https://www.guerlain.com/dw/image/v2/BDCZ_PRD/on/demandware.static/-/Sites-GSA_master_catalog/default/dw97b9f8d5/01-ProductsViewer/P062033/P062033_E02_hi-res.jpg?sw=655&sh=655&sfrm=jpg",
+    },
+  ]);
+
+  assert.deepEqual(urls, [
+    "https://www.guerlain.com/dw/image/v2/BDCZ_PRD/on/demandware.static/-/Sites-GSA_master_catalog/default/dwf327011b/01-ProductsViewer/P062033/P062033_G062033_E01_hi-res.png?sw=900&sh=900",
+    "https://www.guerlain.com/dw/image/v2/BDCZ_PRD/on/demandware.static/-/Sites-GSA_master_catalog/default/dw97b9f8d5/01-ProductsViewer/P062033/P062033_E02_hi-res.jpg?sw=655&sh=655&sfrm=jpg",
+  ]);
 });

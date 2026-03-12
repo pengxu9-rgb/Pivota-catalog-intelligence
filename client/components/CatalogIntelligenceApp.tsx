@@ -8,7 +8,7 @@ import { DashboardStats } from "./DashboardStats";
 import { ExtractionForm } from "./ExtractionForm";
 import { ResultsTable } from "./ResultsTable";
 
-import type { ExtractResponse, ExtractedVariantRow, LogLine } from "@/lib/types";
+import type { ExtractResponse, ExtractedProduct, ExtractedVariantRow, LogLine } from "@/lib/types";
 import { extractCatalog } from "@/lib/api";
 import { buildCsv, buildProductCsv, downloadTextFile } from "@/lib/csv";
 import { copyTextToClipboard } from "@/lib/clipboard";
@@ -32,16 +32,59 @@ function computeMergedPricing(variants: ExtractedVariantRow[]) {
   return { currency: "USD" as const, min, max, avg: Number(avg.toFixed(2)) };
 }
 
+function mergeStringLists(...lists: Array<string[] | undefined>) {
+  const out: string[] = [];
+  for (const list of lists) {
+    for (const value of list || []) {
+      const trimmed = String(value || "").trim();
+      if (!trimmed || out.includes(trimmed)) continue;
+      out.push(trimmed);
+    }
+  }
+  return out;
+}
+
+function mergeProduct(base: ExtractedProduct, next: ExtractedProduct): ExtractedProduct {
+  const mergedVariants = [...base.variants];
+  const seenVariants = new Set(mergedVariants.map((variant) => `${variant.id}|${variant.sku}|${variant.url}`));
+  for (const variant of next.variants) {
+    const key = `${variant.id}|${variant.sku}|${variant.url}`;
+    if (seenVariants.has(key)) continue;
+    seenVariants.add(key);
+    mergedVariants.push(variant);
+  }
+
+  const imageUrls = mergeStringLists(
+    Array.isArray(base.image_urls) ? base.image_urls : [],
+    Array.isArray(next.image_urls) ? next.image_urls : [],
+    mergedVariants.flatMap((variant) => (Array.isArray(variant.image_urls) ? variant.image_urls : [])),
+  );
+
+  return {
+    ...base,
+    ...next,
+    image_url: next.image_url || base.image_url || imageUrls[0] || "",
+    image_urls: imageUrls,
+    variant_skus: mergeStringLists(base.variant_skus, next.variant_skus, mergedVariants.map((variant) => variant.sku)),
+    variants: mergedVariants,
+  };
+}
+
 function mergeExtractResponses(base: ExtractResponse | null, next: ExtractResponse): ExtractResponse {
   if (!base) return next;
 
   const products = [...base.products];
-  const seenProducts = new Set(products.map((p) => `${p.url}|${p.title}`));
+  const productIndex = new Map(products.map((product, index) => [`${product.url}|${product.title}`, index]));
   for (const product of next.products) {
     const key = `${product.url}|${product.title}`;
-    if (seenProducts.has(key)) continue;
-    seenProducts.add(key);
-    products.push(product);
+    const existingIndex = productIndex.get(key);
+    if (existingIndex == null) {
+      productIndex.set(key, products.length);
+      products.push(product);
+      continue;
+    }
+
+    products[existingIndex] = mergeProduct(products[existingIndex], product);
   }
 
   const variants = [...base.variants];
@@ -70,6 +113,7 @@ export function CatalogIntelligenceApp() {
   const [isRunning, setIsRunning] = useState(false);
 
   const [data, setData] = useState<ExtractResponse | null>(null);
+  const products = data?.products ?? [];
   const variants = data?.variants ?? EMPTY_VARIANTS;
   const logs = data?.logs ?? EMPTY_LOGS;
 
@@ -105,16 +149,16 @@ export function CatalogIntelligenceApp() {
   }, [variants, showToast]);
 
   const handleCopyProductCsv = useCallback(async () => {
-    const csv = buildProductCsv(variants);
+    const csv = buildProductCsv(products, variants);
     const ok = await copyTextToClipboard(csv);
     showToast(ok ? "Product CSV copied!" : "Copy failed.");
-  }, [variants, showToast]);
+  }, [products, variants, showToast]);
 
   const handleDownloadProductCsv = useCallback(() => {
-    const csv = buildProductCsv(variants);
+    const csv = buildProductCsv(products, variants);
     downloadTextFile(csv, "tom_ford_beauty_product_export.csv", "text/csv;charset=utf-8;");
     showToast("Product download started.");
-  }, [variants, showToast]);
+  }, [products, variants, showToast]);
 
   const appendLocalLogs = useCallback((lines: LogLine[]) => {
     setData((prev) => {
@@ -285,10 +329,11 @@ export function CatalogIntelligenceApp() {
           </div>
 
           <div className="lg:col-span-8 flex flex-col gap-6">
-            <ResultsTable
-              logs={logs}
-              variants={variants}
-              recordCountText={recordCountText}
+        <ResultsTable
+          logs={logs}
+          products={products}
+          variants={variants}
+          recordCountText={recordCountText}
               onCopyCsv={handleCopyCsv}
               onDownloadCsv={handleDownloadCsv}
               onCopyProductCsv={handleCopyProductCsv}

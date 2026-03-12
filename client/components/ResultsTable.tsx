@@ -2,13 +2,14 @@
 
 import { Copy, ExternalLink } from "lucide-react";
 
-import type { ExtractedVariantRow, LogLine } from "@/lib/types";
+import type { ExtractedProduct, ExtractedVariantRow, LogLine } from "@/lib/types";
 
 const PLACEHOLDER_THUMB =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='6' fill='%23e5e7eb'/%3E%3Ctext x='20' y='23' text-anchor='middle' font-size='10' fill='%239ca3af' font-family='Arial,sans-serif'%3EIMG%3C/text%3E%3C/svg%3E";
 
 type Props = {
   logs: LogLine[];
+  products: ExtractedProduct[];
   variants: ExtractedVariantRow[];
   recordCountText: string;
   isActionsEnabled: boolean;
@@ -21,6 +22,7 @@ type Props = {
 
 export function ResultsTable({
   logs,
+  products,
   variants,
   recordCountText,
   isActionsEnabled,
@@ -30,6 +32,10 @@ export function ResultsTable({
   onDownloadProductCsv,
   onCopyLink,
 }: Props) {
+  const productImageCounts = new Map(
+    products.map((product) => [product.url, Array.isArray(product.image_urls) ? product.image_urls.length : 0]),
+  );
+
   return (
     <>
       {/* Simulation Terminal */}
@@ -130,6 +136,7 @@ export function ResultsTable({
                   <ResultRow
                     key={`${variant.id}-${variant.sku}`}
                     variant={variant}
+                    productImageCount={productImageCounts.get(variant.product_url || variant.url) || 0}
                     onCopyLink={onCopyLink}
                   />
                 ))
@@ -144,11 +151,19 @@ export function ResultsTable({
 
 function ResultRow({
   variant,
+  productImageCount,
   onCopyLink,
 }: {
   variant: ExtractedVariantRow;
+  productImageCount: number;
   onCopyLink: (url: string) => void;
 }) {
+  const variantImageCount = (Array.isArray(variant.image_urls) ? variant.image_urls.length : 0) || (variant.image_url ? 1 : 0);
+  const imageCountText =
+    productImageCount > variantImageCount
+      ? `${variantImageCount} variant / ${productImageCount} product`
+      : `${variantImageCount}`;
+
   return (
     <tr className="hover:bg-gray-50 transition-colors fade-in group">
       <td className="px-6 py-4 whitespace-nowrap">
@@ -165,6 +180,7 @@ function ResultRow({
         title={variant.product_title}
       >
         {variant.product_title}
+        <span className="ml-2 text-xs text-gray-400">{imageCountText} img</span>
         {variant.simulated ? (
           <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">
             Sim

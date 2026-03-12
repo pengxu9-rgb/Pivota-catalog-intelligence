@@ -3,9 +3,14 @@ from __future__ import annotations
 from sqlalchemy import inspect, text
 
 
+def _boolean_default(dialect_name: str) -> str:
+    return "FALSE" if dialect_name == "postgresql" else "0"
+
+
 def _candidate_row_column_defs(dialect_name: str) -> dict[str, str]:
     real = "DOUBLE PRECISION" if dialect_name == "postgresql" else "REAL"
     boolean = "BOOLEAN" if dialect_name == "postgresql" else "INTEGER"
+    boolean_default = _boolean_default(dialect_name)
     return {
         "candidate_id": "VARCHAR(255)",
         "sku_key": "VARCHAR(255)",
@@ -26,13 +31,14 @@ def _candidate_row_column_defs(dialect_name: str) -> dict[str, str]:
         "audit_score": real,
         "source_match_status": "VARCHAR(24)",
         "ingredient_signal_type": "VARCHAR(32)",
-        "ingest_allowed": f"{boolean} DEFAULT 0",
+        "ingest_allowed": f"{boolean} DEFAULT {boolean_default}",
     }
 
 
 def ensure_runtime_schema(engine) -> None:
     dialect_name = engine.dialect.name
     inspector = inspect(engine)
+    boolean_default = _boolean_default(dialect_name)
 
     existing_columns = {column["name"] for column in inspector.get_columns("candidate_rows")}
     column_defs = _candidate_row_column_defs(dialect_name)
@@ -45,7 +51,7 @@ def ensure_runtime_schema(engine) -> None:
 
         conn.execute(
             text(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS candidate_row_audit_findings (
                   id INTEGER PRIMARY KEY,
                   audit_run_id VARCHAR(48),
@@ -55,7 +61,7 @@ def ensure_runtime_schema(engine) -> None:
                   severity VARCHAR(16),
                   evidence_json TEXT,
                   recommended_action TEXT,
-                  auto_fixable BOOLEAN DEFAULT 0,
+                  auto_fixable BOOLEAN DEFAULT {boolean_default},
                   created_at TIMESTAMP
                 )
                 """
@@ -63,14 +69,14 @@ def ensure_runtime_schema(engine) -> None:
         )
         conn.execute(
             text(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS candidate_row_corrections (
                   id INTEGER PRIMARY KEY,
                   audit_run_id VARCHAR(48),
                   row_id VARCHAR(36),
                   correction_type VARCHAR(64),
                   status VARCHAR(24),
-                  auto_applied BOOLEAN DEFAULT 0,
+                  auto_applied BOOLEAN DEFAULT {boolean_default},
                   actor VARCHAR(128),
                   before_payload_json TEXT,
                   after_payload_json TEXT,

@@ -36,6 +36,43 @@ def test_build_audit_findings_flags_blockers_and_reviews() -> None:
     assert "duplicate_conflicting_candidate" in anomaly_types
 
 
+def test_build_audit_findings_flags_unmatched_third_party_sources_for_review() -> None:
+    findings = build_audit_findings(
+        row_id="row_2",
+        import_id="imp_1",
+        brand="Olehenriksen",
+        product_name="Barrier Booster Orange Ferment Vitamin C Essence",
+        source_ref="https://www.cosdna.com/eng/cosmetic_5008594583.html",
+        source_type="ThirdParty",
+        raw_ingredient_text="Ingredients: Water, Glycerin, Tocopherol",
+        cleaned_text="Water, Glycerin, Tocopherol",
+        parse_status="OK",
+        parse_confidence=0.94,
+        inci_list="Aqua; Glycerin; Tocopherol",
+        normalization_notes=[],
+        source_match_status="unknown",
+        source_match_evidence={"source_ref": "https://www.cosdna.com/eng/cosmetic_5008594583.html"},
+        ingredient_signal_type="labeled_ingredients",
+        duplicate_conflict=None,
+    )
+
+    assert findings == [
+        {
+            "row_id": "row_2",
+            "import_id": "imp_1",
+            "anomaly_type": "third_party_source_requires_review",
+            "severity": "review",
+            "evidence": {
+                "source_ref": "https://www.cosdna.com/eng/cosmetic_5008594583.html",
+                "source_type": "thirdparty",
+                "source_match_status": "unknown",
+            },
+            "recommended_action": "Review third-party ingredient sources before approval, or replace them with an official product source.",
+            "auto_fixable": False,
+        }
+    ]
+
+
 def test_compute_audit_status_prioritizes_blockers() -> None:
     fail_status, fail_score = compute_audit_status(
         [

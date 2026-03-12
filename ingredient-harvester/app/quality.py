@@ -152,6 +152,7 @@ def build_audit_findings(
     duplicate_conflict: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
+    normalized_source_type = normalize_nonempty_string(source_type).lower()
 
     def add(
         anomaly_type: str,
@@ -187,6 +188,19 @@ def build_audit_findings(
             "blocker",
             source_match_evidence,
             "Review the source URL and update it to the matching product page or approved source document.",
+            False,
+        )
+
+    if normalized_source_type == "thirdparty" and source_match_status != "match":
+        add(
+            "third_party_source_requires_review",
+            "review",
+            {
+                **source_match_evidence,
+                "source_type": normalized_source_type,
+                "source_match_status": source_match_status,
+            },
+            "Review third-party ingredient sources before approval, or replace them with an official product source.",
             False,
         )
 

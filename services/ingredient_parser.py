@@ -226,7 +226,7 @@ INVALID_PHRASES_ZH = [
 
 
 LABEL_PREFIX_RE = re.compile(
-    r"^\s*(?:ingredients?|ingredient\s+list|ingredients?\s+list|inci|inci\s+list)\s*[:：]\s*",
+    r"^\s*(?:full\s+ingredients?\s+list|full\s+ingredient\s+list|ingredients?|ingredient\s+list|ingredients?\s+list|inci|inci\s+list)\s*[:：]\s*",
     re.IGNORECASE,
 )
 LABEL_PREFIX_ZH_RE = re.compile(r"^\s*(?:全成分|成分|配料|配方)\s*[:：]\s*")

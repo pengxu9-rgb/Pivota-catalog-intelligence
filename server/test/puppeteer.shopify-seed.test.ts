@@ -87,3 +87,60 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
     },
   );
 });
+
+test("PuppeteerExtractor supports string-based Shopify direct PDP image arrays", async () => {
+  const extractor = new PuppeteerExtractor();
+  const directProduct = {
+    id: 202,
+    title: "Glow Getter Set",
+    handle: "glow-getter-set",
+    body_html: "<p>Glow set</p>",
+    featured_image: "//cdn.shopify.com/s/files/1/1463/5858/files/AAV1_PJUL02_BundlesMinis_01_Ruby_BaseBrush.jpg?v=1752708261",
+    variants: [
+      {
+        id: 2001,
+        title: "Default Title",
+        option1: "Default Title",
+        price: 6200,
+        available: true,
+        inventory_quantity: 8,
+        featured_image: null,
+      },
+    ],
+    options: [{ name: "Title" }],
+    images: [
+      "//cdn.shopify.com/s/files/1/1463/5858/files/AAV1_PJUL02_BundlesMinis_01_Ruby_BaseBrush.jpg?v=1752708261",
+      "//cdn.shopify.com/s/files/1/1463/5858/files/Pixi_Makeup_OTG_Base_June_2025_01.jpg?v=1773267435",
+      "//cdn.shopify.com/s/files/1/1463/5858/files/Colour-Swatches-on-Arm-OTG-BASE-800x800-31JAN25.jpg?v=1773267573",
+    ],
+  };
+
+  await withMockFetch(
+    {
+      "https://pixibeauty.com/products/glow-getter-set.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify(directProduct),
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Pixi",
+        domain: "https://pixibeauty.com/products/glow-getter-set",
+        limit: 5,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.deepEqual(result.products[0]?.image_urls, [
+        "https://cdn.shopify.com/s/files/1/1463/5858/files/AAV1_PJUL02_BundlesMinis_01_Ruby_BaseBrush.jpg?v=1752708261",
+        "https://cdn.shopify.com/s/files/1/1463/5858/files/Pixi_Makeup_OTG_Base_June_2025_01.jpg?v=1773267435",
+        "https://cdn.shopify.com/s/files/1/1463/5858/files/Colour-Swatches-on-Arm-OTG-BASE-800x800-31JAN25.jpg?v=1773267573",
+      ]);
+      assert.deepEqual(result.variants[0]?.image_urls, result.products[0]?.image_urls);
+      assert.equal(
+        result.products[0]?.image_url,
+        "https://cdn.shopify.com/s/files/1/1463/5858/files/AAV1_PJUL02_BundlesMinis_01_Ruby_BaseBrush.jpg?v=1752708261",
+      );
+    },
+  );
+});

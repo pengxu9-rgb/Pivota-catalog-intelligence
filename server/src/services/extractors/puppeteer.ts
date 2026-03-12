@@ -502,7 +502,8 @@ type ShopifyProduct = {
   body_html?: string;
   variants: ShopifyVariant[];
   options?: Array<{ name?: string }>;
-  images?: ShopifyImage[];
+  images?: Array<string | ShopifyImage>;
+  featured_image?: string | ShopifyImage | null;
 };
 
 type ShopifyVariant = {
@@ -515,11 +516,12 @@ type ShopifyVariant = {
   price?: string;
   available?: boolean;
   inventory_quantity?: number | null;
-  featured_image?: ShopifyImage | null;
+  featured_image?: string | ShopifyImage | null;
 };
 
 type ShopifyImage = {
   src?: string;
+  url?: string;
   variant_ids?: number[];
 };
 
@@ -658,7 +660,7 @@ function buildShopifyResponse(params: {
 
   for (const product of params.products) {
     const productUrl = `${params.baseUrl}/products/${product.handle}`;
-    const productImageUrls = resolveShopifyProductImageUrls(product);
+    const productImageUrls = resolveShopifyProductImageUrls(params.baseUrl, product);
     const titleSplit = enableTitleDiscovery ? splitTitleIntoBaseAndVariant(product.title) : null;
     const treatAsPseudoVariant =
       Boolean(titleSplit) && (product.variants || []).length === 1 && isDefaultShopifyVariant(product.variants[0]!);
@@ -679,7 +681,7 @@ function buildShopifyResponse(params: {
       const sku = (v.sku || "").trim() || `SHOPIFY-${v.id}`;
       const price = normalizePrice(v.price);
       const stock = toStockStatus(v.available, v.inventory_quantity);
-      const imageUrls = resolveShopifyVariantImageUrls(product, v);
+      const imageUrls = resolveShopifyVariantImageUrls(params.baseUrl, product, v);
       const imageUrl = imageUrls[0] || "";
       const description = getMergedDescription({ title: canonicalProductTitle, overview: officialText });
       const adCopy = generateMockAdCopy(canonicalProductTitle, optionValue, price);
@@ -774,25 +776,24 @@ function buildShopifyResponse(params: {
   };
 }
 
-function resolveShopifyProductImageUrls(product: ShopifyProduct) {
-  return dedupeStringList((product.images || []).map((image) => image.src));
+function resolveShopifyProductImageUrls(baseUrl: string, product: ShopifyProduct) {
+  return dedupeStringList(resolveStructuredImageUrls(baseUrl, [product.featured_image, product.images]));
 }
 
-function resolveShopifyVariantImageUrls(product: ShopifyProduct, variant: ShopifyVariant) {
+function resolveShopifyVariantImageUrls(baseUrl: string, product: ShopifyProduct, variant: ShopifyVariant) {
   const images = product.images || [];
   const matchedImages = images
-    .filter((image) => (image.variant_ids || []).includes(variant.id))
-    .map((image) => image.src);
+    .filter((image) => typeof image === "object" && image !== null && (image.variant_ids || []).includes(variant.id));
 
   return dedupeStringList([
-    variant.featured_image?.src,
-    ...matchedImages,
-    ...resolveShopifyProductImageUrls(product),
+    ...resolveStructuredImageUrls(baseUrl, variant.featured_image),
+    ...resolveStructuredImageUrls(baseUrl, matchedImages),
+    ...resolveShopifyProductImageUrls(baseUrl, product),
   ]);
 }
 
-function resolveShopifyVariantImageUrl(product: ShopifyProduct, variant: ShopifyVariant): string | undefined {
-  return resolveShopifyVariantImageUrls(product, variant)[0];
+function resolveShopifyVariantImageUrl(baseUrl: string, product: ShopifyProduct, variant: ShopifyVariant): string | undefined {
+  return resolveShopifyVariantImageUrls(baseUrl, product, variant)[0];
 }
 
 function toStockStatus(available?: boolean, inventoryQuantity?: number | null): StockStatus {

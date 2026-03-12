@@ -91,3 +91,26 @@ def test_compute_audit_status_prioritizes_blockers() -> None:
     assert review_status == "REVIEW"
     assert pass_status == "PASS"
     assert fail_score < review_score < pass_score
+
+
+def test_benign_normalization_notes_do_not_force_review() -> None:
+    findings = build_audit_findings(
+        row_id="row_3",
+        import_id="imp_1",
+        brand="Olehenriksen",
+        product_name="Dewtopia 20% Acid Night Treatment",
+        source_ref="https://olehenriksen.com/products/dewtopia-20-acid-night-treatment",
+        source_type="Official",
+        raw_ingredient_text="Aqua/Water/Eau, Glycerin",
+        cleaned_text="Aqua/Water/Eau, Glycerin",
+        parse_status="OK",
+        parse_confidence=1.0,
+        inci_list="Aqua; Glycerin",
+        normalization_notes=["Mapped 'Aqua/Water/Eau' -> 'Aqua'"],
+        source_match_status="match",
+        source_match_evidence={"source_ref": "https://olehenriksen.com/products/dewtopia-20-acid-night-treatment"},
+        ingredient_signal_type="labeled_ingredients",
+        duplicate_conflict=None,
+    )
+
+    assert findings == []

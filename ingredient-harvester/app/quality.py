@@ -42,6 +42,11 @@ MARKETING_COPY_RE = re.compile(
     re.IGNORECASE,
 )
 
+REVIEW_WORTHY_NORMALIZATION_RE = re.compile(
+    r"(removed|strip(?:ped)?|truncat|ui|artifact|noise|cleanup|boilerplate|marketing|label\s+prefix)",
+    re.IGNORECASE,
+)
+
 
 def normalize_nonempty_string(value: Any) -> str:
     return str(value or "").strip()
@@ -65,6 +70,13 @@ def normalize_url_like(value: Any) -> str:
     if raw.startswith("www.") or "." in raw.split("/", 1)[0]:
         return f"https://{raw}"
     return ""
+
+
+def _is_review_worthy_normalization_note(note: str) -> bool:
+    normalized = normalize_nonempty_string(note)
+    if not normalized:
+        return False
+    return bool(REVIEW_WORTHY_NORMALIZATION_RE.search(normalized))
 
 
 def _tokenize(text: str) -> set[str]:
@@ -254,11 +266,12 @@ def build_audit_findings(
         )
 
     normalized_notes = [normalize_nonempty_string(note) for note in normalization_notes or [] if normalize_nonempty_string(note)]
-    if normalized_notes:
+    review_notes = [note for note in normalized_notes if _is_review_worthy_normalization_note(note)]
+    if review_notes:
         add(
             "truncated_or_noisy_text",
             "review",
-            {"normalization_notes": normalized_notes[:12], "cleaned_text": normalize_nonempty_string(cleaned_text)[:240]},
+            {"normalization_notes": review_notes[:12], "cleaned_text": normalize_nonempty_string(cleaned_text)[:240]},
             "Check the cleaned ingredient text for truncation or UI noise before approval.",
             True,
         )

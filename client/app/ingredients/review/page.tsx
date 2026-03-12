@@ -15,10 +15,9 @@ import {
 } from "lucide-react";
 
 import type { CandidateRow } from "@/lib/harvesterTypes";
-import { listImportRows } from "@/lib/harvesterApi";
+import { listImportRows, reviewRow } from "@/lib/harvesterApi";
 import type { ParsedIngredient, ParseStatus, ParserReparseResponse } from "@/lib/parserTypes";
 import { reparse, reparseBatch } from "@/lib/parserApi";
-import { updateProduct } from "@/lib/productsApi";
 
 type StatusFilter = ParseStatus | "ALL";
 
@@ -63,6 +62,20 @@ function inciListFromIngredients(ingredients: ParsedIngredient[]) {
     .join("; ");
 }
 
+function parserStateFromRow(row: CandidateRow): ParserReparseResponse | null {
+  if (!row.parse_status && !row.cleaned_text && !row.inci_list) return null;
+  return {
+    cleaned_text: row.cleaned_text || "",
+    parse_status: row.parse_status || "NEEDS_REVIEW",
+    inci_list: row.inci_list || "",
+    inci_list_json: row.inci_list_json || [],
+    unrecognized_tokens: row.unrecognized_tokens || [],
+    normalization_notes: row.normalization_notes || [],
+    parse_confidence: typeof row.parse_confidence === "number" ? row.parse_confidence : 0,
+    needs_review: row.needs_review || [],
+  };
+}
+
 export default function IngredientReviewPage() {
   const [importId, setImportId] = useState<string>("");
   const [rows, setRows] = useState<CandidateRow[]>([]);
@@ -101,6 +114,14 @@ export default function IngredientReviewPage() {
       const res = await listImportRows({ importId, q: queryApplied || undefined, limit: pageSize, offset });
       setRows(res.items || []);
       setTotal(res.total || 0);
+      setParsedByRowId((prev) => {
+        const next = { ...prev };
+        for (const row of res.items || []) {
+          const parsed = parserStateFromRow(row);
+          if (parsed) next[row.row_id] = parsed;
+        }
+        return next;
+      });
     } catch (e: any) {
       setError(e?.message || "Failed to load rows.");
     } finally {
@@ -125,7 +146,7 @@ export default function IngredientReviewPage() {
     let cancelled = false;
 
     const run = async () => {
-      const missing = rows.filter((r) => !parsedByRowId[r.row_id]);
+      const missing = rows.filter((r) => !parsedByRowId[r.row_id] && !!(r.raw_ingredient_text || "").trim());
       if (missing.length === 0) return;
       try {
         const resp = await reparseBatch({
@@ -170,21 +191,23 @@ export default function IngredientReviewPage() {
         const items = pageRes.items || [];
         if (items.length === 0) break;
 
-        const batch = await reparseBatch({
-          items: items.map((r) => ({ row_id: r.row_id, raw_ingredient_text: r.raw_ingredient_text })),
-        });
-
         if (cancelled) return;
         setParsedByRowId((prev) => {
           const next = { ...prev };
-          for (const it of batch.items || []) next[it.row_id] = it.result;
+          for (const row of items) {
+            const parsedRow = parserStateFromRow(row);
+            if (parsedRow) next[row.row_id] = parsedRow;
+          }
           return next;
         });
 
-        for (const it of batch.items || []) {
+        for (const row of items) {
+          const hasSignal = !!(row.parse_status || "").trim() || !!(row.raw_ingredient_text || "").trim();
+          if (!hasSignal) continue;
+          const parseStatus = row.parse_status || "NEEDS_REVIEW";
           parsed += 1;
-          if (it.result.parse_status === "OK") ok += 1;
-          else if (it.result.parse_status === "NEEDS_SOURCE") needsSource += 1;
+          if (parseStatus === "OK") ok += 1;
+          else if (parseStatus === "NEEDS_SOURCE") needsSource += 1;
           else needsReview += 1;
         }
 
@@ -208,6 +231,8 @@ export default function IngredientReviewPage() {
     if (filterStatus === "ALL") return rows;
     return rows.filter((r) => {
       const p = parsedByRowId[r.row_id];
+      const hasSignal = !!p || !!(r.parse_status || "").trim() || !!(r.raw_ingredient_text || "").trim();
+      if (!hasSignal) return false;
       if (!p) return filterStatus === "NEEDS_REVIEW";
       return p.parse_status === filterStatus;
     });
@@ -292,7 +317,21 @@ export default function IngredientReviewPage() {
     if (!drawer.open) return;
     setError("");
     try {
-      await updateProduct(drawer.row.row_id, { status, raw_ingredient_text: drawer.editedText });
+      const parse = drawer.parse || (await reparse(drawer.editedText));
+      await reviewRow(drawer.row.row_id, {
+        raw_ingredient_text: drawer.editedText,
+        source_ref: drawer.row.source_ref,
+        source_type: drawer.row.source_type,
+        cleaned_text: parse.cleaned_text,
+        parse_status: parse.parse_status,
+        parse_confidence: parse.parse_confidence,
+        inci_list: parse.inci_list,
+        inci_list_json: parse.inci_list_json,
+        unrecognized_tokens: parse.unrecognized_tokens,
+        normalization_notes: parse.normalization_notes,
+        needs_review: parse.needs_review,
+        review_status: status === "OK" ? "APPROVED" : "NEEDS_SOURCE",
+      });
       closeDrawer();
       await loadRows();
     } catch (e: any) {
@@ -481,6 +520,10 @@ export default function IngredientReviewPage() {
                         {typeof p?.parse_confidence === "number" ? (
                           <div className="mt-1 text-xs text-gray-500 font-mono">{p.parse_confidence.toFixed(2)}</div>
                         ) : null}
+                        <div className="mt-1 text-[11px] text-gray-500">
+                          <div>review: {r.review_status}</div>
+                          <div>audit: {r.audit_status}</div>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -544,6 +587,9 @@ export default function IngredientReviewPage() {
                   {drawer.row.brand} — {drawer.row.product_name}
                 </div>
                 <div className="mt-1 text-xs text-gray-500 font-mono">{drawer.row.row_id}</div>
+                <div className="mt-1 text-[11px] text-gray-500">
+                  review: {drawer.row.review_status} · audit: {drawer.row.audit_status}
+                </div>
               </div>
               <button className="p-2 rounded-lg hover:bg-gray-50" onClick={closeDrawer} aria-label="Close">
                 <X className="w-5 h-5" />

@@ -6,6 +6,34 @@ export type LogLine = {
   msg: string;
 };
 
+export type DiscoveryStrategy =
+  | "shopify_json"
+  | "seed_page"
+  | "sitemap"
+  | "browser_discovery"
+  | "managed_browser";
+
+export type FailureCategory =
+  | "non_storefront_root"
+  | "dead_sitemap"
+  | "bot_challenge"
+  | "no_product_urls"
+  | "product_schema_missing"
+  | "timeout"
+  | "unknown";
+
+export type ExtractionDiagnostics = {
+  requested_domain: string;
+  resolved_base_url: string;
+  discovery_strategy: DiscoveryStrategy | null;
+  failure_category: FailureCategory | null;
+  block_provider: "cloudflare" | "akamai" | "perimeterx" | "unknown" | null;
+  http_trace: Array<{
+    url: string;
+    status: number | null;
+  }>;
+};
+
 export type ExtractedVariantRow = {
   id: string;
   sku: string;
@@ -75,4 +103,5 @@ export type ExtractResponse = {
     discovered_urls: number;
   };
   logs: LogLine[];
+  diagnostics?: ExtractionDiagnostics;
 };

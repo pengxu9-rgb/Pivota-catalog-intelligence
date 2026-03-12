@@ -76,6 +76,20 @@ def build_kb_text(*, brand: str, product_name: str, market: str, category: str, 
 def _json_or_none(value: Any) -> Any:
     if value is None:
         return None
+
+
+def _coerce_bool(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    try:
+        if pd.isna(value):
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    raw = str(value).strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
     try:
         if pd.isna(value):
             return None
@@ -107,13 +121,23 @@ class KbRow:
     parse_status: str
     parse_confidence: Optional[float]
     review_status: str
+    audit_status: str
+    ingest_allowed: bool
     raw_ingredient_text_clean: str
     inci_list: str
     inci_list_json: Any
     embedding_literal: str
 
 
-def build_rows(df: pd.DataFrame, *, dim: int, only_parse_status: str = "") -> list[KbRow]:
+def build_rows(
+    df: pd.DataFrame,
+    *,
+    dim: int,
+    only_parse_status: str = "",
+    only_review_status: str = "",
+    only_audit_status: str = "",
+    require_ingest_allowed: bool = False,
+) -> list[KbRow]:
     out: list[KbRow] = []
     for _idx, row in df.iterrows():
         sku_key = _pick_first_nonempty(row, ["candidate_id", "sku_key", "row_id", "id"])
@@ -132,10 +156,18 @@ def build_rows(df: pd.DataFrame, *, dim: int, only_parse_status: str = "") -> li
         source_ref = _pick_first_nonempty(row, ["source_ref", "source_url", "url"])
         source_type = _pick_first_nonempty(row, ["source_type"])
         harvest_status = _pick_first_nonempty(row, ["harvest_status", "status"])
-        review_status = _pick_first_nonempty(row, ["review_status"])
 
         parse_status = _pick_first_nonempty(row, ["parse_status"])
-        if only_parse_status and parse_status and parse_status != only_parse_status:
+        if only_parse_status and parse_status != only_parse_status:
+            continue
+        review_status = _pick_first_nonempty(row, ["review_status"])
+        if only_review_status and review_status != only_review_status:
+            continue
+        audit_status = _pick_first_nonempty(row, ["audit_status"])
+        if only_audit_status and audit_status != only_audit_status:
+            continue
+        ingest_allowed = _coerce_bool(row.get("ingest_allowed")) if "ingest_allowed" in row.index else False
+        if require_ingest_allowed and not ingest_allowed:
             continue
 
         try:
@@ -182,6 +214,8 @@ def build_rows(df: pd.DataFrame, *, dim: int, only_parse_status: str = "") -> li
                 parse_status=parse_status,
                 parse_confidence=parse_conf,
                 review_status=review_status,
+                audit_status=audit_status,
+                ingest_allowed=ingest_allowed,
                 raw_ingredient_text_clean=raw_clean,
                 inci_list=inci_list,
                 inci_list_json=inci_json,
@@ -393,6 +427,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--dim", type=int, default=DEFAULT_DIM)
     ap.add_argument("--batch-size", type=int, default=200)
     ap.add_argument("--only-parse-status", default="", help="If set, only ingest rows with this parse_status (e.g. OK).")
+    ap.add_argument("--only-review-status", default="", help="If set, only ingest rows with this review_status (e.g. APPROVED).")
+    ap.add_argument("--only-audit-status", default="", help="If set, only ingest rows with this audit_status (e.g. PASS).")
+    ap.add_argument("--require-ingest-allowed", action="store_true", help="If set, only ingest rows where ingest_allowed is truthy.")
     ap.add_argument("--no-index", action="store_true", help="Skip creating vector index.")
     ap.add_argument("--dry-run", action="store_true", help="Do not write to DB; just print counts.")
     args = ap.parse_args(argv)
@@ -405,8 +442,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     csv_path = args.csv
     df = pd.read_csv(csv_path)
 
-    rows = build_rows(df, dim=int(args.dim), only_parse_status=str(args.only_parse_status or "").strip())
-    print(f"rows_total={len(df)} rows_ingest={len(rows)} dim={int(args.dim)} db={mask_db_url(ensure_sslmode_require(db_url))}", file=sys.stderr)
+    rows = build_rows(
+        df,
+        dim=int(args.dim),
+        only_parse_status=str(args.only_parse_status or "").strip(),
+        only_review_status=str(args.only_review_status or "").strip(),
+        only_audit_status=str(args.only_audit_status or "").strip(),
+        require_ingest_allowed=bool(args.require_ingest_allowed),
+    )
+    print(
+        (
+            f"rows_total={len(df)} rows_ingest={len(rows)} dim={int(args.dim)} "
+            f"parse_gate={str(args.only_parse_status or '').strip() or '-'} "
+            f"review_gate={str(args.only_review_status or '').strip() or '-'} "
+            f"audit_gate={str(args.only_audit_status or '').strip() or '-'} "
+            f"require_ingest_allowed={bool(args.require_ingest_allowed)} "
+            f"db={mask_db_url(ensure_sslmode_require(db_url))}"
+        ),
+        file=sys.stderr,
+    )
 
     if args.dry_run:
         return 0

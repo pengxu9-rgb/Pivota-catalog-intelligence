@@ -1,4 +1,12 @@
-import type { CreateTaskResponse, ImportResponse, ListRowsResponse, TaskProgress } from "./harvesterTypes";
+import type {
+  CorrectionUpdateRequest,
+  CreateTaskResponse,
+  ImportAuditResponse,
+  ImportResponse,
+  ListRowsResponse,
+  ReviewUpdateRequest,
+  TaskProgress,
+} from "./harvesterTypes";
 
 const DEFAULT_BASE = "http://localhost:3001/api/ingredient-harvester";
 
@@ -33,13 +41,21 @@ export async function uploadCandidatesCsv(file: File): Promise<ImportResponse> {
 export async function listImportRows(args: {
   importId: string;
   status?: string;
+  parseStatus?: string;
+  reviewStatus?: string;
+  auditStatus?: string;
+  ingestAllowed?: boolean;
   q?: string;
   limit?: number;
   offset?: number;
 }): Promise<ListRowsResponse> {
-  const { importId, status, q, limit = 200, offset = 0 } = args;
+  const { importId, status, parseStatus, reviewStatus, auditStatus, ingestAllowed, q, limit = 200, offset = 0 } = args;
   const u = new URL(`${baseUrl()}/v1/imports/${encodeURIComponent(importId)}/rows`);
   if (status) u.searchParams.set("status", status);
+  if (parseStatus) u.searchParams.set("parse_status", parseStatus);
+  if (reviewStatus) u.searchParams.set("review_status", reviewStatus);
+  if (auditStatus) u.searchParams.set("audit_status", auditStatus);
+  if (typeof ingestAllowed === "boolean") u.searchParams.set("ingest_allowed", String(ingestAllowed));
   if (q) u.searchParams.set("q", q);
   u.searchParams.set("limit", String(limit));
   u.searchParams.set("offset", String(offset));
@@ -82,8 +98,51 @@ export async function updateRow(rowId: string, patch: Record<string, unknown>) {
   return res.json();
 }
 
-export function exportImportUrl(importId: string, format: "csv" | "xlsx") {
+export async function auditImport(args: {
+  importId: string;
+  rowIds?: string[];
+  applyCorrections?: boolean;
+  stage?: string;
+}): Promise<ImportAuditResponse> {
+  const url = `${baseUrl()}/v1/imports/${encodeURIComponent(args.importId)}/audit`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      row_ids: args.rowIds || [],
+      apply_corrections: !!args.applyCorrections,
+      stage: args.stage || "initial",
+    }),
+  });
+  await assertOk(res, url);
+  return (await res.json()) as ImportAuditResponse;
+}
+
+export async function reviewRow(rowId: string, patch: ReviewUpdateRequest) {
+  const url = `${baseUrl()}/v1/rows/${encodeURIComponent(rowId)}/review`;
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  await assertOk(res, url);
+  return res.json();
+}
+
+export async function correctRow(rowId: string, patch: CorrectionUpdateRequest) {
+  const url = `${baseUrl()}/v1/rows/${encodeURIComponent(rowId)}/correction`;
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  await assertOk(res, url);
+  return res.json();
+}
+
+export function exportImportUrl(importId: string, format: "csv" | "xlsx", mode: "default" | "reviewed" = "default") {
   const u = new URL(`${baseUrl()}/v1/exports/${encodeURIComponent(importId)}`);
   u.searchParams.set("format", format);
+  u.searchParams.set("mode", mode);
   return u.toString();
 }

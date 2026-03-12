@@ -1081,6 +1081,7 @@ export async function discoverProductUrls(params: {
   let deadSitemapDetected = false;
   let challengeDetected = false;
   const seedDiscoveryUrl = params.seedUrl || params.baseUrl;
+  const directSeedCandidate = Boolean(params.seedUrl && scoreProductCandidateUrl(seedDiscoveryUrl, params.baseUrl) >= 4);
 
   if (seedDiscoveryUrl) {
     const seed = await fetchTextTracked(seedDiscoveryUrl, params.context, params.diagnostics);
@@ -1100,6 +1101,19 @@ export async function discoverProductUrls(params: {
         };
       }
 
+      if (directSeedCandidate) {
+        setDiscoveryStrategy(params.diagnostics, "seed_page");
+        if (!params.diagnostics.failure_category) {
+          setFailureCategory(params.diagnostics, seed.ok ? "product_schema_missing" : "no_product_urls");
+        }
+        return {
+          sitemapUrl: undefined,
+          productUrls: [canonicalizeUrl(seedDiscoveryUrl, params.baseUrl)],
+          deadSitemapDetected,
+          challengeDetected,
+        };
+      }
+
       const seedUrls = extractProductUrlsFromHtml(seed.body, params.baseUrl).slice(0, params.maxProducts);
       if (seedUrls.length > 0) {
         setDiscoveryStrategy(params.diagnostics, "seed_page");
@@ -1110,6 +1124,17 @@ export async function discoverProductUrls(params: {
           challengeDetected,
         };
       }
+    } else if (directSeedCandidate && !seed.blockedBy) {
+      setDiscoveryStrategy(params.diagnostics, "seed_page");
+      if (!params.diagnostics.failure_category) {
+        setFailureCategory(params.diagnostics, "no_product_urls");
+      }
+      return {
+        sitemapUrl: undefined,
+        productUrls: [canonicalizeUrl(seedDiscoveryUrl, params.baseUrl)],
+        deadSitemapDetected,
+        challengeDetected,
+      };
     }
   }
 

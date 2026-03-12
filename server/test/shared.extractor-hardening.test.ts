@@ -237,6 +237,40 @@ test("discoverProductUrls treats a direct PDP input as a product page", async ()
   );
 });
 
+test("discoverProductUrls does not fall through from an invalid direct PDP to unrelated page links", async () => {
+  const diagnostics = createDiagnostics("theordinary.com", "https://theordinary.com");
+
+  await withMockFetch(
+    {
+      "https://theordinary.com/en-us/the-clear-set-100630.html": {
+        status: 404,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `
+          <html>
+            <body>
+              <h1>Page not found</h1>
+              <a href="/contact-us.html">Contact us</a>
+            </body>
+          </html>
+        `,
+      },
+    },
+    async () => {
+      const discovered = await discoverProductUrls({
+        baseUrl: "https://theordinary.com",
+        seedUrl: "https://theordinary.com/en-us/the-clear-set-100630.html",
+        maxProducts: 5,
+        context: {},
+        diagnostics,
+      });
+
+      assert.equal(diagnostics.discovery_strategy, "seed_page");
+      assert.equal(diagnostics.failure_category, "no_product_urls");
+      assert.deepEqual(discovered.productUrls, ["https://theordinary.com/en-us/the-clear-set-100630.html"]);
+    },
+  );
+});
+
 test("looksLikeProductPageHtml distinguishes PDPs from price-only non-product pages", () => {
   assert.equal(looksLikeProductPageHtml(readFixture("direct-product-page.html")), true);
   assert.equal(

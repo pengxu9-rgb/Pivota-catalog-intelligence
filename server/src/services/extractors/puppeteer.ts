@@ -40,6 +40,7 @@ import {
   withTimeout as withTimeoutShared,
   type LoggerFn,
 } from "./shared";
+import { getMarketProfile } from "./marketProfiles";
 
 const DEFAULT_BATCH_LIMIT = 10;
 const DEFAULT_MAX_TOTAL_PRODUCTS = 500;
@@ -94,6 +95,7 @@ export class PuppeteerExtractor implements Extractor {
         brand: input.brand,
         domain: target.domain,
         baseUrl,
+        marketId,
         seedUrl: target.seedUrl,
         collectionHandle: target.collectionHandle,
         maxProducts: maxProductsTotal,
@@ -713,11 +715,12 @@ function extractCurrencyHintFromHtml(html: string): ExtractedVariant["currency"]
 async function fetchShopifyCurrencyHint(
   urlCandidates: Array<string | undefined>,
   diagnostics: NonNullable<ExtractResponse["diagnostics"]>,
+  context: { headers?: Record<string, string>; cookies?: Record<string, string> },
 ): Promise<ExtractedVariant["currency"] | null> {
   for (const candidate of urlCandidates) {
     const url = String(candidate || "").trim();
     if (!url) continue;
-    const outcome = await fetchTextTracked(url, {}, diagnostics);
+    const outcome = await fetchTextTracked(url, context, diagnostics);
     if (!outcome.body) continue;
     const hint = extractCurrencyHintFromHtml(outcome.body);
     if (hint) return hint;
@@ -755,6 +758,7 @@ async function tryExtractShopify(params: {
   brand: string;
   domain: string;
   baseUrl: string;
+  marketId: ExtractInput["market"];
   seedUrl?: string;
   collectionHandle?: string;
   maxProducts: number;
@@ -766,15 +770,20 @@ async function tryExtractShopify(params: {
   const log = params.log;
   const directHandle = extractShopifyProductHandle(params.seedUrl, params.baseUrl);
   const currencyHintUrls = dedupeStringList([params.seedUrl, params.baseUrl]);
+  const marketProfile = getMarketProfile(normalizeMarketId(params.marketId));
+  const shopifyContext = {
+    headers: marketProfile.headers,
+    cookies: marketProfile.cookies,
+  };
 
   if (directHandle) {
     const directUrl = `${params.baseUrl}/products/${directHandle}.js`;
     log("info", `Checking Shopify direct product feed: ${directUrl}`);
-    const directProduct = await fetchJsonTracked<ShopifyProduct>(directUrl, {}, params.diagnostics!);
+    const directProduct = await fetchJsonTracked<ShopifyProduct>(directUrl, shopifyContext, params.diagnostics!);
     if (directProduct.data && typeof directProduct.data.id === "number") {
       log("success", `Shopify direct product detected for handle: ${directHandle}`);
       setDiscoveryStrategy(params.diagnostics!, "shopify_json");
-      const currencyHint = await fetchShopifyCurrencyHint(currencyHintUrls, params.diagnostics!);
+      const currencyHint = await fetchShopifyCurrencyHint(currencyHintUrls, params.diagnostics!, shopifyContext);
       const response = buildShopifyResponse({
         ...params,
         currencyHint,
@@ -799,7 +808,7 @@ async function tryExtractShopify(params: {
     : `${params.baseUrl}/products.json?limit=1`;
 
   log("info", `Checking Shopify feed: ${probeUrl}`);
-  const probe = await fetchJsonTracked<ShopifyProductsResponse>(probeUrl, {}, params.diagnostics!);
+  const probe = await fetchJsonTracked<ShopifyProductsResponse>(probeUrl, shopifyContext, params.diagnostics!);
   if (!probe.data || !Array.isArray(probe.data.products)) {
     log("warn", "Shopify feed not found.");
     return null;
@@ -807,7 +816,7 @@ async function tryExtractShopify(params: {
 
   log("success", "Shopify feed detected.");
   setDiscoveryStrategy(params.diagnostics!, "shopify_json");
-  const currencyHint = await fetchShopifyCurrencyHint(currencyHintUrls, params.diagnostics!);
+  const currencyHint = await fetchShopifyCurrencyHint(currencyHintUrls, params.diagnostics!, shopifyContext);
 
   const allProducts: ShopifyProduct[] = [];
   const maxPages = clampIntShared(process.env.SHOPIFY_MAX_PAGES, 20, 1, 200);
@@ -815,7 +824,7 @@ async function tryExtractShopify(params: {
 
   for (let page = 1; page <= maxPages; page++) {
     const url = `${params.baseUrl}${feedPrefix}/products.json?limit=250&page=${page}`;
-    const batch = await fetchJsonTracked<ShopifyProductsResponse>(url, {}, params.diagnostics!);
+    const batch = await fetchJsonTracked<ShopifyProductsResponse>(url, shopifyContext, params.diagnostics!);
     const products = batch.data?.products;
     if (!products || products.length === 0) break;
     allProducts.push(...products);

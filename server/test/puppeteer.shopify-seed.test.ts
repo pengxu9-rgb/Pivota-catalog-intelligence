@@ -41,6 +41,77 @@ async function withMockFetch(routes: Record<string, MockRoute>, fn: () => Promis
   }
 }
 
+test("PuppeteerExtractor passes market cookies to Shopify direct PDP requests", async () => {
+  const extractor = new PuppeteerExtractor();
+  const requests: Array<{ url: string; cookie: string; acceptLanguage: string }> = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const headers = new Headers(init?.headers);
+    requests.push({
+      url,
+      cookie: headers.get("cookie") || "",
+      acceptLanguage: headers.get("accept-language") || "",
+    });
+
+    if (url === "https://olehenriksen.com/products/henriksen-tote.js") {
+      return createMockResponse({
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          id: 101,
+          title: "HENRIKSEN Tote",
+          handle: "henriksen-tote",
+          body_html: "",
+          variants: [
+            {
+              id: 1001,
+              sku: "83555",
+              title: "Default Title",
+              option1: "Default Title",
+              price: 100,
+              available: true,
+              inventory_quantity: 12,
+            },
+          ],
+          options: [{ name: "Title" }],
+          images: [{ src: "https://cdn.example.com/tote.jpg" }],
+        }),
+      });
+    }
+
+    if (url === "https://olehenriksen.com/products/henriksen-tote") {
+      return createMockResponse({
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await extractor.extract({
+      brand: "Ole Henriksen",
+      domain: "https://olehenriksen.com/products/henriksen-tote",
+      market: "US",
+      limit: 1,
+    });
+
+    assert.equal(result.products.length, 1);
+    assert.equal(result.products[0]?.variants[0]?.currency, "USD");
+    const directRequest = requests.find((entry) => entry.url === "https://olehenriksen.com/products/henriksen-tote.js");
+    assert.ok(directRequest);
+    assert.match(directRequest!.cookie, /localization=US/i);
+    assert.match(directRequest!.cookie, /cart_currency=USD/i);
+    assert.match(directRequest!.acceptLanguage, /en-US/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
   const extractor = new PuppeteerExtractor();
   const directProduct = {

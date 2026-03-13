@@ -53,10 +53,12 @@ class SourceHarvester:
     def __init__(self, search_engine: Optional[SearchEngine] = None) -> None:
         self.search_engine = search_engine or default_search_engine()
 
-    def process(self, *, market: str, brand: str, product_name: str) -> HarvestOutcome:
+    def process(self, *, market: str, brand: str, product_name: str, preferred_urls: Optional[list[str]] = None) -> HarvestOutcome:
         query = build_query(market, brand, product_name)
-        urls = self.search_engine.search(query, top_k=3)
-        debug: dict[str, Any] = {"query": query, "urls": urls, "attempts": []}
+        search_urls = self.search_engine.search(query, top_k=3)
+        preferred = [str(url or "").strip() for url in (preferred_urls or []) if str(url or "").strip()]
+        urls = list(dict.fromkeys(preferred + search_urls))
+        debug: dict[str, Any] = {"query": query, "preferred_urls": preferred, "urls": urls, "attempts": []}
 
         best_pending: dict[str, Any] | None = None
         best_rank: float = -1.0

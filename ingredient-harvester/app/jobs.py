@@ -46,7 +46,13 @@ def harvest_row(*, task_id: str, row_id: str, force: bool) -> None:
             return
 
         try:
-            outcome = harvester.process(market=row.market, brand=row.brand, product_name=row.product_name)
+            preferred_urls = [row.source_ref] if row.source_ref else []
+            outcome = harvester.process(
+                market=row.market,
+                brand=row.brand,
+                product_name=row.product_name,
+                preferred_urls=preferred_urls,
+            )
             row.status = outcome.status
             row.confidence = outcome.confidence
             row.raw_ingredient_text = outcome.raw_ingredient_text

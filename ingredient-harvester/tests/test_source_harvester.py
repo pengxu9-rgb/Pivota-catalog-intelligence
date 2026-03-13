@@ -55,6 +55,36 @@ def test_harvester_tries_multiple_urls_until_ok(monkeypatch) -> None:
     assert out.source_ref is not None and out.source_ref.endswith("/good")
 
 
+def test_harvester_prefers_supplied_official_url_before_search_results(monkeypatch) -> None:
+    from app.harvester import fetch as fetch_mod
+    from app.harvester import source_harvester as sh_mod
+
+    html_official = "<html><body><h2>Ingredients</h2><div>Water, Glycerin, Sodium Chloride, Fragrance.</div></body></html>"
+    html_third_party = "<html><body><h2>Ingredients</h2><div>Ingredients copied from forum post</div></body></html>"
+
+    calls = []
+
+    def fake_fetch(url: str):
+        calls.append(url)
+        if "official" in url:
+            return fetch_mod.FetchResult(url=url, status_code=200, html=html_official, content_type="text/html")
+        return fetch_mod.FetchResult(url=url, status_code=200, html=html_third_party, content_type="text/html")
+
+    monkeypatch.setattr(sh_mod, "fetch_html", fake_fetch)
+
+    h = SourceHarvester(search_engine=FakeSearch(urls=["https://incidecoder.com/products/example-third-party"]))
+    out = h.process(
+        market="US",
+        brand="Test",
+        product_name="P1",
+        preferred_urls=["https://brand.example.com/official-product-page"],
+    )
+    assert out.status == "OK"
+    assert out.source_ref == "https://brand.example.com/official-product-page"
+    assert calls[0] == "https://brand.example.com/official-product-page"
+    assert classify_source_type(out.source_ref) == "Official"
+
+
 def test_classify_source_type_marks_retailers_and_third_party_domains() -> None:
     assert classify_source_type("https://www.strawberrynet.com/en/ole-henriksen/product") == "Retailer"
     assert classify_source_type("https://incidecoder.com/products/dermalogica-smart-response-serum") == "ThirdParty"

@@ -55,6 +55,10 @@ SCRIPT_OR_JSON_PATTERNS = [
     r"\"pageProps\"",
 ]
 
+DISCLAIMER_PATTERNS = [
+    r"dermalogica\s+is\s+dedicated\s+to\s+maintaining\s+the\s+accuracy\s+of\s+the\s+ingredient\s+lists.*$",
+]
+
 
 @dataclass(frozen=True)
 class ExtractedIngredients:
@@ -92,6 +96,9 @@ def clean_noise(text: str) -> str:
     t = re.sub(r"\b(and|&)\s*$", " ", t, flags=re.IGNORECASE)
     t = re.sub(r"\betc\.?\s*$", " ", t, flags=re.IGNORECASE)
 
+    for pat in DISCLAIMER_PATTERNS:
+        t = re.sub(pat, " ", t, flags=re.IGNORECASE)
+
     return _normalize_space(t)
 
 
@@ -113,6 +120,35 @@ def _slice_after_label(s: str) -> str:
     if m and m.start() > 0:
         return t[m.end() :].strip()
     return t
+
+
+def _extract_inline_ingredient_sequence(text: str) -> str:
+    t = clean_noise(_slice_after_label(_strip_label_prefix(text or "")))
+    if not t:
+        return ""
+
+    t = re.sub(r"^ingredients?\s+", "", t, flags=re.IGNORECASE)
+
+    start_positions: list[int] = []
+    for token in COMMON_TOKENS:
+        match = re.search(rf"\b{re.escape(token)}\b", t, flags=re.IGNORECASE)
+        if not match:
+            continue
+        window = t[match.start() : match.start() + 120]
+        if "," in window or "/" in window:
+            start_positions.append(match.start())
+    if start_positions:
+        t = t[min(start_positions) :].strip()
+
+    # Capture dense comma-separated sequences, which commonly start after a short
+    # explanatory phrase on official PDP accordions.
+    sequence = re.search(
+        r"([A-Za-z0-9][A-Za-z0-9()/&+.'’ -]*(?:,\s*[A-Za-z0-9][A-Za-z0-9()/&+.'’ -]*){4,})",
+        t,
+    )
+    if not sequence:
+        return t
+    return _normalize_space(sequence.group(1))
 
 
 def _strip_non_content_tags(soup: BeautifulSoup) -> None:
@@ -225,12 +261,16 @@ def _collect_candidates(soup: BeautifulSoup, keywords: list[str]) -> list[str]:
             if txt and len(txt) > 10:
                 candidates.append(txt)
 
-        # parent section text (fallback)
-        parent = el.parent
-        if parent:
-            txt = _normalize_space(parent.get_text(" ", strip=True))
+        # parent / ancestor section text (fallback for accordion layouts where
+        # the ingredient body is attached to a surrounding details/section node).
+        ancestor = el.parent
+        for _ in range(4):
+            if not ancestor:
+                break
+            txt = _normalize_space(ancestor.get_text(" ", strip=True))
             if txt and len(txt) > 20:
                 candidates.append(txt)
+            ancestor = ancestor.parent
 
     return candidates
 
@@ -246,9 +286,7 @@ def extract_ingredients(html: str, *, market: str) -> Optional[ExtractedIngredie
     candidates = _collect_candidates(soup, keywords)
     cleaned: list[str] = []
     for c in candidates:
-        t = _slice_after_label(c)
-        t = _strip_label_prefix(t)
-        t = clean_noise(t)
+        t = _extract_inline_ingredient_sequence(c)
         t = _normalize_space(t)
         if not t or len(t) < 10:
             continue

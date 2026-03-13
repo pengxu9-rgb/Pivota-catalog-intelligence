@@ -80,3 +80,31 @@ def test_extract_ingredients_cn_ok() -> None:
     assert "水" in extracted.text
     assert extracted.score >= 0.8
     assert extracted.verified_in_dom is True
+
+
+HTML_DERMALOGICA_ACCORDION = """
+<html>
+  <body>
+    <section class="product-description rte">
+      <details>
+        <summary>
+          <div class="summary-wrapper">
+            <span class="headline">ingredients</span>
+          </div>
+        </summary>
+        japanese cornelia cherry helps soothe skin
+        Water/Aqua/Eau, Glycerin, Niacinamide, Butylene Glycol, 1,2-Hexanediol, Sodium Acrylates Crosspolymer-2, Sea Salt.
+        Dermalogica is dedicated to maintaining the accuracy of the ingredient lists on this website.
+      </details>
+    </section>
+  </body>
+</html>
+"""
+
+
+def test_extract_ingredients_from_official_accordion_copy() -> None:
+    extracted = extract_ingredients(HTML_DERMALOGICA_ACCORDION, market="US")
+    assert extracted is not None
+    assert extracted.text.startswith("Water/Aqua/Eau, Glycerin, Niacinamide")
+    assert "Dermalogica is dedicated" not in extracted.text
+    assert extracted.verified_in_dom is True

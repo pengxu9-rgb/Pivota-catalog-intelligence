@@ -774,7 +774,8 @@ async function tryExtractShopify(params: {
         log,
       });
     }
-    log("warn", `Shopify direct product feed not found for handle: ${directHandle}. Falling back to collection/site feed.`);
+    log("warn", `Shopify direct product feed not found for handle: ${directHandle}. Falling back to direct page discovery.`);
+    return null;
   }
 
   const probeUrl = params.collectionHandle

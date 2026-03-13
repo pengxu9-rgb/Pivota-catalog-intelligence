@@ -59,6 +59,14 @@ DISCLAIMER_PATTERNS = [
     r"dermalogica\s+is\s+dedicated\s+to\s+maintaining\s+the\s+accuracy\s+of\s+the\s+ingredient\s+lists.*$",
 ]
 
+INCI_SIGNAL_RE = re.compile(
+    r"\b("
+    r"extract|oil|acid|oxide|glycol|glyceryl|triglyceride|tocopherol|ceramide|hyaluronate|"
+    r"dimethicone|polymer|parfum|phenoxyethanol|capry|ci\s?\d{4,5}|water|aqua|sodium"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class ExtractedIngredients:
@@ -211,6 +219,13 @@ def _feature_score(text: str) -> float:
     return min(1.0, score)
 
 
+def _has_inci_signal(text: str) -> bool:
+    lower = (text or "").lower()
+    if any(token in lower for token in COMMON_TOKENS):
+        return True
+    return bool(INCI_SIGNAL_RE.search(text or ""))
+
+
 def _looks_like_heading(text: str, keywords: list[str]) -> bool:
     t = _normalize_space(text)
     if not t:
@@ -232,8 +247,89 @@ def _looks_like_heading(text: str, keywords: list[str]) -> bool:
     return False
 
 
-def _collect_candidates(soup: BeautifulSoup, keywords: list[str]) -> list[str]:
+def _variant_hint(product_name: str) -> str:
+    raw = _normalize_space(product_name)
+    if not raw or " - " not in raw:
+        return ""
+    hint = raw.rsplit(" - ", 1)[-1].strip()
+    if not hint:
+        return ""
+    if re.search(r"\b(oz|ml|patches?|refill|kit|set|duo|trio|collection)\b", hint, flags=re.IGNORECASE):
+        return ""
+    if re.search(r"\d", hint):
+        return ""
+    return hint
+
+
+def _collect_popup_candidates(soup: BeautifulSoup, product_name: str) -> list[str]:
+    prioritized: list[str] = []
+    fallback: list[str] = []
+    hint = _variant_hint(product_name).lower()
+
+    for popup in soup.select(".ingredients-popup, [class*='ingredients-popup']"):
+        paragraphs = popup.find_all(["p", "li"])
+        if not paragraphs:
+            txt = _normalize_space(popup.get_text(" ", strip=True))
+            if txt and len(txt) > 10:
+                fallback.append(txt)
+            continue
+
+        for el in paragraphs:
+            txt = _normalize_space(el.get_text(" ", strip=True))
+            if not txt or len(txt) <= 10:
+                continue
+            if hint and hint in txt.lower():
+                prioritized.append(txt)
+            else:
+                fallback.append(txt)
+
+    return prioritized + fallback
+
+
+def _normalize_popup_candidate(text: str, variant_hint: str) -> str:
+    t = clean_noise(_slice_after_label(_strip_label_prefix(text or "")))
+    t = re.sub(r"^ingredients?\s+", "", t, flags=re.IGNORECASE).strip()
+    if variant_hint:
+        t = re.sub(rf"^{re.escape(variant_hint)}\b[\s:：-]*", "", t, flags=re.IGNORECASE).strip()
+    return _normalize_space(t)
+
+
+def _extract_variant_popup_ingredients(soup: BeautifulSoup, html: str, product_name: str) -> Optional[ExtractedIngredients]:
+    variant_hint = _variant_hint(product_name)
+    if not variant_hint:
+        return None
+
+    matches: list[str] = []
+    for popup in soup.select(".ingredients-popup, [class*='ingredients-popup']"):
+        for el in popup.find_all(["p", "li"]):
+            txt = _normalize_space(el.get_text(" ", strip=True))
+            if variant_hint.lower() not in txt.lower():
+                continue
+            normalized = _normalize_popup_candidate(txt, variant_hint)
+            if not normalized or len(normalized) < 10:
+                continue
+            if _looks_like_script_or_json(normalized):
+                continue
+            if not _has_inci_signal(normalized):
+                continue
+            if _feature_score(normalized) < 0.3:
+                continue
+            matches.append(normalized)
+
+    if not matches:
+        return None
+
+    best = sorted(matches, key=lambda s: (-_feature_score(s), len(s)))[0]
+    score = _feature_score(best)
+    verified = verify_token_in_dom(html, best)
+    debug = f"popup_variant={variant_hint} candidates={len(matches)} score={score:.2f} verified={verified}"
+    return ExtractedIngredients(text=best, score=score, verified_in_dom=verified, debug_hint=debug)
+
+
+def _collect_candidates(soup: BeautifulSoup, keywords: list[str], product_name: str = "") -> list[str]:
     candidates: list[str] = []
+
+    candidates.extend(_collect_popup_candidates(soup, product_name))
 
     # 1) Elements with ingredient-ish id/class.
     for el in soup.select("[id*='ingredient'],[class*='ingredient'],[data-testid*='ingredient']"):
@@ -275,7 +371,7 @@ def _collect_candidates(soup: BeautifulSoup, keywords: list[str]) -> list[str]:
     return candidates
 
 
-def extract_ingredients(html: str, *, market: str) -> Optional[ExtractedIngredients]:
+def extract_ingredients(html: str, *, market: str, product_name: str = "") -> Optional[ExtractedIngredients]:
     if not html:
         return None
     soup = BeautifulSoup(html, "lxml")
@@ -283,7 +379,11 @@ def extract_ingredients(html: str, *, market: str) -> Optional[ExtractedIngredie
     market_upper = (market or "").strip().upper()
     keywords = KEYWORDS_ZH if market_upper in {"CN", "CHN", "CHINA"} else KEYWORDS_EN
 
-    candidates = _collect_candidates(soup, keywords)
+    popup_match = _extract_variant_popup_ingredients(soup, html, product_name)
+    if popup_match is not None:
+        return popup_match
+
+    candidates = _collect_candidates(soup, keywords, product_name=product_name)
     cleaned: list[str] = []
     for c in candidates:
         t = _extract_inline_ingredient_sequence(c)

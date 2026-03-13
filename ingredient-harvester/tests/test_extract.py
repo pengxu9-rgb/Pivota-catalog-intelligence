@@ -108,3 +108,58 @@ def test_extract_ingredients_from_official_accordion_copy() -> None:
     assert extracted.text.startswith("Water/Aqua/Eau, Glycerin, Niacinamide")
     assert "Dermalogica is dedicated" not in extracted.text
     assert extracted.verified_in_dom is True
+
+
+HTML_PIXI_POPUP = """
+<html>
+  <body>
+    <div class="product-copy">
+      <h2>On-the-Glow BASE</h2>
+      <p>Buildable tinted balm that blurs, brightens and evens out skin tone.</p>
+    </div>
+    <div class="ingredients-popup hidden">
+      <div class="ingredients-popup__inner">
+        <span>ingredients</span>
+        <p>Porcelain<br/>Caprylic/Capric Triglyceride, Diisostearyl Malate, Synthetic Wax, Polyglyceryl-2 Triisostearate, Triethylhexanoin, Boron Nitride, Calcium Sodium Borosilicate, Kaolin, Tocopheryl Acetate.</p>
+        <p>Fair<br/>Caprylic/Capric Triglyceride, Diisostearyl Malate, Synthetic Wax, Polyglyceryl-2 Triisostearate, Triethylhexanoin, Boron Nitride, Calcium Sodium Borosilicate, Kaolin, Tocopheryl Acetate, Iron Oxides (CI 77492).</p>
+      </div>
+    </div>
+  </body>
+</html>
+"""
+
+
+HTML_PIXI_BRONZE_POPUP = """
+<html>
+  <body>
+    <div class="product-copy">
+      <h2>On-the-Glow Bronze</h2>
+      <p>Swipe on for a sunkissed and healthy-looking complexion all year.</p>
+    </div>
+    <div class="ingredients-popup hidden">
+      <div class="ingredients-popup__inner">
+        <span>ingredients</span>
+        <p><strong>BeachGlow</strong><br/>Caprylic/Capric Triglyceride, Diisostearyl Malate, Polyglyceryl-2 Triisostearate, Pentaerythrityl Tetraisostearate, Synthetic Wax, Aloe Barbadensis Leaf Extract, Aqua/Water/Eau, Iron Oxides (CI 77491, CI 77499).</p>
+        <p><strong>SoftGlow</strong><br/>Caprylic/Capric Triglyceride, Diisostearyl Malate, Polyglyceryl-2 Triisostearate, Pentaerythrityl Tetraisostearate, Synthetic Wax, Aloe Barbadensis Leaf Extract, Aqua/Water/Eau, Tin Oxide, Titanium Dioxide (CI 77891), Iron Oxides (CI 77491).</p>
+      </div>
+    </div>
+  </body>
+</html>
+"""
+
+
+def test_extract_prefers_variant_matched_pixi_popup_over_marketing_copy() -> None:
+    extracted = extract_ingredients(HTML_PIXI_POPUP, market="US", product_name="On-the-Glow BASE - Porcelain")
+    assert extracted is not None
+    assert extracted.text.startswith("Caprylic/Capric Triglyceride")
+    assert "Buildable tinted balm" not in extracted.text
+    assert extracted.score >= 0.7
+
+
+def test_extract_prefers_matching_shade_when_popup_contains_multiple_variants() -> None:
+    extracted = extract_ingredients(HTML_PIXI_BRONZE_POPUP, market="US", product_name="On-the-Glow Bronze - SoftGlow")
+    assert extracted is not None
+    assert extracted.text.startswith("Caprylic/Capric Triglyceride")
+    assert "sunkissed" not in extracted.text
+    assert "popup_variant=SoftGlow" in extracted.debug_hint
+    assert "Tin Oxide" in extracted.text

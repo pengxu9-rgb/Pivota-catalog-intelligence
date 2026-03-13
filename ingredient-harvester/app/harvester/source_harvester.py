@@ -96,7 +96,7 @@ class SourceHarvester:
                     if fetched.status_code >= 400:
                         debug["attempts"].append({"url": url, "error": f"http_{fetched.status_code}"})
                         continue
-                    extracted = extract_ingredients(fetched.html, market=market)
+                    extracted = extract_ingredients(fetched.html, market=market, product_name=product_name)
                     if not extracted:
                         debug["attempts"].append({"url": url, "error": "no_extract"})
                         continue

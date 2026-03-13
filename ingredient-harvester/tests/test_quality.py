@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.quality import build_audit_findings, compute_audit_status
+from app.quality import build_audit_findings, compute_audit_status, compute_source_match_status
 
 
 def test_build_audit_findings_flags_blockers_and_reviews() -> None:
@@ -215,3 +215,15 @@ def test_benign_normalization_notes_do_not_force_review() -> None:
     )
 
     assert findings == []
+
+
+def test_compute_source_match_status_normalizes_zero_o_confusions_for_official_urls() -> None:
+    status, evidence = compute_source_match_status(
+        "Pixi Beauty",
+        "H2O SkinTint - Porcelain",
+        "https://www.pixibeauty.com/products/h20-skin-tint",
+        "Official",
+    )
+
+    assert status == "match"
+    assert "h2o" in evidence["product_overlap"]

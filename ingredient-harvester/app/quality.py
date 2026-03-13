@@ -147,11 +147,15 @@ def _host_matches_allowlist(host: str, allowed_hosts: tuple[str, ...]) -> bool:
 
 
 def _tokenize(text: str) -> set[str]:
-    tokens = {
+    base_tokens = {
         token
         for token in re.findall(r"[a-z0-9]+", (text or "").lower())
-        if len(token) >= 4 and token not in STOP_TOKENS
+        if (len(token) >= 4 or (len(token) >= 3 and any(ch.isdigit() for ch in token))) and token not in STOP_TOKENS
     }
+    tokens = set(base_tokens)
+    for token in list(base_tokens):
+        if "0" in token:
+            tokens.add(token.replace("0", "o"))
     return tokens
 
 

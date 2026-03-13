@@ -320,10 +320,18 @@ def _duplicate_conflict(db, row: CandidateRow) -> dict[str, Any] | None:
         other_inci = _normalized_inci_key(other.inci_list)
         if not other_inci or other_inci == current_inci:
             continue
+        same_import = normalize_nonempty_string(other.import_id) == normalize_nonempty_string(row.import_id)
+        other_review_status = normalize_nonempty_string(other.review_status).upper()
+        # Historical rows should only block a new candidate if they were already approved.
+        # Otherwise stale third-party or superseded rows can permanently poison official refreshes.
+        if not same_import and other_review_status != "APPROVED":
+            continue
         return {
             "sku_key": sku_key,
             "current_row_id": row.row_id,
             "conflicting_row_id": other.row_id,
+            "conflicting_import_id": other.import_id,
+            "conflicting_review_status": other.review_status,
             "current_inci_list": row.inci_list,
             "conflicting_inci_list": other.inci_list,
         }

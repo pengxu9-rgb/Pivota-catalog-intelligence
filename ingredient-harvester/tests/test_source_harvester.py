@@ -13,6 +13,17 @@ class FakeSearch:
         return self.urls[:top_k]
 
 
+@dataclass(frozen=True)
+class QueryAwareSearch:
+    by_query: dict[str, list[str]]
+
+    def search(self, query: str, *, top_k: int = 3) -> list[str]:
+        for key, urls in self.by_query.items():
+            if key in query:
+                return urls[:top_k]
+        return []
+
+
 def test_harvester_needs_source_without_urls(monkeypatch) -> None:
     h = SourceHarvester(search_engine=FakeSearch(urls=[]))
     out = h.process(market="US", brand="Test", product_name="P1")
@@ -83,6 +94,36 @@ def test_harvester_prefers_supplied_official_url_before_search_results(monkeypat
     assert out.source_ref == "https://brand.example.com/official-product-page"
     assert calls[0] == "https://brand.example.com/official-product-page"
     assert classify_source_type(out.source_ref) == "Official"
+
+
+def test_harvester_searches_official_domains_before_generic_results(monkeypatch) -> None:
+    from app.harvester import fetch as fetch_mod
+    from app.harvester import source_harvester as sh_mod
+
+    html_official = "<html><body><h2>Ingredients</h2><div>Water, Glycerin, Sodium Chloride, Fragrance.</div></body></html>"
+    html_third_party = "<html><body><h2>Ingredients</h2><div>Ingredients copied from forum post</div></body></html>"
+    calls = []
+
+    def fake_fetch(url: str):
+        calls.append(url)
+        if "dermalogica.com" in url:
+            return fetch_mod.FetchResult(url=url, status_code=200, html=html_official, content_type="text/html")
+        return fetch_mod.FetchResult(url=url, status_code=200, html=html_third_party, content_type="text/html")
+
+    monkeypatch.setattr(sh_mod, "fetch_html", fake_fetch)
+
+    h = SourceHarvester(
+        search_engine=QueryAwareSearch(
+            by_query={
+                "site:dermalogica.com": ["https://dermalogica.com/products/smart-response-serum"],
+                "ingredients list INCI": ["https://incidecoder.com/products/dermalogica-smart-response-serum"],
+            }
+        )
+    )
+    out = h.process(market="US", brand="Dermalogica", product_name="smart response serum")
+    assert out.status == "OK"
+    assert out.source_ref == "https://dermalogica.com/products/smart-response-serum"
+    assert calls[0] == "https://dermalogica.com/products/smart-response-serum"
 
 
 def test_classify_source_type_marks_retailers_and_third_party_domains() -> None:

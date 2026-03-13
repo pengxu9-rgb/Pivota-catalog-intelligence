@@ -19,6 +19,25 @@ def build_query(market: str, brand: str, product_name: str) -> str:
     return f"{base} ingredients list INCI".strip()
 
 
+OFFICIAL_HOST_ALLOWLIST = {
+    "olehenriksen": ("olehenriksen.com",),
+    "dermalogica": ("dermalogica.com",),
+    "pixi": ("pixibeauty.com",),
+    "pixi beauty": ("pixibeauty.com",),
+}
+
+
+def official_hosts_for_brand(brand: str) -> tuple[str, ...]:
+    normalized_brand = (brand or "").strip().lower()
+    if not normalized_brand:
+        return ()
+    matches: list[str] = []
+    for key, hosts in OFFICIAL_HOST_ALLOWLIST.items():
+        if key in normalized_brand:
+            matches.extend(hosts)
+    return tuple(dict.fromkeys(matches))
+
+
 def classify_source_type(url: str) -> str:
     u = (url or "").lower()
     if any(
@@ -55,10 +74,20 @@ class SourceHarvester:
 
     def process(self, *, market: str, brand: str, product_name: str, preferred_urls: Optional[list[str]] = None) -> HarvestOutcome:
         query = build_query(market, brand, product_name)
+        official_hosts = official_hosts_for_brand(brand)
+        official_search_urls: list[str] = []
+        for host in official_hosts:
+            official_search_urls.extend(self.search_engine.search(f"{query} site:{host}", top_k=3))
         search_urls = self.search_engine.search(query, top_k=3)
         preferred = [str(url or "").strip() for url in (preferred_urls or []) if str(url or "").strip()]
-        urls = list(dict.fromkeys(preferred + search_urls))
-        debug: dict[str, Any] = {"query": query, "preferred_urls": preferred, "urls": urls, "attempts": []}
+        urls = list(dict.fromkeys(preferred + official_search_urls + search_urls))
+        debug: dict[str, Any] = {
+            "query": query,
+            "preferred_urls": preferred,
+            "official_hosts": list(official_hosts),
+            "urls": urls,
+            "attempts": [],
+        }
 
         best_pending: dict[str, Any] | None = None
         best_rank: float = -1.0

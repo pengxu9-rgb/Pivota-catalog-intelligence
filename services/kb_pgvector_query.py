@@ -25,6 +25,17 @@ def _connect(db_url: str):
     return psycopg2.connect(url)
 
 
+def resolve_db_url(explicit: str = "") -> str:
+    value = (explicit or "").strip()
+    if value:
+        return value
+    for env_name in ("PCI_KB_DATABASE_URL", "DATABASE_URL"):
+        candidate = (os.getenv(env_name) or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Query pgvector KB using the same hash embedding used for ingest.")
     ap.add_argument("--db-url", default="", help="Database URL. Default: env DATABASE_URL.")
@@ -36,9 +47,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--text", required=True, help="Query text (brand/product/ingredients).")
     args = ap.parse_args(argv)
 
-    db_url = (args.db_url or "").strip() or (os.getenv("DATABASE_URL") or "").strip()
+    db_url = resolve_db_url(args.db_url)
     if not db_url:
-        print("Missing --db-url or env DATABASE_URL", file=sys.stderr)
+        print("Missing --db-url or env PCI_KB_DATABASE_URL/DATABASE_URL", file=sys.stderr)
         return 2
 
     qualified = f"{args.schema}.{args.table}"
@@ -86,4 +97,3 @@ LIMIT {int(args.limit)};
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

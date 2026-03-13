@@ -28,6 +28,7 @@ except Exception:  # noqa: BLE001
 DEFAULT_SCHEMA = "pci_kb"
 DEFAULT_TABLE = "sku_ingredients"
 DEFAULT_DIM = 384
+DEFAULT_DB_URL_ENV = "PCI_KB_DATABASE_URL"
 
 
 def _coerce_text(value: Any) -> str:
@@ -232,6 +233,17 @@ def _connect(db_url: str):
     return psycopg2.connect(url)
 
 
+def resolve_db_url(explicit: str = "") -> str:
+    value = (explicit or "").strip()
+    if value:
+        return value
+    for env_name in (DEFAULT_DB_URL_ENV, "DATABASE_URL"):
+        candidate = (os.getenv(env_name) or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
 def _exec_many(conn, sql: str, rows: list[tuple[Any, ...]], *, template: str, page_size: int) -> None:
     if _DB_DRIVER == "psycopg" and psycopg is not None:
         with conn.cursor() as cur:
@@ -265,16 +277,24 @@ CREATE TABLE IF NOT EXISTS {qualified} (
   parse_status TEXT,
   parse_confidence DOUBLE PRECISION,
   review_status TEXT,
+  audit_status TEXT,
+  ingest_allowed BOOLEAN DEFAULT FALSE,
   raw_ingredient_text_clean TEXT,
   inci_list TEXT,
   inci_list_json JSONB,
   embedding vector({int(dim)}),
+  created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 """,
+        f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS audit_status TEXT;",
+        f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS ingest_allowed BOOLEAN DEFAULT FALSE;",
+        f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();",
         f"CREATE INDEX IF NOT EXISTS {table}_market_idx ON {qualified} (market);",
         f"CREATE INDEX IF NOT EXISTS {table}_parse_status_idx ON {qualified} (parse_status);",
         f"CREATE INDEX IF NOT EXISTS {table}_review_status_idx ON {qualified} (review_status);",
+        f"CREATE INDEX IF NOT EXISTS {table}_audit_status_idx ON {qualified} (audit_status);",
+        f"CREATE INDEX IF NOT EXISTS {table}_ingest_allowed_idx ON {qualified} (ingest_allowed);",
     ]
 
     if _DB_DRIVER == "psycopg" and psycopg is not None:
@@ -338,10 +358,13 @@ INSERT INTO {qualified} (
   parse_status,
   parse_confidence,
   review_status,
+  audit_status,
+  ingest_allowed,
   raw_ingredient_text_clean,
   inci_list,
   inci_list_json,
   embedding,
+  created_at,
   updated_at
 )
 VALUES %s
@@ -357,6 +380,8 @@ ON CONFLICT (sku_key) DO UPDATE SET
   parse_status = EXCLUDED.parse_status,
   parse_confidence = EXCLUDED.parse_confidence,
   review_status = EXCLUDED.review_status,
+  audit_status = EXCLUDED.audit_status,
+  ingest_allowed = EXCLUDED.ingest_allowed,
   raw_ingredient_text_clean = EXCLUDED.raw_ingredient_text_clean,
   inci_list = EXCLUDED.inci_list,
   inci_list_json = EXCLUDED.inci_list_json,
@@ -380,6 +405,8 @@ ON CONFLICT (sku_key) DO UPDATE SET
                     r.parse_status,
                     r.parse_confidence,
                     r.review_status,
+                    r.audit_status,
+                    r.ingest_allowed,
                     r.raw_ingredient_text_clean,
                     r.inci_list,
                     json.dumps(r.inci_list_json, ensure_ascii=False) if r.inci_list_json is not None else None,
@@ -387,7 +414,7 @@ ON CONFLICT (sku_key) DO UPDATE SET
                 )
             )
         # psycopg3: inline template with ::vector casts
-        template = "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::vector, now())"
+        template = "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::vector, now(), now())"
         _exec_many(conn, sql, values, template=template, page_size=batch_size)
         return
 
@@ -407,6 +434,8 @@ ON CONFLICT (sku_key) DO UPDATE SET
                 r.parse_status,
                 r.parse_confidence,
                 r.review_status,
+                r.audit_status,
+                r.ingest_allowed,
                 r.raw_ingredient_text_clean,
                 r.inci_list,
                 psycopg2.extras.Json(r.inci_list_json) if r.inci_list_json is not None else None,
@@ -414,7 +443,7 @@ ON CONFLICT (sku_key) DO UPDATE SET
             )
         )
 
-    template2 = "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::vector, now())"
+    template2 = "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::vector, now(), now())"
     _exec_many(conn, sql, values2, template=template2, page_size=batch_size)
 
 
@@ -431,12 +460,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--only-audit-status", default="", help="If set, only ingest rows with this audit_status (e.g. PASS).")
     ap.add_argument("--require-ingest-allowed", action="store_true", help="If set, only ingest rows where ingest_allowed is truthy.")
     ap.add_argument("--no-index", action="store_true", help="Skip creating vector index.")
+    ap.add_argument("--init-only", action="store_true", help="Create/upgrade schema and exit without ingesting rows.")
     ap.add_argument("--dry-run", action="store_true", help="Do not write to DB; just print counts.")
     args = ap.parse_args(argv)
 
-    db_url = (args.db_url or "").strip() or (os.getenv("DATABASE_URL") or "").strip()
+    db_url = resolve_db_url(args.db_url)
     if not db_url:
-        print("Missing --db-url or env DATABASE_URL", file=sys.stderr)
+        print(f"Missing --db-url or env {DEFAULT_DB_URL_ENV}/DATABASE_URL", file=sys.stderr)
         return 2
 
     csv_path = args.csv
@@ -468,6 +498,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     conn = _connect(db_url)
     try:
         init_schema(conn, schema=str(args.schema), table=str(args.table), dim=int(args.dim), create_index=not bool(args.no_index))
+        if args.init_only:
+            print("INIT_OK", file=sys.stderr)
+            return 0
         upsert_rows(conn, rows, schema=str(args.schema), table=str(args.table), batch_size=int(args.batch_size))
     finally:
         try:

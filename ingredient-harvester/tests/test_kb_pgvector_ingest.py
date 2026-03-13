@@ -10,7 +10,7 @@ SERVICES_DIR = Path(__file__).resolve().parents[2] / "services"
 if str(SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICES_DIR))
 
-from kb_pgvector_ingest import build_rows  # noqa: E402
+from kb_pgvector_ingest import build_rows, resolve_db_url  # noqa: E402
 
 
 def test_build_rows_applies_review_and_audit_gates() -> None:
@@ -64,3 +64,10 @@ def test_build_rows_applies_review_and_audit_gates() -> None:
     assert rows[0].review_status == "APPROVED"
     assert rows[0].audit_status == "PASS"
     assert rows[0].ingest_allowed is True
+
+
+def test_resolve_db_url_prefers_dedicated_kb_env(monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://main-db")
+    monkeypatch.setenv("PCI_KB_DATABASE_URL", "postgresql://kb-db")
+    assert resolve_db_url("") == "postgresql://kb-db"
+    assert resolve_db_url("postgresql://explicit") == "postgresql://explicit"

@@ -142,6 +142,9 @@ def _extract_inline_ingredient_sequence(text: str) -> str:
         match = re.search(rf"\b{re.escape(token)}\b", t, flags=re.IGNORECASE)
         if not match:
             continue
+        prefix = t[: match.start()]
+        if any(sep in prefix for sep in [",", ";", "，", "；"]):
+            continue
         window = t[match.start() : match.start() + 120]
         if "," in window or "/" in window:
             start_positions.append(match.start())
@@ -261,6 +264,38 @@ def _variant_hint(product_name: str) -> str:
     return hint
 
 
+def _popup_variant_labels(popup: BeautifulSoup) -> list[str]:
+    labels: list[str] = []
+    for el in popup.find_all(["p", "li"]):
+        txt = _normalize_space(el.get_text(" ", strip=True))
+        if not txt or len(txt) <= 3:
+            continue
+        parts = re.split(r"\s+", txt, maxsplit=1)
+        if not parts:
+            continue
+        label = parts[0].strip(" :-:\u00a0")
+        if not label or len(label) < 3:
+            continue
+        if "," in label or "/" in label:
+            continue
+        if re.search(r"(ingredients?|inci)", label, flags=re.IGNORECASE):
+            continue
+        labels.append(label)
+    return list(dict.fromkeys(labels))
+
+
+def _looks_like_popup_label(text: str) -> bool:
+    t = _normalize_space(text)
+    if not t or len(t) > 40:
+        return False
+    if "," in t or "/" in t or ";" in t:
+        return False
+    if _has_inci_signal(t):
+        return False
+    words = t.split()
+    return 1 <= len(words) <= 3
+
+
 def _collect_popup_candidates(soup: BeautifulSoup, product_name: str) -> list[str]:
     prioritized: list[str] = []
     fallback: list[str] = []
@@ -300,23 +335,47 @@ def _extract_variant_popup_ingredients(soup: BeautifulSoup, html: str, product_n
         return None
 
     matches: list[str] = []
+    saw_popup_labels: set[str] = set()
     for popup in soup.select(".ingredients-popup, [class*='ingredients-popup']"):
-        for el in popup.find_all(["p", "li"]):
+        paragraphs = popup.find_all(["p", "li"])
+        saw_popup_labels.update(label.lower() for label in _popup_variant_labels(popup))
+        for index, el in enumerate(paragraphs):
             txt = _normalize_space(el.get_text(" ", strip=True))
             if variant_hint.lower() not in txt.lower():
                 continue
-            normalized = _normalize_popup_candidate(txt, variant_hint)
-            if not normalized or len(normalized) < 10:
-                continue
-            if _looks_like_script_or_json(normalized):
-                continue
-            if not _has_inci_signal(normalized):
-                continue
-            if _feature_score(normalized) < 0.3:
-                continue
-            matches.append(normalized)
+            candidates_to_normalize = [txt]
+            if len(txt) < 15 or not _has_inci_signal(txt):
+                for nxt in paragraphs[index + 1 : index + 4]:
+                    next_txt = _normalize_space(nxt.get_text(" ", strip=True))
+                    if not next_txt:
+                        continue
+                    if next_txt.lower() == variant_hint.lower():
+                        continue
+                    if _looks_like_popup_label(next_txt):
+                        break
+                    candidates_to_normalize.append(f"{variant_hint} {next_txt}")
+                    if _has_inci_signal(next_txt):
+                        break
+            for candidate in candidates_to_normalize:
+                normalized = _normalize_popup_candidate(candidate, variant_hint)
+                if not normalized or len(normalized) < 10:
+                    continue
+                if _looks_like_script_or_json(normalized):
+                    continue
+                if not _has_inci_signal(normalized):
+                    continue
+                if _feature_score(normalized) < 0.3:
+                    continue
+                matches.append(normalized)
 
     if not matches:
+        if len(saw_popup_labels) >= 2 and variant_hint.lower() not in saw_popup_labels:
+            return ExtractedIngredients(
+                text="",
+                score=0.0,
+                verified_in_dom=False,
+                debug_hint=f"ambiguous_variant_popup={variant_hint}",
+            )
         return None
 
     best = sorted(matches, key=lambda s: (-_feature_score(s), len(s)))[0]

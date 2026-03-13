@@ -163,3 +163,71 @@ def test_extract_prefers_matching_shade_when_popup_contains_multiple_variants() 
     assert "sunkissed" not in extracted.text
     assert "popup_variant=SoftGlow" in extracted.debug_hint
     assert "Tin Oxide" in extracted.text
+
+
+HTML_OLE_POUT_PRESERVE = """
+<html>
+  <body>
+    <section class="accordion">
+      <h2>Ingredients</h2>
+      <div>
+        Full Ingredients: Polybutene, Hydrogenated Polydecene, Bis-Diglyceryl Polyacyladipate-2,
+        Squalane, Butyrospermum Parkii (Shea) Butter, Ethylene/Propylene/Styrene Copolymer,
+        Oleic Acid, Linoleic Acid, Linolenic Acid, Lactic Acid, Aroma/Flavor.
+      </div>
+    </section>
+  </body>
+</html>
+"""
+
+
+def test_extract_does_not_truncate_valid_prefix_before_common_token() -> None:
+    extracted = extract_ingredients(HTML_OLE_POUT_PRESERVE, market="US", product_name="Pout Preserve Peptide Lip Treatment - Sweet Macaron")
+    assert extracted is not None
+    assert extracted.text.startswith("Polybutene, Hydrogenated Polydecene")
+    assert "Acid, Linolenic Acid" not in extracted.text[:40]
+
+
+HTML_PIXI_AMBIGUOUS_POPUP = """
+<html>
+  <body>
+    <div class="ingredients-popup hidden">
+      <div class="ingredients-popup__inner">
+        <p>Ruby<br/>Ricinus Communis (Castor) Seed Oil, Synthetic Wax, Mica, Vitis Vinifera (Grape) Seed Oil.</p>
+        <p>Fleur<br/>Ricinus Communis (Castor) Seed Oil, Synthetic Wax, Mica, Vitis Vinifera (Grape) Seed Oil, Iron Oxides (CI 77491).</p>
+        <p>Juicy<br/>Ricinus Communis (Castor) Seed Oil, Synthetic Wax, Mica, Vitis Vinifera (Grape) Seed Oil, Red 7 Lake (CI 15850).</p>
+      </div>
+    </div>
+  </body>
+</html>
+"""
+
+
+def test_extract_returns_ambiguous_variant_hint_when_popup_has_other_shades_only() -> None:
+    extracted = extract_ingredients(HTML_PIXI_AMBIGUOUS_POPUP, market="US", product_name="On-the-Glow Blush - Cassis")
+    assert extracted is not None
+    assert extracted.text == ""
+    assert extracted.debug_hint == "ambiguous_variant_popup=Cassis"
+
+
+HTML_PIXI_SPLIT_VARIANT_POPUP = """
+<html>
+  <body>
+    <div class="ingredients-popup hidden">
+      <div class="ingredients-popup__inner">
+        <p><strong>Ruby</strong></p>
+        <p>Diisostearyl Malate, Caprylic/Capric Triglyceride, Polyglyceryl-2 Triisostearate, Ceresin.</p>
+        <p><strong>Cassis</strong></p>
+        <p>Diisostearyl Malate, Caprylic/Capric Triglyceride, Polyglyceryl-2 Triisostearate, Ceresin, Triethylhexanoin, Ozokerite, Ascorbic Acid, Vitis Vinifera (Grape) Fruit Extract.</p>
+      </div>
+    </div>
+  </body>
+</html>
+"""
+
+
+def test_extract_variant_popup_when_label_and_ingredients_are_split_across_paragraphs() -> None:
+    extracted = extract_ingredients(HTML_PIXI_SPLIT_VARIANT_POPUP, market="US", product_name="On-the-Glow Blush - Cassis")
+    assert extracted is not None
+    assert extracted.text.startswith("Diisostearyl Malate, Caprylic/Capric Triglyceride")
+    assert "Vitis Vinifera" in extracted.text

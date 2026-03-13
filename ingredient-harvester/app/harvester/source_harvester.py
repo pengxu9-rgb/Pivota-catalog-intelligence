@@ -111,6 +111,19 @@ class SourceHarvester:
                             "hint": extracted.debug_hint,
                         }
                     )
+                    if (
+                        not extracted.text
+                        and extracted.debug_hint.startswith("ambiguous_variant_popup=")
+                        and classify_source_type(fetched.url) == "Official"
+                    ):
+                        return HarvestOutcome(
+                            status="PENDING",
+                            confidence=0.3,
+                            raw_ingredient_text=None,
+                            source_ref=fetched.url,
+                            source_type="Official",
+                            debug={**debug, "picked": fetched.url, "hint": extracted.debug_hint},
+                        )
                     if verified and confidence >= 0.8:
                         return HarvestOutcome(
                             status="OK",

@@ -156,3 +156,45 @@ def test_classify_source_type_marks_retailers_and_third_party_domains() -> None:
     assert classify_source_type("https://www.strawberrynet.com/en/ole-henriksen/product") == "Retailer"
     assert classify_source_type("https://incidecoder.com/products/dermalogica-smart-response-serum") == "ThirdParty"
     assert classify_source_type("https://olehenriksen.com/products/dewtopia-20-acid-night-treatment") == "Official"
+
+
+def test_harvester_returns_pending_for_ambiguous_official_variant_popup_without_falling_to_search(monkeypatch) -> None:
+    from app.harvester import fetch as fetch_mod
+    from app.harvester import source_harvester as sh_mod
+
+    html_ambiguous = """
+    <html>
+      <body>
+        <div class="ingredients-popup hidden">
+          <p>Ruby<br/>Ricinus Communis (Castor) Seed Oil, Synthetic Wax, Mica.</p>
+          <p>Fleur<br/>Ricinus Communis (Castor) Seed Oil, Synthetic Wax, Mica, Iron Oxides (CI 77491).</p>
+          <p>Juicy<br/>Ricinus Communis (Castor) Seed Oil, Synthetic Wax, Mica, Red 7 Lake (CI 15850).</p>
+        </div>
+      </body>
+    </html>
+    """
+
+    calls = []
+
+    def fake_fetch(url: str):
+        calls.append(url)
+        return fetch_mod.FetchResult(url=url, status_code=200, html=html_ambiguous, content_type="text/html")
+
+    class ShouldNotSearch:
+        def search(self, query: str, *, top_k: int = 3) -> list[str]:
+            raise AssertionError("search should not run after ambiguous preferred official popup")
+
+    monkeypatch.setattr(sh_mod, "fetch_html", fake_fetch)
+
+    h = SourceHarvester(search_engine=ShouldNotSearch())
+    out = h.process(
+        market="US",
+        brand="Pixi Beauty",
+        product_name="On-the-Glow Blush - Cassis",
+        preferred_urls=["https://pixibeauty.com/products/on-the-glow-blush"],
+    )
+    assert out.status == "PENDING"
+    assert out.raw_ingredient_text is None
+    assert out.source_ref == "https://pixibeauty.com/products/on-the-glow-blush"
+    assert out.source_type == "Official"
+    assert calls == ["https://pixibeauty.com/products/on-the-glow-blush"]

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { PuppeteerExtractor, choosePreferredProductOverview, mergeShopifyDirectPdpFallback } from "../src/services/extractors/puppeteer";
+import {
+  PuppeteerExtractor,
+  choosePreferredProductOverview,
+  mergeShopifyDirectPdpFallback,
+  pickBestJsonLdObjectForPage,
+} from "../src/services/extractors/puppeteer";
 
 type MockRoute = {
   status?: number;
@@ -146,6 +151,30 @@ test("PuppeteerExtractor honors locale-prefixed Shopify direct PDP seed URLs", a
       assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
     },
   );
+});
+
+test("pickBestJsonLdObjectForPage prefers the Product object that matches the current locale page", () => {
+  const selected = pickBestJsonLdObjectForPage({
+    candidates: [
+      {
+        "@type": "Product",
+        name: "Espuma Limpiadora Detoxificante",
+        url: "https://patyka.com/es-ad/products/espuma-limpiadora-detoxificante",
+        "@id": "https://patyka.com/es-ad/products/espuma-limpiadora-detoxificante#product",
+      },
+      {
+        "@type": "Product",
+        name: "Detox Cleansing Foam",
+        url: "https://patyka.com/en-eu/products/detox-cleansing-foam?variant=10169393250340",
+        "@id": "https://patyka.com/en-eu/products/detox-cleansing-foam#product",
+      },
+    ],
+    pageUrl: "https://patyka.com/en-eu/products/detox-cleansing-foam",
+    canonicalUrl: "https://patyka.com/en-eu/products/detox-cleansing-foam",
+    baseUrl: "https://patyka.com",
+  });
+
+  assert.equal(selected?.name, "Detox Cleansing Foam");
 });
 
 test("PuppeteerExtractor supports string-based Shopify direct PDP image arrays", async () => {

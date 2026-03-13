@@ -1377,6 +1377,98 @@ function isType(obj: Record<string, unknown>, typeName: string) {
   return false;
 }
 
+const LOCALE_PATH_SEGMENT_RE = /^[a-z]{2}(?:-[a-z]{2})?$/i;
+
+function getLocalePathSegment(pathname: string): string | null {
+  const segment = pathname.split("/").filter(Boolean)[0] || "";
+  return LOCALE_PATH_SEGMENT_RE.test(segment) ? segment.toLowerCase() : null;
+}
+
+function normalizePageUrlSignal(rawUrl: string | undefined, baseUrl: string) {
+  if (!rawUrl) return null;
+
+  try {
+    const canonical = canonicalizeUrlShared(toAbsoluteUrlShared(baseUrl, rawUrl), baseUrl);
+    const parsed = new URL(canonical);
+    return {
+      canonical,
+      origin: parsed.origin,
+      pathname: parsed.pathname,
+      locale: getLocalePathSegment(parsed.pathname),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function listJsonLdObjectUrls(baseUrl: string, obj: Record<string, unknown>): string[] {
+  const offerUrls = normalizeJsonLdOffers(obj.offers)
+    .map((offer) => (typeof offer.url === "string" ? offer.url : ""))
+    .filter(Boolean);
+
+  return dedupeStringList([
+    typeof obj.url === "string" ? obj.url : "",
+    typeof obj["@id"] === "string" ? String(obj["@id"]) : "",
+    ...offerUrls,
+  ]).map((url) => canonicalizeUrlShared(toAbsoluteUrlShared(baseUrl, url), baseUrl));
+}
+
+function scoreJsonLdObjectForPage(params: {
+  object: Record<string, unknown>;
+  pageSignals: Array<ReturnType<typeof normalizePageUrlSignal>>;
+  baseUrl: string;
+}): number {
+  const objectUrls = listJsonLdObjectUrls(params.baseUrl, params.object);
+  if (objectUrls.length === 0) return 0;
+
+  let score = 0;
+  for (const objectUrl of objectUrls) {
+    try {
+      const parsed = new URL(objectUrl);
+      const objectLocale = getLocalePathSegment(parsed.pathname);
+
+      for (const signal of params.pageSignals) {
+        if (!signal) continue;
+
+        if (objectUrl === signal.canonical) score += 120;
+        if (parsed.origin === signal.origin && parsed.pathname === signal.pathname) score += 90;
+        if (signal.locale && objectLocale && signal.locale === objectLocale) score += 20;
+        if (signal.locale && objectLocale && signal.locale !== objectLocale) score -= 25;
+      }
+    } catch {
+      // ignore malformed structured URLs
+    }
+  }
+
+  return score;
+}
+
+export function pickBestJsonLdObjectForPage(params: {
+  candidates: Array<Record<string, unknown>>;
+  pageUrl: string;
+  canonicalUrl?: string;
+  baseUrl: string;
+}): Record<string, unknown> | null {
+  const pageSignals = dedupeStringList([params.canonicalUrl, params.pageUrl])
+    .map((url) => normalizePageUrlSignal(url, params.baseUrl))
+    .filter(Boolean);
+
+  if (params.candidates.length === 0) return null;
+
+  let best: { object: Record<string, unknown>; score: number } | null = null;
+  for (const candidate of params.candidates) {
+    const score = scoreJsonLdObjectForPage({
+      object: candidate,
+      pageSignals,
+      baseUrl: params.baseUrl,
+    });
+
+    if (!best || score > best.score) best = { object: candidate, score };
+  }
+
+  return best?.object || params.candidates[0] || null;
+}
+
 function toAbsoluteUrl(baseUrl: string, href: string) {
   try {
     return new URL(href, baseUrl).toString();
@@ -1772,10 +1864,29 @@ async function scrapeProductPage(params: {
       }
     }
 
-    const productObj = objects.find((o) => isType(o, "Product"));
-    const productGroupObj = objects.find((o) => isType(o, "ProductGroup"));
+    const productObj = pickBestJsonLdObjectForPage({
+      candidates: objects.filter((o) => isType(o, "Product")),
+      pageUrl: params.url,
+      canonicalUrl: extracted.canonical,
+      baseUrl: params.baseUrl,
+    });
+    const productGroupObj = pickBestJsonLdObjectForPage({
+      candidates: objects.filter((o) => isType(o, "ProductGroup")),
+      pageUrl: params.url,
+      canonicalUrl: extracted.canonical,
+      baseUrl: params.baseUrl,
+    });
     const variantProducts = normalizeJsonLdObjects(productGroupObj?.hasVariant).filter((o) => isType(o, "Product"));
-    const primaryProductObj = productObj || variantProducts[0] || productGroupObj || null;
+    const primaryProductObj =
+      productObj ||
+      pickBestJsonLdObjectForPage({
+        candidates: variantProducts,
+        pageUrl: params.url,
+        canonicalUrl: extracted.canonical,
+        baseUrl: params.baseUrl,
+      }) ||
+      productGroupObj ||
+      null;
     if (!productObj && params.verbose) {
       params.log("warn", "> No JSON-LD Product schema found. Falling back to title/meta/price extraction.");
     }
@@ -1790,7 +1901,10 @@ async function scrapeProductPage(params: {
       typeof productGroupObj?.name === "string" ? productGroupObj.name : typeof primaryProductObj?.name === "string" ? primaryProductObj.name : extracted.title
     ).trim() || extracted.title;
     const productUrl = canonicalizeUrlShared(
-      toAbsoluteUrlShared(params.baseUrl, typeof primaryProductObj?.url === "string" ? primaryProductObj.url : extracted.canonical),
+      toAbsoluteUrlShared(
+        params.baseUrl,
+        extracted.canonical || (typeof primaryProductObj?.url === "string" ? primaryProductObj.url : params.url),
+      ),
       params.baseUrl,
     );
 

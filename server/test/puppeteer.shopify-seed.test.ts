@@ -159,6 +159,55 @@ test("PuppeteerExtractor supports string-based Shopify direct PDP image arrays",
   );
 });
 
+test("PuppeteerExtractor does not fabricate template descriptions when Shopify direct PDP overview is missing", async () => {
+  const extractor = new PuppeteerExtractor();
+  const directProduct = {
+    id: 252,
+    title: "Blush Brush",
+    handle: "blush-brush",
+    body_html: "",
+    featured_image: null,
+    variants: [
+      {
+        id: 2501,
+        title: "Default Title",
+        option1: "Default Title",
+        price: 1800,
+        available: true,
+        inventory_quantity: 4,
+      },
+    ],
+    options: [{ name: "Title" }],
+    images: ["//cdn.shopify.com/s/files/1/1463/5858/files/Blush-Brush.jpg?v=1773267573"],
+  };
+
+  await withMockFetch(
+    {
+      "https://pixibeauty.com/products/blush-brush.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify(directProduct),
+      },
+      "https://pixibeauty.com/products/blush-brush": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: "<html><head><meta property=\"og:price:currency\" content=\"USD\"></head><body></body></html>",
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Pixi",
+        domain: "https://pixibeauty.com/products/blush-brush",
+        limit: 5,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.variants.length, 1);
+      assert.equal(result.variants[0]?.description, "");
+    },
+  );
+});
+
 test("PuppeteerExtractor normalizes Shopify direct PDP cents and HTML currency hints", async () => {
   const extractor = new PuppeteerExtractor();
   const directProduct = {

@@ -353,8 +353,8 @@ function getMergedDescription(params: {
   howToUse?: string;
   ingredientsAndSafety?: string;
 }) {
-  const overview = cleanText(params.overview) || `Experience the ultimate luxury with ${params.title}.`;
-  const parts = [overview];
+  const overview = cleanText(params.overview);
+  const parts = overview ? [overview] : [];
 
   const howToUse = cleanText(params.howToUse);
   if (howToUse) parts.push(`How to Use: ${howToUse}`);

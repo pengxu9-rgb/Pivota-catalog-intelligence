@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -301,6 +302,28 @@ def _normalized_inci_key(value: Any) -> str:
     return ";".join(normalized)
 
 
+def _same_source_path_with_variant_upgrade(current_source_ref: str, other_source_ref: str) -> bool:
+    current_url = normalize_url_like(current_source_ref)
+    other_url = normalize_url_like(other_source_ref)
+    if not current_url or not other_url:
+        return False
+
+    try:
+        current_parsed = urlparse(current_url)
+        other_parsed = urlparse(other_url)
+    except Exception:  # noqa: BLE001
+        return False
+
+    if current_parsed.netloc.lower() != other_parsed.netloc.lower():
+        return False
+    if current_parsed.path.rstrip("/").lower() != other_parsed.path.rstrip("/").lower():
+        return False
+
+    current_variant = parse_qs(current_parsed.query).get("variant", [])
+    other_variant = parse_qs(other_parsed.query).get("variant", [])
+    return bool(current_variant) and not other_variant
+
+
 def _duplicate_conflict(db, row: CandidateRow) -> dict[str, Any] | None:
     sku_key = normalize_nonempty_string(row.sku_key or row.candidate_id)
     if not sku_key:
@@ -325,6 +348,16 @@ def _duplicate_conflict(db, row: CandidateRow) -> dict[str, Any] | None:
         # Historical rows should only block a new candidate if they were already approved.
         # Otherwise stale third-party or superseded rows can permanently poison official refreshes.
         if not same_import and other_review_status != "APPROVED":
+            continue
+        current_source_type = normalize_nonempty_string(row.source_type).lower()
+        other_source_type = normalize_nonempty_string(other.source_type).lower()
+        if (
+            not same_import
+            and other_review_status == "APPROVED"
+            and current_source_type == "official"
+            and other_source_type == "official"
+            and _same_source_path_with_variant_upgrade(row.source_ref or "", other.source_ref or "")
+        ):
             continue
         return {
             "sku_key": sku_key,

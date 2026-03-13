@@ -144,3 +144,51 @@ def test_duplicate_conflict_keeps_historical_approved_rows_blocking() -> None:
         assert conflict["conflicting_review_status"] == "APPROVED"
     finally:
         db.close()
+
+
+def test_duplicate_conflict_ignores_historical_generic_official_rows_when_current_row_is_variant_specific_official() -> None:
+    db = _session()
+    try:
+        db.add_all(
+            [
+                ImportBatch(import_id="imp_old", filename="old.csv"),
+                ImportBatch(import_id="imp_new", filename="new.csv"),
+            ]
+        )
+        db.add_all(
+            [
+                CandidateRow(
+                    row_id="approved_old",
+                    import_id="imp_old",
+                    row_index=0,
+                    product_name="On-the-Glow Blush - Mauve",
+                    sku_key="extseed:eps_1:42457583812704",
+                    candidate_id="extseed:eps_1:42457583812704",
+                    source_ref="https://www.pixibeauty.com/products/on-the-glow-blush",
+                    source_type="Official",
+                    inci_list="CheekTone; Legacy",
+                    review_status="APPROVED",
+                    audit_status="PASS",
+                ),
+                CandidateRow(
+                    row_id="new_row",
+                    import_id="imp_new",
+                    row_index=0,
+                    product_name="On-the-Glow Blush - Mauve",
+                    sku_key="extseed:eps_1:42457583812704",
+                    candidate_id="extseed:eps_1:42457583812704",
+                    source_ref="https://www.pixibeauty.com/products/on-the-glow-blush?variant=42457583812704",
+                    source_type="Official",
+                    inci_list="Diisostearyl Malate; Caprylic/Capric Triglyceride",
+                    review_status="UNREVIEWED",
+                    audit_status="PASS",
+                ),
+            ]
+        )
+        db.commit()
+
+        row = db.get(CandidateRow, "new_row")
+        assert row is not None
+        assert _duplicate_conflict(db, row) is None
+    finally:
+        db.close()

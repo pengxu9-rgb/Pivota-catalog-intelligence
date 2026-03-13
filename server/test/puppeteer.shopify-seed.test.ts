@@ -95,6 +95,59 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
   );
 });
 
+test("PuppeteerExtractor honors locale-prefixed Shopify direct PDP seed URLs", async () => {
+  const extractor = new PuppeteerExtractor();
+  const directProduct = {
+    id: 151,
+    title: "Detox Cleansing Foam",
+    handle: "detox-cleansing-foam",
+    body_html: "<p>Detox cleansing foam</p>",
+    variants: [
+      {
+        id: 1501,
+        sku: "P1126",
+        title: "150 ml",
+        option1: "150 ml",
+        price: 1590,
+        available: true,
+        inventory_quantity: 18,
+      },
+    ],
+    options: [{ name: "Size" }],
+    images: [{ src: "https://cdn.example.com/patyka-detox-1.jpg" }],
+  };
+
+  await withMockFetch(
+    {
+      "https://patyka.com/products/detox-cleansing-foam.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify(directProduct),
+      },
+      "https://patyka.com/en-eu/products/detox-cleansing-foam": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="EUR"></head><body></body></html>',
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Patyka",
+        domain: "https://patyka.com/en-eu/products/detox-cleansing-foam",
+        market: "US",
+        limit: 5,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.url, "https://patyka.com/products/detox-cleansing-foam");
+      assert.deepEqual(result.products[0]?.variant_skus, ["P1126"]);
+      assert.equal(result.variants[0]?.price, "15.90");
+      assert.equal(result.variants[0]?.currency, "EUR");
+      assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
+    },
+  );
+});
+
 test("PuppeteerExtractor supports string-based Shopify direct PDP image arrays", async () => {
   const extractor = new PuppeteerExtractor();
   const directProduct = {

@@ -874,7 +874,7 @@ function extractShopifyProductHandle(seedUrl: string | undefined, baseUrl: strin
   if (!seedUrl) return null;
   try {
     const parsed = new URL(seedUrl, baseUrl);
-    const match = parsed.pathname.match(/^\/products\/([^/?#]+)/i);
+    const match = parsed.pathname.match(/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?products\/([^/?#]+)/i);
     return match?.[1] ? decodeURIComponent(match[1]) : null;
   } catch {
     return null;

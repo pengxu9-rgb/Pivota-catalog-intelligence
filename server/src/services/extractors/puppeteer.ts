@@ -365,6 +365,32 @@ function getMergedDescription(params: {
   return parts.join("\n\n");
 }
 
+export function choosePreferredProductOverview(params: {
+  structured?: string;
+  detailed?: string;
+  meta?: string;
+}) {
+  const structured = cleanText(params.structured);
+  const detailed = cleanText(params.detailed);
+  const meta = cleanText(params.meta);
+
+  if (detailed) {
+    if (!structured) return detailed;
+
+    const structuredLower = structured.toLowerCase();
+    const detailedLower = detailed.toLowerCase();
+    const startsWithStructured = detailedLower.startsWith(structuredLower);
+    const materiallyLonger = detailed.length >= Math.max(structured.length + 60, Math.round(structured.length * 1.35));
+    const looksLikeExpandedOverview = /\bthis set includes\b|\bproduct details\b|\n|•|\bto use\b/i.test(detailed);
+
+    if (startsWithStructured || (materiallyLonger && looksLikeExpandedOverview)) {
+      return detailed;
+    }
+  }
+
+  return structured || meta || undefined;
+}
+
 function generateMockAdCopy(title: string, variantValue: string, price: string) {
   const subject = pick(AD_SUBJECT_TEMPLATES).replace("{title}", title).replace("{variant}", variantValue);
   const caption = pick(AD_CAPTION_TEMPLATES).replace("{title}", title).replace("{variant}", variantValue);
@@ -374,6 +400,7 @@ function generateMockAdCopy(title: string, variantValue: string, price: string) 
 function cleanText(text?: string) {
   if (!text) return "";
   const withNewlines = text
+    .replace(/\u00a0/g, " ")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p\s*>/gi, "\n")
     .replace(/<\/div\s*>/gi, "\n")
@@ -1482,6 +1509,43 @@ async function scrapeProductPage(params: {
         document.querySelector('meta[property="og:description"]')?.getAttribute("content")?.trim() ||
         "";
 
+      const productDetailsText = (() => {
+        const decodeHtmlText = (raw: string) => {
+          const container = document.createElement("div");
+          container.innerHTML = raw;
+          return container.textContent?.trim() || "";
+        };
+
+        const normalize = (raw: string) =>
+          raw
+            .replace(/\r\n/g, "\n")
+            .replace(/[ \t]+/g, " ")
+            .replace(/\n[ \t]+/g, "\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+
+        const hiddenOverview = document.getElementById("overview-about-text");
+        const hiddenRaw = hiddenOverview?.getAttribute("value")?.trim() || "";
+        if (hiddenRaw) {
+          try {
+            const decoded = decodeURIComponent(hiddenRaw);
+            const text = normalize(decodeHtmlText(decoded));
+            if (text) return text;
+          } catch {
+            const text = normalize(decodeHtmlText(hiddenRaw));
+            if (text) return text;
+          }
+        }
+
+        const moreAbout = document.querySelector(".more-about-product-content");
+        if (moreAbout instanceof HTMLElement) {
+          const text = normalize(moreAbout.innerText || moreAbout.textContent || "");
+          if (text) return text;
+        }
+
+        return "";
+      })();
+
       const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
         .map((s) => s.textContent || "")
         .filter(Boolean);
@@ -1688,6 +1752,7 @@ async function scrapeProductPage(params: {
         imageCandidates,
         scripts,
         domVariants,
+        productDetailsText,
         howToUseText,
         ingredientsMarkdownText,
         ingredientsDisclaimerText,
@@ -1735,11 +1800,13 @@ async function scrapeProductPage(params: {
     ]);
     const imageUrl = productImageUrls[0] || "";
 
-    const officialText =
-      (typeof primaryProductObj?.description === "string" ? primaryProductObj.description : undefined) ||
-      (typeof productGroupObj?.description === "string" ? productGroupObj.description : undefined) ||
-      extracted.metaDescription ||
-      undefined;
+    const officialText = choosePreferredProductOverview({
+      structured:
+        (typeof primaryProductObj?.description === "string" ? primaryProductObj.description : undefined) ||
+        (typeof productGroupObj?.description === "string" ? productGroupObj.description : undefined),
+      detailed: typeof extracted.productDetailsText === "string" ? extracted.productDetailsText : undefined,
+      meta: extracted.metaDescription,
+    });
 
     const offersRaw = primaryProductObj?.offers;
     const offers = normalizeJsonLdOffers(offersRaw);

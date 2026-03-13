@@ -114,6 +114,7 @@ export type ScrapedPageData = {
   title: string;
   canonical: string;
   metaDescription: string;
+  productDetailsText: string;
   scripts: string[];
   metaCurrencies: string[];
   priceTexts: string[];
@@ -489,6 +490,42 @@ async function scrapeProductPageV2(params: {
         document.querySelector('meta[property="og:description"]')?.getAttribute("content")?.trim() ||
         "";
 
+      const productDetailsText = (() => {
+        const decodeHtmlText = (raw: string) => {
+          const container = document.createElement("div");
+          container.innerHTML = raw;
+          return container.textContent?.trim() || "";
+        };
+        const normalize = (raw: string) =>
+          raw
+            .replace(/\r\n/g, "\n")
+            .replace(/[ \t]+/g, " ")
+            .replace(/\n[ \t]+/g, "\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+
+        const hiddenOverview = document.getElementById("overview-about-text");
+        const hiddenRaw = hiddenOverview?.getAttribute("value")?.trim() || "";
+        if (hiddenRaw) {
+          try {
+            const decoded = decodeURIComponent(hiddenRaw);
+            const text = normalize(decodeHtmlText(decoded));
+            if (text) return text;
+          } catch {
+            const text = normalize(decodeHtmlText(hiddenRaw));
+            if (text) return text;
+          }
+        }
+
+        const moreAbout = document.querySelector(".more-about-product-content");
+        if (moreAbout instanceof HTMLElement) {
+          const text = normalize(moreAbout.innerText || moreAbout.textContent || "");
+          if (text) return text;
+        }
+
+        return "";
+      })();
+
       const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
         .map((s) => s.textContent || "")
         .filter(Boolean);
@@ -527,6 +564,7 @@ async function scrapeProductPageV2(params: {
         title,
         canonical,
         metaDescription,
+        productDetailsText,
         scripts,
         metaCurrencies,
         priceTexts,
@@ -580,10 +618,13 @@ export function buildOffersFromScrapedPage(params: {
     (typeof productGroupObj?.name === "string" ? productGroupObj.name.trim() : null) ||
     (typeof primaryProductObj?.name === "string" ? primaryProductObj.name.trim() : params.extracted.title.trim()) ||
     params.extracted.title.trim();
-  const productDescription =
-    normalizeDescriptionText(typeof primaryProductObj?.description === "string" ? primaryProductObj.description : null) ||
-    normalizeDescriptionText(typeof productGroupObj?.description === "string" ? productGroupObj.description : null) ||
-    normalizeDescriptionText(params.extracted.metaDescription);
+  const productDescription = choosePreferredOverviewText({
+    structured:
+      (typeof primaryProductObj?.description === "string" ? primaryProductObj.description : null) ||
+      (typeof productGroupObj?.description === "string" ? productGroupObj.description : null),
+    detailed: params.extracted.productDetailsText,
+    meta: params.extracted.metaDescription,
+  });
 
   const rawCanonical =
     (typeof primaryProductObj?.url === "string" ? primaryProductObj.url : params.extracted.canonical) || params.extracted.canonical;
@@ -835,6 +876,7 @@ function normalizeDescriptionText(raw: string | null | undefined): string | null
   if (!raw || !raw.trim()) return null;
 
   const withNewlines = raw
+    .replace(/\u00a0/g, " ")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p\s*>/gi, "\n")
     .replace(/<\/div\s*>/gi, "\n")
@@ -849,6 +891,30 @@ function normalizeDescriptionText(raw: string | null | undefined): string | null
     .trim();
 
   return text || null;
+}
+
+function choosePreferredOverviewText(params: {
+  structured?: string | null;
+  detailed?: string | null;
+  meta?: string | null;
+}): string | null {
+  const structured = normalizeDescriptionText(params.structured);
+  const detailed = normalizeDescriptionText(params.detailed);
+  const meta = normalizeDescriptionText(params.meta);
+
+  if (detailed) {
+    if (!structured) return detailed;
+    const structuredLower = structured.toLowerCase();
+    const detailedLower = detailed.toLowerCase();
+    const startsWithStructured = detailedLower.startsWith(structuredLower);
+    const materiallyLonger = detailed.length >= Math.max(structured.length + 60, Math.round(structured.length * 1.35));
+    const looksLikeExpandedOverview = /\bthis set includes\b|\bproduct details\b|\n|•|\bto use\b/i.test(detailed);
+    if (startsWithStructured || (materiallyLonger && looksLikeExpandedOverview)) {
+      return detailed;
+    }
+  }
+
+  return structured || meta;
 }
 
 export function buildSourceProductId(params: {

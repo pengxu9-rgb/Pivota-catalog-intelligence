@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { PuppeteerExtractor, mergeShopifyDirectPdpFallback } from "../src/services/extractors/puppeteer";
+import { PuppeteerExtractor, choosePreferredProductOverview, mergeShopifyDirectPdpFallback } from "../src/services/extractors/puppeteer";
 
 type MockRoute = {
   status?: number;
@@ -452,5 +452,19 @@ test("mergeShopifyDirectPdpFallback discards unrelated fallback page images", ()
   assert.equal(
     merged.variants[0]?.image_url,
     "https://patyka.com/cdn/shop/files/02-RechargePeeling-beauty.jpg?v=1",
+  );
+});
+
+test("choosePreferredProductOverview prefers expanded product details over short structured blurbs", () => {
+  const overview = choosePreferredProductOverview({
+    structured: "A 3-step regimen with Salicylic Acid 2% Solution for clearer skin",
+    detailed:
+      "The Acne Set offers a targeted skincare regimen featuring Salicylic Acid 2% Solution for treating acne.\n\nThis set includes...\n\nGlucoside Foaming Cleanser removes dirt and environmental impurities.\nSalicylic Acid 2% Solution exfoliates and helps clear pores.",
+    meta: "Fight acne with The Acne Set.",
+  });
+
+  assert.equal(
+    overview,
+    "The Acne Set offers a targeted skincare regimen featuring Salicylic Acid 2% Solution for treating acne.\n\nThis set includes...\n\nGlucoside Foaming Cleanser removes dirt and environmental impurities.\nSalicylic Acid 2% Solution exfoliates and helps clear pores.",
   );
 });

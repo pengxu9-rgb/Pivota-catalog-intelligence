@@ -92,6 +92,19 @@ test("resolveStorefrontTarget normalizes locale-prefixed seed URLs to the reques
   assert.equal(resolved.target.baseUrl, "https://theordinary.com");
 });
 
+test("resolveStorefrontTarget preserves language-compatible seed locales when the exact market locale differs", async () => {
+  const diagnostics = createDiagnostics("patyka.com", "https://patyka.com");
+  const resolved = await resolveStorefrontTarget({
+    target: parseTarget("https://patyka.com/en-eu/products/detox-cleansing-foam"),
+    marketId: "US",
+    context: {},
+    diagnostics,
+  });
+
+  assert.equal(resolved.target.seedUrl, "https://patyka.com/en-eu/products/detox-cleansing-foam");
+  assert.equal(resolved.target.baseUrl, "https://patyka.com");
+});
+
 test("discoverProductUrls uses landing-page HTML discovery for slug PDPs", async () => {
   const homepageHtml = readFixture("augustinus-homepage.html");
   const diagnostics = createDiagnostics("augustinusbader.com", "https://augustinusbader.com");

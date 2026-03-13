@@ -276,6 +276,12 @@ export function normalizeSeedUrlForMarket(seedUrl: string | undefined, marketId:
       return parsed.toString();
     }
 
+    const [currentLanguage] = firstSegment.toLowerCase().split("-");
+    const [desiredLanguage] = desiredLocaleSegment.split("-");
+    if (currentLanguage && desiredLanguage && currentLanguage === desiredLanguage) {
+      return parsed.toString();
+    }
+
     segments[0] = desiredLocaleSegment;
     parsed.pathname = `/${segments.join("/")}${parsed.pathname.endsWith("/") ? "/" : ""}`;
     return parsed.toString();

@@ -21,7 +21,18 @@ def build_query(market: str, brand: str, product_name: str) -> str:
 
 def classify_source_type(url: str) -> str:
     u = (url or "").lower()
-    if any(host in u for host in ["sephora.", "ulta.", "amazon.", "lookfantastic.", "cultbeauty.", "douglas."]):
+    if any(
+        host in u
+        for host in [
+            "sephora.",
+            "ulta.",
+            "amazon.",
+            "lookfantastic.",
+            "cultbeauty.",
+            "douglas.",
+            "strawberrynet.",
+        ]
+    ):
         return "Retailer"
     if any(host in u for host in ["wikipedia.org", "incidecoder.com", "cosdna.com", "skincarisma.com"]):
         return "ThirdParty"

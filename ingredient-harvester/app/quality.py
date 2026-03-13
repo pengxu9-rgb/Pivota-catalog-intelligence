@@ -203,16 +203,16 @@ def build_audit_findings(
             False,
         )
 
-    if normalized_source_type == "thirdparty" and source_match_status != "match":
+    if normalized_source_type in {"thirdparty", "retailer"}:
         add(
-            "third_party_source_requires_review",
+            "non_official_source_requires_review",
             "review",
             {
                 **source_match_evidence,
                 "source_type": normalized_source_type,
                 "source_match_status": source_match_status,
             },
-            "Review third-party ingredient sources before approval, or replace them with an official product source.",
+            "Review non-official ingredient sources before approval, or replace them with an official product source.",
             False,
         )
 

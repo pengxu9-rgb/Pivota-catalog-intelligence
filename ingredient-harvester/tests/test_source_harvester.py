@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.harvester.source_harvester import SourceHarvester
+from app.harvester.source_harvester import SourceHarvester, classify_source_type
 
 
 @dataclass(frozen=True)
@@ -53,3 +53,9 @@ def test_harvester_tries_multiple_urls_until_ok(monkeypatch) -> None:
     out = h.process(market="US", brand="Test", product_name="P1")
     assert out.status == "OK"
     assert out.source_ref is not None and out.source_ref.endswith("/good")
+
+
+def test_classify_source_type_marks_retailers_and_third_party_domains() -> None:
+    assert classify_source_type("https://www.strawberrynet.com/en/ole-henriksen/product") == "Retailer"
+    assert classify_source_type("https://incidecoder.com/products/dermalogica-smart-response-serum") == "ThirdParty"
+    assert classify_source_type("https://olehenriksen.com/products/dewtopia-20-acid-night-treatment") == "Official"

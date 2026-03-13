@@ -1,5 +1,7 @@
 import { createHash } from "crypto";
-import { type Browser } from "puppeteer";
+import http from "http";
+import https from "https";
+import { type Browser, type Page } from "puppeteer";
 
 import type {
   ExtractInput,
@@ -269,6 +271,20 @@ type DomVariantMeta = {
   image_urls?: string[];
   price?: string;
   ingredients?: string;
+};
+
+type ScrapedPageSignals = {
+  title: string;
+  canonical: string;
+  metaDescription: string;
+  priceTexts: string[];
+  imageCandidates: string[];
+  scripts: string[];
+  domVariants: DomVariantMeta[];
+  productDetailsText: string;
+  howToUseText?: string;
+  ingredientsMarkdownText?: string;
+  ingredientsDisclaimerText?: string;
 };
 
 function clampInt(value: string | undefined, fallback: number, min: number, max: number) {
@@ -1558,6 +1574,606 @@ function stockFromAvailability(raw: unknown): StockStatus {
   return "In Stock";
 }
 
+function injectBaseHref(html: string, pageUrl: string): string {
+  if (!html || /<base\b/i.test(html)) return html;
+  const baseTag = `<base href="${pageUrl.replace(/"/g, "&quot;")}">`;
+
+  if (/<head\b[^>]*>/i.test(html)) {
+    return html.replace(/<head\b([^>]*)>/i, `<head$1>${baseTag}`);
+  }
+
+  if (/<html\b[^>]*>/i.test(html)) {
+    return html.replace(/<html\b([^>]*)>/i, `<html$1><head>${baseTag}</head>`);
+  }
+
+  return `<head>${baseTag}</head>${html}`;
+}
+
+async function fetchHtmlViaNativeRequest(
+  url: string,
+  diagnostics: ExtractResponse["diagnostics"],
+): Promise<{ status: number | null; body: string | null; finalUrl: string }> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: { status: number | null; body: string | null; finalUrl: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    try {
+      const parsed = new URL(url);
+      const request = (parsed.protocol === "https:" ? https : http).request(
+        parsed,
+        {
+          method: "GET",
+          headers: {
+            accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "user-agent": process.env.PUPPETEER_USER_AGENT || "PivotaCatalogIntelligence/1.0",
+          },
+        },
+        (response) => {
+          const status = response.statusCode ?? null;
+          diagnostics?.http_trace.push({ url, status });
+
+          let body = "";
+          response.setEncoding("utf8");
+          response.on("data", (chunk) => {
+            body += chunk;
+          });
+          response.on("end", () => {
+            finish({ status, body, finalUrl: url });
+          });
+        },
+      );
+
+      request.setTimeout(DEFAULT_FETCH_TIMEOUT_MS, () => {
+        request.destroy(new Error(`Native HTML request timed out after ${DEFAULT_FETCH_TIMEOUT_MS}ms`));
+      });
+      request.on("error", () => {
+        finish({ status: null, body: null, finalUrl: url });
+      });
+      request.end();
+    } catch {
+      finish({ status: null, body: null, finalUrl: url });
+    }
+  });
+}
+
+async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
+  return page.evaluate(() => {
+    const __name = <T>(value: T) => value;
+    const documentBase = document.baseURI || location.href;
+    const title =
+      document.querySelector("h1")?.textContent?.trim() ||
+      document.querySelector('meta[property="og:title"]')?.getAttribute("content")?.trim() ||
+      document.title ||
+      "";
+
+    const canonical =
+      (document.querySelector('link[rel="canonical"]') as HTMLLinkElement | null)?.href ||
+      document.querySelector('meta[property="og:url"]')?.getAttribute("content") ||
+      documentBase;
+
+    const metaDescription =
+      document.querySelector('meta[name="description"]')?.getAttribute("content")?.trim() ||
+      document.querySelector('meta[property="og:description"]')?.getAttribute("content")?.trim() ||
+      "";
+
+    const productDetailsText = (() => {
+      const decodeHtmlText = (raw: string) => {
+        const container = document.createElement("div");
+        container.innerHTML = raw;
+        return container.textContent?.trim() || "";
+      };
+
+      const normalize = (raw: string) =>
+        raw
+          .replace(/\r\n/g, "\n")
+          .replace(/[ \t]+/g, " ")
+          .replace(/\n[ \t]+/g, "\n")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
+
+      const hiddenOverview = document.getElementById("overview-about-text");
+      const hiddenRaw = hiddenOverview?.getAttribute("value")?.trim() || "";
+      if (hiddenRaw) {
+        try {
+          const decoded = decodeURIComponent(hiddenRaw);
+          const text = normalize(decodeHtmlText(decoded));
+          if (text) return text;
+        } catch {
+          const text = normalize(decodeHtmlText(hiddenRaw));
+          if (text) return text;
+        }
+      }
+
+      const moreAbout = document.querySelector(".more-about-product-content");
+      if (moreAbout instanceof HTMLElement) {
+        const text = normalize(moreAbout.innerText || moreAbout.textContent || "");
+        if (text) return text;
+      }
+
+      return "";
+    })();
+
+    const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
+      .map((s) => s.textContent || "")
+      .filter(Boolean);
+
+    const priceSelectors = [
+      '[itemprop="price"]',
+      '[class*="price"]',
+      '[data-price]',
+      'meta[property="og:price:amount"]',
+      'meta[property="product:price:amount"]',
+    ];
+    const priceTexts: string[] = [];
+    for (const selector of priceSelectors) {
+      const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 8);
+      for (const node of nodes) {
+        const text =
+          (node as HTMLElement).getAttribute?.("content") ||
+          (node as HTMLElement).getAttribute?.("data-price") ||
+          (node as HTMLElement).textContent ||
+          "";
+        const trimmed = text.trim();
+        if (trimmed) priceTexts.push(trimmed);
+      }
+    }
+
+    const imageCandidates = (() => {
+      const selectors = [
+        "img.zoom-newPDPImage",
+        "[zoom-src]",
+        "[data-zoom-src]",
+        "[data-zoom-image]",
+        ".gallery-top-product img",
+        ".gallery-thumbs-new-pdp img",
+        '[class*="gallery"] img',
+        '[class*="swiper"] img',
+        'meta[property="og:image"]',
+        'meta[name="twitter:image"]',
+        'meta[itemprop="image"]',
+        "img[data-src]",
+        "img[srcset]",
+        "img[src]",
+      ];
+      const invalidUrlRe =
+        /(placeholder\.svg|\/favicon|\/apple-touch-icon|\/logo(?:[._/-]|$)|\/sprite(?:[._/-]|$)|tracking|teads\.tv|\/MenuBanner\/|\/Library-Sites-)/i;
+      const seen = new Set<string>();
+      const out: string[] = [];
+
+      const push = (raw: string | null | undefined) => {
+        const trimmed = typeof raw === "string" ? raw.trim() : "";
+        if (!trimmed) return;
+
+        const candidates = trimmed
+          .split(",")
+          .map((part) => part.trim().split(/\s+/)[0] || "")
+          .filter(Boolean);
+
+        for (const candidate of candidates) {
+          try {
+            const absolute = new URL(candidate, documentBase).toString();
+            if (!/^https?:\/\//i.test(absolute)) continue;
+            if (invalidUrlRe.test(absolute)) continue;
+            if (seen.has(absolute)) continue;
+            seen.add(absolute);
+            out.push(absolute);
+          } catch {
+            // ignore invalid image candidates
+          }
+        }
+      };
+
+      for (const selector of selectors) {
+        const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 24);
+        for (const node of nodes) {
+          if (node instanceof HTMLMetaElement) {
+            push(node.content);
+            continue;
+          }
+
+          const el = node as HTMLElement;
+          push(el.getAttribute("data-src"));
+          push(el.getAttribute("zoom-src"));
+          push(el.getAttribute("data-zoom-src"));
+          push(el.getAttribute("data-zoom-image"));
+          push(el.getAttribute("data-large-image"));
+          push(el.getAttribute("srcset"));
+          push(el.getAttribute("src"));
+        }
+
+        if (out.length >= 8) break;
+      }
+
+      return out;
+    })();
+
+    const domVariants = (() => {
+      const el = document.querySelector("[data-product-skus-value]") as HTMLElement | null;
+      const raw = el?.getAttribute("data-product-skus-value") || "";
+      if (!raw) return [] as DomVariantMeta[];
+
+      const textarea = document.createElement("textarea");
+      textarea.innerHTML = raw;
+      const decoded = textarea.value;
+
+      try {
+        const parsed = JSON.parse(decoded) as unknown;
+        if (!Array.isArray(parsed)) return [];
+
+        return parsed
+          .map((item) => {
+            const obj = item as Record<string, unknown>;
+            const sku =
+              (typeof obj.id === "string" && obj.id.trim()) ||
+              (typeof obj.sku === "string" && obj.sku.trim()) ||
+              "";
+
+            const size = typeof obj.size === "string" ? obj.size.trim() : "";
+            const shades = Array.isArray(obj.shades) ? obj.shades : [];
+            const firstShade = shades[0] as Record<string, unknown> | undefined;
+            const shadeTitle = typeof firstShade?.title === "string" ? firstShade.title.trim() : "";
+            const multiShade = typeof obj.multi_shade_description === "string" ? obj.multi_shade_description.trim() : "";
+
+            const optionName = size ? "Size" : shadeTitle || multiShade ? "Shade" : undefined;
+            const optionValue = size || shadeTitle || multiShade || undefined;
+
+            const urlPath = typeof obj.localized_path === "string" ? obj.localized_path.trim() : "";
+            const ingredients = typeof obj.ingredients === "string" ? obj.ingredients.trim() : "";
+
+            const images = Array.isArray(obj.images) ? obj.images : [];
+            const imageUrls = images
+              .map((image) => {
+                const next = image as Record<string, unknown>;
+                return typeof next?.src === "string" ? next.src.trim() : "";
+              })
+              .filter(Boolean);
+            const imageUrl = imageUrls[0] || "";
+
+            const price =
+              (typeof obj.price_with_discount === "number" && Number.isFinite(obj.price_with_discount)
+                ? obj.price_with_discount.toFixed(2)
+                : "") ||
+              (typeof obj.price === "number" && Number.isFinite(obj.price) ? obj.price.toFixed(2) : "") ||
+              (typeof obj.price_with_discount === "string" && obj.price_with_discount.trim()) ||
+              (typeof obj.price === "string" && obj.price.trim()) ||
+              "";
+
+            return {
+              sku,
+              option_name: optionName,
+              option_value: optionValue,
+              url_path: urlPath || undefined,
+              image_url: imageUrl || undefined,
+              image_urls: imageUrls.length > 0 ? imageUrls : undefined,
+              price: price || undefined,
+              ingredients: ingredients || undefined,
+            };
+          })
+          .filter((variant) => Boolean(variant.sku));
+      } catch {
+        return [];
+      }
+    })();
+
+    let howToUseContent = document.getElementById("accordion-toggle-How to Use");
+    let ingredientsContent = document.getElementById("accordion-toggle-Ingredients and Safety");
+
+    if (!howToUseContent || !ingredientsContent) {
+      const buttons = Array.from(document.querySelectorAll("button[aria-controls]")) as HTMLButtonElement[];
+      for (const button of buttons) {
+        const titleText = (button.getAttribute("title") || button.textContent || "").trim().toLowerCase();
+        if (!titleText) continue;
+
+        const targetId = button.getAttribute("aria-controls") || "";
+        if (!targetId) continue;
+
+        if (!howToUseContent && titleText === "how to use") {
+          howToUseContent = document.getElementById(targetId);
+        } else if (!ingredientsContent && (titleText === "ingredients and safety" || titleText === "ingredients & safety")) {
+          ingredientsContent = document.getElementById(targetId);
+        }
+
+        if (howToUseContent && ingredientsContent) break;
+      }
+    }
+
+    const howToUseText = howToUseContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
+    const ingredientsMarkdownText = ingredientsContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
+    const ingredientsDisclaimerText =
+      ingredientsContent?.querySelector(".product-details-accordions-ingredients-disclaimer")?.textContent?.trim() || undefined;
+
+    return {
+      title,
+      canonical,
+      metaDescription,
+      priceTexts,
+      imageCandidates,
+      scripts,
+      domVariants,
+      productDetailsText,
+      howToUseText,
+      ingredientsMarkdownText,
+      ingredientsDisclaimerText,
+    };
+  });
+}
+
+function buildProductFromPageSignals(params: {
+  extracted: ScrapedPageSignals;
+  pageLooksLikeProduct: boolean;
+  sourceUrl: string;
+  baseUrl: string;
+  verbose: boolean;
+  log: Logger;
+}): ExtractedProduct | null {
+  const { extracted } = params;
+  const objects: Record<string, unknown>[] = [];
+  for (const raw of extracted.scripts) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      for (const obj of normalizeJsonLdValue(parsed)) {
+        if (obj && typeof obj === "object") objects.push(obj as Record<string, unknown>);
+      }
+    } catch {
+      // ignore invalid JSON-LD blocks
+    }
+  }
+
+  const productObj = pickBestJsonLdObjectForPage({
+    candidates: objects.filter((o) => isType(o, "Product")),
+    pageUrl: params.sourceUrl,
+    canonicalUrl: extracted.canonical,
+    baseUrl: params.baseUrl,
+  });
+  const productGroupObj = pickBestJsonLdObjectForPage({
+    candidates: objects.filter((o) => isType(o, "ProductGroup")),
+    pageUrl: params.sourceUrl,
+    canonicalUrl: extracted.canonical,
+    baseUrl: params.baseUrl,
+  });
+  const variantProducts = normalizeJsonLdObjects(productGroupObj?.hasVariant).filter((o) => isType(o, "Product"));
+  const primaryProductObj =
+    productObj ||
+    pickBestJsonLdObjectForPage({
+      candidates: variantProducts,
+      pageUrl: params.sourceUrl,
+      canonicalUrl: extracted.canonical,
+      baseUrl: params.baseUrl,
+    }) ||
+    productGroupObj ||
+    null;
+
+  if (!productObj && params.verbose) {
+    params.log("warn", "> No JSON-LD Product schema found. Falling back to title/meta/price extraction.");
+  }
+  if (!primaryProductObj && !params.pageLooksLikeProduct) {
+    if (params.verbose) {
+      params.log("warn", `> Skipping non-product candidate: ${params.sourceUrl}`);
+    }
+    return null;
+  }
+
+  const productTitle = (
+    typeof productGroupObj?.name === "string" ? productGroupObj.name : typeof primaryProductObj?.name === "string" ? primaryProductObj.name : extracted.title
+  ).trim() || extracted.title;
+  const productUrl = canonicalizeUrlShared(
+    toAbsoluteUrlShared(
+      params.baseUrl,
+      extracted.canonical || (typeof primaryProductObj?.url === "string" ? primaryProductObj.url : params.sourceUrl),
+    ),
+    params.baseUrl,
+  );
+
+  const imageRaw = primaryProductObj?.image ?? productGroupObj?.image;
+  const productImageUrls = dedupeStringList([
+    ...resolveStructuredImageUrls(params.baseUrl, [imageRaw, productGroupObj?.image, extracted.imageCandidates]),
+    ...variantProducts.flatMap((variantProduct) => resolveStructuredImageUrls(params.baseUrl, variantProduct.image)),
+  ]);
+  const imageUrl = productImageUrls[0] || "";
+
+  const officialText = choosePreferredProductOverview({
+    structured:
+      (typeof primaryProductObj?.description === "string" ? primaryProductObj.description : undefined) ||
+      (typeof productGroupObj?.description === "string" ? productGroupObj.description : undefined),
+    detailed: typeof extracted.productDetailsText === "string" ? extracted.productDetailsText : undefined,
+    meta: extracted.metaDescription,
+  });
+
+  const offersRaw = primaryProductObj?.offers;
+  const offers = normalizeJsonLdOffers(offersRaw);
+
+  const domMetaBySku = new Map<string, DomVariantMeta>();
+  for (const meta of extracted.domVariants || []) {
+    if (!meta.sku) continue;
+    domMetaBySku.set(meta.sku, meta);
+  }
+
+  const howToUseText = typeof extracted.howToUseText === "string" ? extracted.howToUseText.trim() : undefined;
+  const ingredientsMarkdownText =
+    typeof extracted.ingredientsMarkdownText === "string" ? extracted.ingredientsMarkdownText.trim() : undefined;
+  const ingredientsDisclaimerText =
+    typeof extracted.ingredientsDisclaimerText === "string" ? extracted.ingredientsDisclaimerText.trim() : undefined;
+
+  const variants: ExtractedVariant[] =
+    variantProducts.length > 1
+      ? variantProducts.map((variantProduct, idx) => {
+          const variantOffer = normalizeJsonLdOffers(variantProduct.offers)[0];
+          const skuRaw =
+            (typeof variantProduct.sku === "string" && variantProduct.sku.trim()) ||
+            (typeof variantProduct.mpn === "string" && variantProduct.mpn.trim()) ||
+            (typeof variantOffer?.sku === "string" && variantOffer.sku.trim()) ||
+            "";
+          const sku = skuRaw || `AUTO-${stableId(`${productUrl}|${idx}`)}`;
+          const domMeta = domMetaBySku.get(sku);
+          const variantName = typeof variantProduct.name === "string" ? variantProduct.name.trim() : "";
+          const optionValue =
+            (typeof variantProduct.color === "string" && variantProduct.color.trim()) ||
+            stripProductTitlePrefix(productTitle, variantName) ||
+            domMeta?.option_value ||
+            variantName ||
+            sku;
+          const offerUrl = toAbsoluteUrlShared(
+            params.baseUrl,
+            typeof variantOffer?.url === "string"
+              ? variantOffer.url
+              : typeof variantProduct.url === "string"
+                ? variantProduct.url
+                : productUrl,
+          );
+          const price = normalizePrice(
+            variantOffer?.price ??
+              (variantOffer?.priceSpecification as any)?.price ??
+              (variantOffer?.priceSpecification as any)?.priceSpecification?.price ??
+              extracted.priceTexts[idx] ??
+              extracted.priceTexts[0],
+          );
+          const stock = stockFromAvailability(variantOffer?.availability);
+          const id = stableId(`${productUrl}|${sku}|${price}`);
+          const variantImageRaw = variantProduct.image;
+          const variantImageUrls = dedupeStringList([
+            ...resolveStructuredImageUrls(params.baseUrl, [variantImageRaw, variantOffer?.image]),
+            ...resolveStructuredImageUrls(params.baseUrl, [domMeta?.image_urls, domMeta?.image_url]),
+            ...productImageUrls,
+          ]);
+          const variantImageUrl = variantImageUrls[0] || imageUrl;
+
+          return {
+            id,
+            sku,
+            url: offerUrl,
+            option_name: domMeta?.option_name || "Variant",
+            option_value: optionValue,
+            price,
+            currency: "USD",
+            stock,
+            description: getMergedDescription({
+              title: productTitle,
+              overview:
+                (typeof variantProduct.description === "string" ? variantProduct.description : undefined) || officialText,
+              howToUse: howToUseText,
+              ingredientsAndSafety:
+                [ingredientsMarkdownText, ingredientsDisclaimerText].filter(Boolean).join("\n\n") || undefined,
+            }),
+            image_url: variantImageUrl,
+            image_urls: variantImageUrls,
+            ad_copy: generateMockAdCopy(productTitle, optionValue, price),
+          };
+        })
+      : offers.length > 0
+      ? offers.map((offer, idx) => {
+          const skuRaw =
+            (typeof offer.sku === "string" && offer.sku.trim()) ||
+            (typeof primaryProductObj?.sku === "string" && primaryProductObj.sku.trim()) ||
+            (typeof primaryProductObj?.mpn === "string" && primaryProductObj.mpn.trim()) ||
+            "";
+          const sku = skuRaw || `AUTO-${stableId(`${productUrl}|${idx}`)}`;
+
+          const domMeta = domMetaBySku.get(sku);
+
+          const offerUrl = (() => {
+            if (domMeta?.url_path) return toAbsoluteUrlShared(params.baseUrl, domMeta.url_path);
+            return toAbsoluteUrlShared(params.baseUrl, typeof offer.url === "string" ? offer.url : productUrl);
+          })();
+
+          const price = normalizePrice(
+            offer.price ??
+              (offer.priceSpecification as any)?.price ??
+              (offer.priceSpecification as any)?.priceSpecification?.price ??
+              domMeta?.price,
+          );
+          const stock = stockFromAvailability(offer.availability);
+          const optionValueFromOffer =
+            (typeof offer.name === "string" && offer.name.trim()) || (typeof offer.description === "string" && offer.description.trim());
+
+          const optionValue = optionValueFromOffer || domMeta?.option_value || sku;
+          const optionName = domMeta?.option_name || "Offer";
+
+          const id = stableId(`${productUrl}|${sku}|${price}`);
+          const ingredientsText = domMeta?.ingredients || ingredientsMarkdownText;
+          const ingredientsAndSafety = [ingredientsText, ingredientsDisclaimerText].filter(Boolean).join("\n\n") || undefined;
+          const description = getMergedDescription({
+            title: productTitle,
+            overview: officialText,
+            howToUse: howToUseText,
+            ingredientsAndSafety,
+          });
+          const adCopy = generateMockAdCopy(productTitle, optionValue, price);
+
+          const offerImageRaw = offer.image;
+          const offerImageUrls = dedupeStringList([
+            ...resolveStructuredImageUrls(params.baseUrl, [offerImageRaw, domMeta?.image_urls, domMeta?.image_url, imageRaw, extracted.imageCandidates]),
+            ...productImageUrls,
+          ]);
+          const offerImageUrl = offerImageUrls[0] || imageUrl;
+
+          return {
+            id,
+            sku,
+            url: offerUrl,
+            option_name: optionName,
+            option_value: optionValue,
+            price,
+            currency: "USD",
+            stock,
+            description,
+            image_url: offerImageUrl,
+            image_urls: offerImageUrls,
+            ad_copy: adCopy,
+          };
+        })
+      : [
+          {
+            id: stableId(productUrl),
+            sku: `AUTO-${stableId(productUrl).slice(0, 8)}`,
+            url: productUrl,
+            option_name: "Offer",
+            option_value: "Default",
+            price: normalizePrice(extracted.priceTexts[0]),
+            currency: "USD",
+            stock: "In Stock",
+            description: getMergedDescription({
+              title: productTitle,
+              overview: officialText,
+              howToUse: howToUseText,
+              ingredientsAndSafety:
+                [ingredientsMarkdownText, ingredientsDisclaimerText].filter(Boolean).join("\n\n") || undefined,
+            }),
+            image_url: imageUrl,
+            image_urls: productImageUrls,
+            ad_copy: generateMockAdCopy(productTitle, "Default", normalizePrice(extracted.priceTexts[0])),
+          },
+        ];
+
+  const finalProductImageUrls = dedupeStringList([
+    ...productImageUrls,
+    ...variants.flatMap((variant) => variant.image_urls),
+    ...variants.map((variant) => variant.image_url),
+  ]);
+  const finalProductImageUrl = finalProductImageUrls[0] || imageUrl;
+
+  if (params.verbose) {
+    if (productObj) {
+      params.log("data", "> Found JSON-LD 'Product' Schema");
+    } else if (productGroupObj) {
+      params.log("data", "> Found JSON-LD 'ProductGroup' Schema");
+    }
+    params.log("success", `> Extracted ${variants.length} offers/variants`);
+  }
+
+  return {
+    title: productTitle,
+    url: productUrl,
+    image_url: finalProductImageUrl,
+    image_urls: finalProductImageUrls,
+    variant_skus: dedupeStringList(variants.map((variant) => variant.sku)),
+    variants,
+  };
+}
+
 async function scrapeProductPage(params: {
   browser: Browser;
   url: string;
@@ -1577,546 +2193,41 @@ async function scrapeProductPage(params: {
       context: params.context,
       navigationTimeoutMs: params.navigationTimeoutMs,
     });
+    const prefetched = await fetchHtmlViaNativeRequest(params.url, params.diagnostics!);
+    if (prefetched.body) {
+      await page.setContent(injectBaseHref(prefetched.body, params.url), { waitUntil: "domcontentloaded" });
+      const prefetchedProduct = buildProductFromPageSignals({
+        extracted: await extractPageSignals(page),
+        pageLooksLikeProduct: looksLikeProductPageHtml(prefetched.body),
+        sourceUrl: params.url,
+        baseUrl: params.baseUrl,
+        verbose: params.verbose,
+        log: params.log,
+      });
+      if (prefetchedProduct) return prefetchedProduct;
+    }
+
     const visit = await gotoPageOrThrow(page, {
       url: params.url,
       baseUrl: params.baseUrl,
       context: params.context,
       diagnostics: params.diagnostics!,
     });
-    const pageLooksLikeProduct = looksLikeProductPageHtml(visit.content);
 
-    const extracted = await page.evaluate(() => {
-      const title =
-        document.querySelector("h1")?.textContent?.trim() ||
-        document.querySelector('meta[property="og:title"]')?.getAttribute("content")?.trim() ||
-        document.title ||
-        "";
-
-      const canonical =
-        (document.querySelector('link[rel="canonical"]') as HTMLLinkElement | null)?.href ||
-        document.querySelector('meta[property="og:url"]')?.getAttribute("content") ||
-        location.href;
-
-      const metaDescription =
-        document.querySelector('meta[name="description"]')?.getAttribute("content")?.trim() ||
-        document.querySelector('meta[property="og:description"]')?.getAttribute("content")?.trim() ||
-        "";
-
-      const productDetailsText = (() => {
-        const decodeHtmlText = (raw: string) => {
-          const container = document.createElement("div");
-          container.innerHTML = raw;
-          return container.textContent?.trim() || "";
-        };
-
-        const normalize = (raw: string) =>
-          raw
-            .replace(/\r\n/g, "\n")
-            .replace(/[ \t]+/g, " ")
-            .replace(/\n[ \t]+/g, "\n")
-            .replace(/\n{3,}/g, "\n\n")
-            .trim();
-
-        const hiddenOverview = document.getElementById("overview-about-text");
-        const hiddenRaw = hiddenOverview?.getAttribute("value")?.trim() || "";
-        if (hiddenRaw) {
-          try {
-            const decoded = decodeURIComponent(hiddenRaw);
-            const text = normalize(decodeHtmlText(decoded));
-            if (text) return text;
-          } catch {
-            const text = normalize(decodeHtmlText(hiddenRaw));
-            if (text) return text;
-          }
-        }
-
-        const moreAbout = document.querySelector(".more-about-product-content");
-        if (moreAbout instanceof HTMLElement) {
-          const text = normalize(moreAbout.innerText || moreAbout.textContent || "");
-          if (text) return text;
-        }
-
-        return "";
-      })();
-
-      const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
-        .map((s) => s.textContent || "")
-        .filter(Boolean);
-
-      const priceSelectors = [
-        '[itemprop="price"]',
-        '[class*="price"]',
-        '[data-price]',
-        'meta[property="og:price:amount"]',
-        'meta[property="product:price:amount"]',
-      ];
-      const priceTexts: string[] = [];
-      for (const selector of priceSelectors) {
-        const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 8);
-        for (const node of nodes) {
-          const text =
-            (node as HTMLElement).getAttribute?.("content") ||
-            (node as HTMLElement).getAttribute?.("data-price") ||
-            (node as HTMLElement).textContent ||
-            "";
-          const trimmed = text.trim();
-          if (trimmed) priceTexts.push(trimmed);
-        }
-      }
-
-      const imageCandidates = (() => {
-        const selectors = [
-          "img.zoom-newPDPImage",
-          "[zoom-src]",
-          "[data-zoom-src]",
-          "[data-zoom-image]",
-          ".gallery-top-product img",
-          ".gallery-thumbs-new-pdp img",
-          '[class*="gallery"] img',
-          '[class*="swiper"] img',
-          'meta[property="og:image"]',
-          'meta[name="twitter:image"]',
-          'meta[itemprop="image"]',
-          "img[data-src]",
-          "img[srcset]",
-          "img[src]",
-        ];
-        const invalidUrlRe =
-          /(placeholder\.svg|\/favicon|\/apple-touch-icon|\/logo(?:[._/-]|$)|\/sprite(?:[._/-]|$)|tracking|teads\.tv|\/MenuBanner\/|\/Library-Sites-)/i;
-        const seen = new Set<string>();
-        const out: string[] = [];
-
-        const push = (raw: string | null | undefined) => {
-          const trimmed = typeof raw === "string" ? raw.trim() : "";
-          if (!trimmed) return;
-
-          const candidates = trimmed
-            .split(",")
-            .map((part) => part.trim().split(/\s+/)[0] || "")
-            .filter(Boolean);
-
-          for (const candidate of candidates) {
-            try {
-              const absolute = new URL(candidate, location.href).toString();
-              if (!/^https?:\/\//i.test(absolute)) continue;
-              if (invalidUrlRe.test(absolute)) continue;
-              if (seen.has(absolute)) continue;
-              seen.add(absolute);
-              out.push(absolute);
-            } catch {
-              // ignore invalid image candidates
-            }
-          }
-        };
-
-        for (const selector of selectors) {
-          const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 24);
-          for (const node of nodes) {
-            if (node instanceof HTMLMetaElement) {
-              push(node.content);
-              continue;
-            }
-
-            const el = node as HTMLElement;
-            push(el.getAttribute("data-src"));
-            push(el.getAttribute("zoom-src"));
-            push(el.getAttribute("data-zoom-src"));
-            push(el.getAttribute("data-zoom-image"));
-            push(el.getAttribute("data-large-image"));
-            push(el.getAttribute("srcset"));
-            push(el.getAttribute("src"));
-          }
-
-          if (out.length >= 8) break;
-        }
-
-        return out;
-      })();
-
-      const domVariants = (() => {
-        const el = document.querySelector("[data-product-skus-value]") as HTMLElement | null;
-        const raw = el?.getAttribute("data-product-skus-value") || "";
-        if (!raw) return [] as Array<{
-          sku: string;
-          option_name?: string;
-          option_value?: string;
-          url_path?: string;
-          image_url?: string;
-          image_urls?: string[];
-          price?: string;
-          ingredients?: string;
-        }>;
-
-        const textarea = document.createElement("textarea");
-        textarea.innerHTML = raw;
-        const decoded = textarea.value;
-
-        try {
-          const parsed = JSON.parse(decoded) as unknown;
-          if (!Array.isArray(parsed)) return [];
-
-          return parsed
-            .map((item) => {
-              const obj = item as Record<string, unknown>;
-              const sku =
-                (typeof obj.id === "string" && obj.id.trim()) ||
-                (typeof obj.sku === "string" && obj.sku.trim()) ||
-                "";
-
-              const size = typeof obj.size === "string" ? obj.size.trim() : "";
-              const shades = Array.isArray(obj.shades) ? obj.shades : [];
-              const firstShade = shades[0] as Record<string, unknown> | undefined;
-              const shadeTitle = typeof firstShade?.title === "string" ? firstShade.title.trim() : "";
-              const multiShade = typeof obj.multi_shade_description === "string" ? obj.multi_shade_description.trim() : "";
-
-              const optionName = size ? "Size" : shadeTitle || multiShade ? "Shade" : undefined;
-              const optionValue = size || shadeTitle || multiShade || undefined;
-
-              const urlPath = typeof obj.localized_path === "string" ? obj.localized_path.trim() : "";
-              const ingredients = typeof obj.ingredients === "string" ? obj.ingredients.trim() : "";
-
-              const images = Array.isArray(obj.images) ? obj.images : [];
-              const imageUrls = images
-                .map((image) => {
-                  const next = image as Record<string, unknown>;
-                  return typeof next?.src === "string" ? next.src.trim() : "";
-                })
-                .filter(Boolean);
-              const imageUrl = imageUrls[0] || "";
-
-              const price =
-                (typeof obj.price_with_discount === "number" && Number.isFinite(obj.price_with_discount)
-                  ? obj.price_with_discount.toFixed(2)
-                  : "") ||
-                (typeof obj.price === "number" && Number.isFinite(obj.price) ? obj.price.toFixed(2) : "") ||
-                (typeof obj.price_with_discount === "string" && obj.price_with_discount.trim()) ||
-                (typeof obj.price === "string" && obj.price.trim()) ||
-                "";
-
-              return {
-                sku,
-                option_name: optionName,
-                option_value: optionValue,
-                url_path: urlPath || undefined,
-                image_url: imageUrl || undefined,
-                image_urls: imageUrls.length > 0 ? imageUrls : undefined,
-                price: price || undefined,
-                ingredients: ingredients || undefined,
-              };
-            })
-            .filter((v) => Boolean(v.sku));
-        } catch {
-          return [];
-        }
-      })();
-
-      let howToUseContent = document.getElementById("accordion-toggle-How to Use");
-      let ingredientsContent = document.getElementById("accordion-toggle-Ingredients and Safety");
-
-      if (!howToUseContent || !ingredientsContent) {
-        const buttons = Array.from(document.querySelectorAll("button[aria-controls]")) as HTMLButtonElement[];
-        for (const button of buttons) {
-          const titleText = (button.getAttribute("title") || button.textContent || "").trim().toLowerCase();
-          if (!titleText) continue;
-
-          const targetId = button.getAttribute("aria-controls") || "";
-          if (!targetId) continue;
-
-          if (!howToUseContent && titleText === "how to use") {
-            howToUseContent = document.getElementById(targetId);
-          } else if (!ingredientsContent && (titleText === "ingredients and safety" || titleText === "ingredients & safety")) {
-            ingredientsContent = document.getElementById(targetId);
-          }
-
-          if (howToUseContent && ingredientsContent) break;
-        }
-      }
-
-      const howToUseText = howToUseContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
-      const ingredientsMarkdownText = ingredientsContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
-      const ingredientsDisclaimerText =
-        ingredientsContent?.querySelector(".product-details-accordions-ingredients-disclaimer")?.textContent?.trim() || undefined;
-
-      return {
-        title,
-        canonical,
-        metaDescription,
-        priceTexts,
-        imageCandidates,
-        scripts,
-        domVariants,
-        productDetailsText,
-        howToUseText,
-        ingredientsMarkdownText,
-        ingredientsDisclaimerText,
-      };
-    });
-
-    const objects: Record<string, unknown>[] = [];
-    for (const raw of extracted.scripts) {
-      try {
-        const parsed = JSON.parse(raw) as unknown;
-        for (const obj of normalizeJsonLdValue(parsed)) {
-          if (obj && typeof obj === "object") objects.push(obj as Record<string, unknown>);
-        }
-      } catch {
-        // ignore invalid JSON-LD blocks
-      }
-    }
-
-    const productObj = pickBestJsonLdObjectForPage({
-      candidates: objects.filter((o) => isType(o, "Product")),
-      pageUrl: params.url,
-      canonicalUrl: extracted.canonical,
+    return buildProductFromPageSignals({
+      extracted: await extractPageSignals(page),
+      pageLooksLikeProduct: looksLikeProductPageHtml(visit.content),
+      sourceUrl: params.url,
       baseUrl: params.baseUrl,
+      verbose: params.verbose,
+      log: params.log,
     });
-    const productGroupObj = pickBestJsonLdObjectForPage({
-      candidates: objects.filter((o) => isType(o, "ProductGroup")),
-      pageUrl: params.url,
-      canonicalUrl: extracted.canonical,
-      baseUrl: params.baseUrl,
-    });
-    const variantProducts = normalizeJsonLdObjects(productGroupObj?.hasVariant).filter((o) => isType(o, "Product"));
-    const primaryProductObj =
-      productObj ||
-      pickBestJsonLdObjectForPage({
-        candidates: variantProducts,
-        pageUrl: params.url,
-        canonicalUrl: extracted.canonical,
-        baseUrl: params.baseUrl,
-      }) ||
-      productGroupObj ||
-      null;
-    if (!productObj && params.verbose) {
-      params.log("warn", "> No JSON-LD Product schema found. Falling back to title/meta/price extraction.");
-    }
-    if (!primaryProductObj && !pageLooksLikeProduct) {
-      if (params.verbose) {
-        params.log("warn", `> Skipping non-product candidate: ${params.url}`);
-      }
-      return null;
-    }
-
-    const productTitle = (
-      typeof productGroupObj?.name === "string" ? productGroupObj.name : typeof primaryProductObj?.name === "string" ? primaryProductObj.name : extracted.title
-    ).trim() || extracted.title;
-    const productUrl = canonicalizeUrlShared(
-      toAbsoluteUrlShared(
-        params.baseUrl,
-        extracted.canonical || (typeof primaryProductObj?.url === "string" ? primaryProductObj.url : params.url),
-      ),
-      params.baseUrl,
-    );
-
-    const imageRaw = primaryProductObj?.image ?? productGroupObj?.image;
-    const productImageUrls = dedupeStringList([
-      ...resolveStructuredImageUrls(params.baseUrl, [imageRaw, productGroupObj?.image, extracted.imageCandidates]),
-      ...variantProducts.flatMap((variantProduct) => resolveStructuredImageUrls(params.baseUrl, variantProduct.image)),
-    ]);
-    const imageUrl = productImageUrls[0] || "";
-
-    const officialText = choosePreferredProductOverview({
-      structured:
-        (typeof primaryProductObj?.description === "string" ? primaryProductObj.description : undefined) ||
-        (typeof productGroupObj?.description === "string" ? productGroupObj.description : undefined),
-      detailed: typeof extracted.productDetailsText === "string" ? extracted.productDetailsText : undefined,
-      meta: extracted.metaDescription,
-    });
-
-    const offersRaw = primaryProductObj?.offers;
-    const offers = normalizeJsonLdOffers(offersRaw);
-
-    const domMetaBySku = new Map<string, DomVariantMeta>();
-    for (const meta of extracted.domVariants || []) {
-      if (!meta.sku) continue;
-      domMetaBySku.set(meta.sku, meta);
-    }
-
-    const howToUseText = typeof extracted.howToUseText === "string" ? extracted.howToUseText.trim() : undefined;
-    const ingredientsMarkdownText =
-      typeof extracted.ingredientsMarkdownText === "string" ? extracted.ingredientsMarkdownText.trim() : undefined;
-    const ingredientsDisclaimerText =
-      typeof extracted.ingredientsDisclaimerText === "string" ? extracted.ingredientsDisclaimerText.trim() : undefined;
-
-    const variants: ExtractedVariant[] =
-      variantProducts.length > 1
-        ? variantProducts.map((variantProduct, idx) => {
-            const variantOffer = normalizeJsonLdOffers(variantProduct.offers)[0];
-            const skuRaw =
-              (typeof variantProduct.sku === "string" && variantProduct.sku.trim()) ||
-              (typeof variantProduct.mpn === "string" && variantProduct.mpn.trim()) ||
-              (typeof variantOffer?.sku === "string" && variantOffer.sku.trim()) ||
-              "";
-            const sku = skuRaw || `AUTO-${stableId(`${productUrl}|${idx}`)}`;
-            const domMeta = domMetaBySku.get(sku);
-            const variantName = typeof variantProduct.name === "string" ? variantProduct.name.trim() : "";
-            const optionValue =
-              (typeof variantProduct.color === "string" && variantProduct.color.trim()) ||
-              stripProductTitlePrefix(productTitle, variantName) ||
-              domMeta?.option_value ||
-              variantName ||
-              sku;
-            const offerUrl = toAbsoluteUrlShared(
-              params.baseUrl,
-              typeof variantOffer?.url === "string"
-                ? variantOffer.url
-                : typeof variantProduct.url === "string"
-                  ? variantProduct.url
-                  : productUrl,
-            );
-            const price = normalizePrice(
-              variantOffer?.price ??
-                (variantOffer?.priceSpecification as any)?.price ??
-                (variantOffer?.priceSpecification as any)?.priceSpecification?.price ??
-                extracted.priceTexts[idx] ??
-                extracted.priceTexts[0],
-            );
-            const stock = stockFromAvailability(variantOffer?.availability);
-            const id = stableId(`${productUrl}|${sku}|${price}`);
-            const variantImageRaw = variantProduct.image;
-            const variantImageUrls = dedupeStringList([
-              ...resolveStructuredImageUrls(params.baseUrl, [variantImageRaw, variantOffer?.image]),
-              ...resolveStructuredImageUrls(params.baseUrl, [domMeta?.image_urls, domMeta?.image_url]),
-              ...productImageUrls,
-            ]);
-            const variantImageUrl = variantImageUrls[0] || imageUrl;
-
-            return {
-              id,
-              sku,
-              url: offerUrl,
-              option_name: domMeta?.option_name || "Variant",
-              option_value: optionValue,
-              price,
-              currency: "USD",
-              stock,
-              description: getMergedDescription({
-                title: productTitle,
-                overview:
-                  (typeof variantProduct.description === "string" ? variantProduct.description : undefined) || officialText,
-                howToUse: howToUseText,
-                ingredientsAndSafety:
-                  [ingredientsMarkdownText, ingredientsDisclaimerText].filter(Boolean).join("\n\n") || undefined,
-              }),
-              image_url: variantImageUrl,
-              image_urls: variantImageUrls,
-              ad_copy: generateMockAdCopy(productTitle, optionValue, price),
-            };
-          })
-        : offers.length > 0
-        ? offers.map((offer, idx) => {
-            const skuRaw =
-              (typeof offer.sku === "string" && offer.sku.trim()) ||
-              (typeof primaryProductObj?.sku === "string" && primaryProductObj.sku.trim()) ||
-              (typeof primaryProductObj?.mpn === "string" && primaryProductObj.mpn.trim()) ||
-              "";
-            const sku = skuRaw || `AUTO-${stableId(`${productUrl}|${idx}`)}`;
-
-            const domMeta = domMetaBySku.get(sku);
-
-            const offerUrl = (() => {
-              if (domMeta?.url_path) return toAbsoluteUrlShared(params.baseUrl, domMeta.url_path);
-              return toAbsoluteUrlShared(params.baseUrl, typeof offer.url === "string" ? offer.url : productUrl);
-            })();
-
-            const price = normalizePrice(
-              offer.price ??
-                (offer.priceSpecification as any)?.price ??
-                (offer.priceSpecification as any)?.priceSpecification?.price ??
-                domMeta?.price,
-            );
-            const stock = stockFromAvailability(offer.availability);
-            const optionValueFromOffer =
-              (typeof offer.name === "string" && offer.name.trim()) || (typeof offer.description === "string" && offer.description.trim());
-
-            const optionValue = optionValueFromOffer || domMeta?.option_value || sku;
-            const optionName = domMeta?.option_name || "Offer";
-
-            const id = stableId(`${productUrl}|${sku}|${price}`);
-            const ingredientsText = domMeta?.ingredients || ingredientsMarkdownText;
-            const ingredientsAndSafety = [ingredientsText, ingredientsDisclaimerText].filter(Boolean).join("\n\n") || undefined;
-            const description = getMergedDescription({
-              title: productTitle,
-              overview: officialText,
-              howToUse: howToUseText,
-              ingredientsAndSafety,
-            });
-            const adCopy = generateMockAdCopy(productTitle, optionValue, price);
-
-            const offerImageRaw = offer.image;
-            const offerImageUrls = dedupeStringList([
-              ...resolveStructuredImageUrls(params.baseUrl, [offerImageRaw, domMeta?.image_urls, domMeta?.image_url, imageRaw, extracted.imageCandidates]),
-              ...productImageUrls,
-            ]);
-            const offerImageUrl = offerImageUrls[0] || imageUrl;
-
-            return {
-              id,
-              sku,
-              url: offerUrl,
-              option_name: optionName,
-              option_value: optionValue,
-              price,
-              currency: "USD",
-              stock,
-              description,
-              image_url: offerImageUrl,
-              image_urls: offerImageUrls,
-              ad_copy: adCopy,
-            };
-          })
-        : [
-            {
-              id: stableId(productUrl),
-              sku: `AUTO-${stableId(productUrl).slice(0, 8)}`,
-              url: productUrl,
-              option_name: "Offer",
-              option_value: "Default",
-              price: normalizePrice(extracted.priceTexts[0]),
-              currency: "USD",
-              stock: "In Stock",
-              description: getMergedDescription({
-                title: productTitle,
-                overview: officialText,
-                howToUse: howToUseText,
-                ingredientsAndSafety:
-                  [ingredientsMarkdownText, ingredientsDisclaimerText].filter(Boolean).join("\n\n") || undefined,
-              }),
-              image_url: imageUrl,
-              image_urls: productImageUrls,
-              ad_copy: generateMockAdCopy(productTitle, "Default", normalizePrice(extracted.priceTexts[0])),
-            },
-          ];
-
-    const finalProductImageUrls = dedupeStringList([
-      ...productImageUrls,
-      ...variants.flatMap((variant) => variant.image_urls),
-      ...variants.map((variant) => variant.image_url),
-    ]);
-    const finalProductImageUrl = finalProductImageUrls[0] || imageUrl;
-
-    if (params.verbose) {
-      if (productObj) {
-        params.log("data", "> Found JSON-LD 'Product' Schema");
-      } else if (productGroupObj) {
-        params.log("data", "> Found JSON-LD 'ProductGroup' Schema");
-      }
-      params.log("success", `> Extracted ${variants.length} offers/variants`);
-    }
-
-    return {
-      title: productTitle,
-      url: productUrl,
-      image_url: finalProductImageUrl,
-      image_urls: finalProductImageUrls,
-      variant_skus: dedupeStringList(variants.map((variant) => variant.sku)),
-      variants,
-    };
   } catch (err) {
     if (err instanceof BotChallengeError) {
       throw err;
     }
-    params.log("warn", `Failed to scrape ${params.url}`);
+    const message = err instanceof Error ? err.message : String(err);
+    params.log("warn", `Failed to scrape ${params.url}: ${message}`);
     return null;
   } finally {
     await page.close().catch(() => undefined);

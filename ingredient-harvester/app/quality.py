@@ -64,6 +64,13 @@ THIRD_PARTY_HOST_MARKERS = (
     "skincarisma.com",
 )
 
+OFFICIAL_HOST_ALLOWLIST = {
+    "olehenriksen": ("olehenriksen.com",),
+    "dermalogica": ("dermalogica.com",),
+    "pixi": ("pixibeauty.com",),
+    "pixi beauty": ("pixibeauty.com",),
+}
+
 
 def normalize_nonempty_string(value: Any) -> str:
     return str(value or "").strip()
@@ -104,6 +111,39 @@ def _is_review_worthy_normalization_note(note: str) -> bool:
     if not normalized:
         return False
     return bool(REVIEW_WORTHY_NORMALIZATION_RE.search(normalized))
+
+
+def _normalized_host(source_ref: str) -> str:
+    normalized_source_ref = normalize_url_like(source_ref)
+    if not normalized_source_ref:
+        return ""
+    try:
+        return urlparse(normalized_source_ref).netloc.lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _official_hosts_for_brand(brand: str) -> tuple[str, ...]:
+    normalized_brand = normalize_nonempty_string(brand).lower()
+    if not normalized_brand:
+        return ()
+
+    matches: list[str] = []
+    for brand_key, hosts in OFFICIAL_HOST_ALLOWLIST.items():
+        if brand_key in normalized_brand:
+            matches.extend(hosts)
+    return tuple(dict.fromkeys(matches))
+
+
+def _host_matches_allowlist(host: str, allowed_hosts: tuple[str, ...]) -> bool:
+    normalized_host = normalize_nonempty_string(host).lower()
+    if not normalized_host:
+        return False
+    for allowed_host in allowed_hosts:
+        normalized_allowed = normalize_nonempty_string(allowed_host).lower()
+        if normalized_host == normalized_allowed or normalized_host.endswith(f".{normalized_allowed}"):
+            return True
+    return False
 
 
 def _tokenize(text: str) -> set[str]:
@@ -192,6 +232,8 @@ def build_audit_findings(
 ) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     normalized_source_type = _effective_source_type(source_type, source_ref)
+    source_host = _normalized_host(source_ref)
+    official_hosts = _official_hosts_for_brand(brand)
 
     def add(
         anomaly_type: str,
@@ -227,6 +269,22 @@ def build_audit_findings(
             "blocker",
             source_match_evidence,
             "Review the source URL and update it to the matching product page or approved source document.",
+            False,
+        )
+
+    if official_hosts and source_host and not _host_matches_allowlist(source_host, official_hosts):
+        severity = "blocker" if normalized_source_type == "official" else "review"
+        add(
+            "source_host_not_allowlisted",
+            severity,
+            {
+                **source_match_evidence,
+                "source_ref": normalize_url_like(source_ref),
+                "source_host": source_host,
+                "allowed_hosts": list(official_hosts),
+                "source_type": normalized_source_type or normalize_nonempty_string(source_type).lower(),
+            },
+            "Use a source hosted on the brand's official domain before approval, or keep this row in review if only third-party evidence is available.",
             False,
         )
 

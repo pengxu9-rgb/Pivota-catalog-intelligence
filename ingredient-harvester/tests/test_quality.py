@@ -56,21 +56,34 @@ def test_build_audit_findings_flags_non_official_sources_for_review_even_when_to
         duplicate_conflict=None,
     )
 
-    assert findings == [
-        {
-            "row_id": "row_2",
-            "import_id": "imp_1",
-            "anomaly_type": "non_official_source_requires_review",
-            "severity": "review",
-            "evidence": {
-                "source_ref": "https://www.cosdna.com/eng/barrier-booster-orange-ferment-vitamin-c-essence.html",
-                "source_type": "thirdparty",
-                "source_match_status": "match",
-            },
-            "recommended_action": "Review non-official ingredient sources before approval, or replace them with an official product source.",
-            "auto_fixable": False,
-        }
-    ]
+    anomaly_types = {finding["anomaly_type"]: finding for finding in findings}
+    assert anomaly_types["source_host_not_allowlisted"] == {
+        "row_id": "row_2",
+        "import_id": "imp_1",
+        "anomaly_type": "source_host_not_allowlisted",
+        "severity": "review",
+        "evidence": {
+            "source_ref": "https://www.cosdna.com/eng/barrier-booster-orange-ferment-vitamin-c-essence.html",
+            "source_host": "www.cosdna.com",
+            "allowed_hosts": ["olehenriksen.com"],
+            "source_type": "thirdparty",
+        },
+        "recommended_action": "Use a source hosted on the brand's official domain before approval, or keep this row in review if only third-party evidence is available.",
+        "auto_fixable": False,
+    }
+    assert anomaly_types["non_official_source_requires_review"] == {
+        "row_id": "row_2",
+        "import_id": "imp_1",
+        "anomaly_type": "non_official_source_requires_review",
+        "severity": "review",
+        "evidence": {
+            "source_ref": "https://www.cosdna.com/eng/barrier-booster-orange-ferment-vitamin-c-essence.html",
+            "source_type": "thirdparty",
+            "source_match_status": "match",
+        },
+        "recommended_action": "Review non-official ingredient sources before approval, or replace them with an official product source.",
+        "auto_fixable": False,
+    }
 
 
 def test_build_audit_findings_reclassifies_retailer_hosts_even_if_source_type_is_stale_official() -> None:
@@ -93,18 +106,69 @@ def test_build_audit_findings_reclassifies_retailer_hosts_even_if_source_type_is
         duplicate_conflict=None,
     )
 
+    anomaly_types = {finding["anomaly_type"]: finding for finding in findings}
+    assert anomaly_types["source_host_not_allowlisted"] == {
+        "row_id": "row_3",
+        "import_id": "imp_1",
+        "anomaly_type": "source_host_not_allowlisted",
+        "severity": "review",
+        "evidence": {
+            "source_ref": "https://www.strawberrynet.com/en/ole-henriksen-transform-dewtopia-20-acid-night-treatment-30ml-1oz/270695",
+            "source_host": "www.strawberrynet.com",
+            "allowed_hosts": ["olehenriksen.com"],
+            "source_type": "retailer",
+        },
+        "recommended_action": "Use a source hosted on the brand's official domain before approval, or keep this row in review if only third-party evidence is available.",
+        "auto_fixable": False,
+    }
+    assert anomaly_types["non_official_source_requires_review"] == {
+        "row_id": "row_3",
+        "import_id": "imp_1",
+        "anomaly_type": "non_official_source_requires_review",
+        "severity": "review",
+        "evidence": {
+            "source_ref": "https://www.strawberrynet.com/en/ole-henriksen-transform-dewtopia-20-acid-night-treatment-30ml-1oz/270695",
+            "source_type": "retailer",
+            "source_match_status": "match",
+        },
+        "recommended_action": "Review non-official ingredient sources before approval, or replace them with an official product source.",
+        "auto_fixable": False,
+    }
+
+
+def test_build_audit_findings_blocks_official_rows_on_non_allowlisted_hosts() -> None:
+    findings = build_audit_findings(
+        row_id="row_4",
+        import_id="imp_1",
+        brand="Dermalogica",
+        product_name="smart response serum",
+        source_ref="https://www.skinsafeproducts.com/dermalogica-smart-response-serum-1-0-fl-oz",
+        source_type="Official",
+        raw_ingredient_text="Ingredients: Water, Glycerin, Tocopherol",
+        cleaned_text="Water, Glycerin, Tocopherol",
+        parse_status="OK",
+        parse_confidence=0.99,
+        inci_list="Aqua; Glycerin; Tocopherol",
+        normalization_notes=[],
+        source_match_status="match",
+        source_match_evidence={"source_ref": "https://www.skinsafeproducts.com/dermalogica-smart-response-serum-1-0-fl-oz"},
+        ingredient_signal_type="labeled_ingredients",
+        duplicate_conflict=None,
+    )
+
     assert findings == [
         {
-            "row_id": "row_3",
+            "row_id": "row_4",
             "import_id": "imp_1",
-            "anomaly_type": "non_official_source_requires_review",
-            "severity": "review",
+            "anomaly_type": "source_host_not_allowlisted",
+            "severity": "blocker",
             "evidence": {
-                "source_ref": "https://www.strawberrynet.com/en/ole-henriksen-transform-dewtopia-20-acid-night-treatment-30ml-1oz/270695",
-                "source_type": "retailer",
-                "source_match_status": "match",
+                "source_ref": "https://www.skinsafeproducts.com/dermalogica-smart-response-serum-1-0-fl-oz",
+                "source_host": "www.skinsafeproducts.com",
+                "allowed_hosts": ["dermalogica.com"],
+                "source_type": "official",
             },
-            "recommended_action": "Review non-official ingredient sources before approval, or replace them with an official product source.",
+            "recommended_action": "Use a source hosted on the brand's official domain before approval, or keep this row in review if only third-party evidence is available.",
             "auto_fixable": False,
         }
     ]

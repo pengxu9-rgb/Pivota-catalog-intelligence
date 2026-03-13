@@ -75,68 +75,88 @@ class SourceHarvester:
     def process(self, *, market: str, brand: str, product_name: str, preferred_urls: Optional[list[str]] = None) -> HarvestOutcome:
         query = build_query(market, brand, product_name)
         official_hosts = official_hosts_for_brand(brand)
-        official_search_urls: list[str] = []
-        for host in official_hosts:
-            official_search_urls.extend(self.search_engine.search(f"{query} site:{host}", top_k=3))
-        search_urls = self.search_engine.search(query, top_k=3)
         preferred = [str(url or "").strip() for url in (preferred_urls or []) if str(url or "").strip()]
-        urls = list(dict.fromkeys(preferred + official_search_urls + search_urls))
         debug: dict[str, Any] = {
             "query": query,
             "preferred_urls": preferred,
             "official_hosts": list(official_hosts),
-            "urls": urls,
+            "urls": list(preferred),
             "attempts": [],
         }
 
         best_pending: dict[str, Any] | None = None
         best_rank: float = -1.0
 
-        for url in urls[:3]:
+        def attempt_urls(urls: list[str]) -> Optional[HarvestOutcome]:
+            nonlocal best_pending
+            nonlocal best_rank
             try:
-                fetched = fetch_html(url)
-                if fetched.status_code >= 400:
-                    debug["attempts"].append({"url": url, "error": f"http_{fetched.status_code}"})
-                    continue
-                extracted = extract_ingredients(fetched.html, market=market)
-                if not extracted:
-                    debug["attempts"].append({"url": url, "error": "no_extract"})
-                    continue
+                for url in urls[:3]:
+                    fetched = fetch_html(url)
+                    if fetched.status_code >= 400:
+                        debug["attempts"].append({"url": url, "error": f"http_{fetched.status_code}"})
+                        continue
+                    extracted = extract_ingredients(fetched.html, market=market)
+                    if not extracted:
+                        debug["attempts"].append({"url": url, "error": "no_extract"})
+                        continue
 
-                confidence = float(extracted.score)
-                verified = bool(extracted.verified_in_dom)
-                debug["attempts"].append(
-                    {
-                        "url": fetched.url,
-                        "score": confidence,
-                        "verified": verified,
-                        "hint": extracted.debug_hint,
-                    }
-                )
-                if verified and confidence >= 0.8:
-                    return HarvestOutcome(
-                        status="OK",
-                        confidence=min(1.0, confidence),
-                        raw_ingredient_text=extracted.text,
-                        source_ref=fetched.url,
-                        source_type=classify_source_type(fetched.url),
-                        debug={**debug, "picked": fetched.url, "hint": extracted.debug_hint},
+                    confidence = float(extracted.score)
+                    verified = bool(extracted.verified_in_dom)
+                    debug["attempts"].append(
+                        {
+                            "url": fetched.url,
+                            "score": confidence,
+                            "verified": verified,
+                            "hint": extracted.debug_hint,
+                        }
                     )
+                    if verified and confidence >= 0.8:
+                        return HarvestOutcome(
+                            status="OK",
+                            confidence=min(1.0, confidence),
+                            raw_ingredient_text=extracted.text,
+                            source_ref=fetched.url,
+                            source_type=classify_source_type(fetched.url),
+                            debug={**debug, "picked": fetched.url, "hint": extracted.debug_hint},
+                        )
 
-                # Extracted something but not fully trusted; keep searching other URLs and pick best at end.
-                rank = confidence + (0.05 if verified else 0.0)
-                if rank > best_rank:
-                    best_rank = rank
-                    best_pending = {
-                        "confidence": confidence,
-                        "verified": verified,
-                        "text": extracted.text,
-                        "url": fetched.url,
-                        "hint": extracted.debug_hint,
-                    }
+                    rank = confidence + (0.05 if verified else 0.0)
+                    if rank > best_rank:
+                        best_rank = rank
+                        best_pending = {
+                            "confidence": confidence,
+                            "verified": verified,
+                            "text": extracted.text,
+                            "url": fetched.url,
+                            "hint": extracted.debug_hint,
+                        }
             except Exception as exc:  # noqa: BLE001
-                debug["attempts"].append({"url": url, "error": str(exc)[:200]})
-                continue
+                debug["attempts"].append({"url": urls[0] if urls else "", "error": str(exc)[:200]})
+            return None
+
+        preferred_result = attempt_urls(preferred)
+        if preferred_result is not None:
+            return preferred_result
+
+        official_search_urls: list[str] = []
+        for host in official_hosts:
+            try:
+                official_search_urls.extend(self.search_engine.search(f"{query} site:{host}", top_k=3))
+            except Exception as exc:  # noqa: BLE001
+                debug["attempts"].append({"url": f"search:site:{host}", "error": str(exc)[:200]})
+
+        search_urls: list[str] = []
+        try:
+            search_urls = self.search_engine.search(query, top_k=3)
+        except Exception as exc:  # noqa: BLE001
+            debug["attempts"].append({"url": "search:generic", "error": str(exc)[:200]})
+
+        urls = list(dict.fromkeys(official_search_urls + search_urls))
+        debug["urls"] = list(dict.fromkeys(preferred + urls))
+        searched_result = attempt_urls(urls)
+        if searched_result is not None:
+            return searched_result
 
         if best_pending is not None:
             confidence = float(best_pending["confidence"])

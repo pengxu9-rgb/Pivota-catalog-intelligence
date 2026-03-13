@@ -126,6 +126,32 @@ def test_harvester_searches_official_domains_before_generic_results(monkeypatch)
     assert calls[0] == "https://dermalogica.com/products/smart-response-serum"
 
 
+def test_harvester_returns_preferred_pending_when_search_fails(monkeypatch) -> None:
+    from app.harvester import fetch as fetch_mod
+    from app.harvester import source_harvester as sh_mod
+
+    html_pending = "<html><body><h2>Ingredients</h2><div>On-the-Glow BASE gives skin a soft-focus finish and uses ceramide NP, fruit oils, glycerin, squalane, tocopherol.</div></body></html>"
+
+    def fake_fetch(url: str):
+        return fetch_mod.FetchResult(url=url, status_code=200, html=html_pending, content_type="text/html")
+
+    class FailingSearch:
+        def search(self, query: str, *, top_k: int = 3) -> list[str]:
+            raise RuntimeError("serper 400")
+
+    monkeypatch.setattr(sh_mod, "fetch_html", fake_fetch)
+
+    h = SourceHarvester(search_engine=FailingSearch())
+    out = h.process(
+        market="US",
+        brand="Pixi Beauty",
+        product_name="On-the-Glow BASE - Porcelain",
+        preferred_urls=["https://pixibeauty.com/products/on-the-glow-base"],
+    )
+    assert out.status == "PENDING"
+    assert out.source_ref == "https://pixibeauty.com/products/on-the-glow-base"
+
+
 def test_classify_source_type_marks_retailers_and_third_party_domains() -> None:
     assert classify_source_type("https://www.strawberrynet.com/en/ole-henriksen/product") == "Retailer"
     assert classify_source_type("https://incidecoder.com/products/dermalogica-smart-response-serum") == "ThirdParty"

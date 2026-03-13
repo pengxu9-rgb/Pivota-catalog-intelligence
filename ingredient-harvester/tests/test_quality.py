@@ -73,6 +73,43 @@ def test_build_audit_findings_flags_non_official_sources_for_review_even_when_to
     ]
 
 
+def test_build_audit_findings_reclassifies_retailer_hosts_even_if_source_type_is_stale_official() -> None:
+    findings = build_audit_findings(
+        row_id="row_3",
+        import_id="imp_1",
+        brand="Olehenriksen",
+        product_name="Dewtopia 20% Acid Night Treatment",
+        source_ref="https://www.strawberrynet.com/en/ole-henriksen-transform-dewtopia-20-acid-night-treatment-30ml-1oz/270695",
+        source_type="Official",
+        raw_ingredient_text="Ingredients: Water, Glycolic Acid",
+        cleaned_text="Water, Glycolic Acid",
+        parse_status="OK",
+        parse_confidence=0.98,
+        inci_list="Aqua; Glycolic Acid",
+        normalization_notes=[],
+        source_match_status="match",
+        source_match_evidence={"source_ref": "https://www.strawberrynet.com/en/ole-henriksen-transform-dewtopia-20-acid-night-treatment-30ml-1oz/270695"},
+        ingredient_signal_type="labeled_ingredients",
+        duplicate_conflict=None,
+    )
+
+    assert findings == [
+        {
+            "row_id": "row_3",
+            "import_id": "imp_1",
+            "anomaly_type": "non_official_source_requires_review",
+            "severity": "review",
+            "evidence": {
+                "source_ref": "https://www.strawberrynet.com/en/ole-henriksen-transform-dewtopia-20-acid-night-treatment-30ml-1oz/270695",
+                "source_type": "retailer",
+                "source_match_status": "match",
+            },
+            "recommended_action": "Review non-official ingredient sources before approval, or replace them with an official product source.",
+            "auto_fixable": False,
+        }
+    ]
+
+
 def test_compute_audit_status_prioritizes_blockers() -> None:
     fail_status, fail_score = compute_audit_status(
         [

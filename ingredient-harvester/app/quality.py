@@ -47,6 +47,23 @@ REVIEW_WORTHY_NORMALIZATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+RETAILER_HOST_MARKERS = (
+    "sephora.",
+    "ulta.",
+    "amazon.",
+    "lookfantastic.",
+    "cultbeauty.",
+    "douglas.",
+    "strawberrynet.",
+)
+
+THIRD_PARTY_HOST_MARKERS = (
+    "wikipedia.org",
+    "incidecoder.com",
+    "cosdna.com",
+    "skincarisma.com",
+)
+
 
 def normalize_nonempty_string(value: Any) -> str:
     return str(value or "").strip()
@@ -70,6 +87,16 @@ def normalize_url_like(value: Any) -> str:
     if raw.startswith("www.") or "." in raw.split("/", 1)[0]:
         return f"https://{raw}"
     return ""
+
+
+def _effective_source_type(source_type: str | None, source_ref: str) -> str:
+    normalized = normalize_nonempty_string(source_type).lower()
+    source_url = normalize_url_like(source_ref).lower()
+    if any(host in source_url for host in THIRD_PARTY_HOST_MARKERS):
+        return "thirdparty"
+    if any(host in source_url for host in RETAILER_HOST_MARKERS):
+        return "retailer"
+    return normalized
 
 
 def _is_review_worthy_normalization_note(note: str) -> bool:
@@ -112,7 +139,7 @@ def compute_source_match_status(brand: str, product_name: str, source_ref: str, 
             "product_overlap": product_overlap,
         }
 
-    normalized_source_type = normalize_nonempty_string(source_type).lower()
+    normalized_source_type = _effective_source_type(source_type, source_ref)
     if normalized_source_type in {"official", "retailer"} and product_tokens:
         return "mismatch", {
             "source_ref": normalized_source_ref,
@@ -164,7 +191,7 @@ def build_audit_findings(
     duplicate_conflict: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
-    normalized_source_type = normalize_nonempty_string(source_type).lower()
+    normalized_source_type = _effective_source_type(source_type, source_ref)
 
     def add(
         anomaly_type: str,

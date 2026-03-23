@@ -224,6 +224,60 @@ test("PuppeteerExtractor honors locale-prefixed Shopify direct PDP seed URLs", a
   );
 });
 
+test("PuppeteerExtractor honors singular /product Shopify direct PDP seed URLs", async () => {
+  const extractor = new PuppeteerExtractor();
+  const directProduct = {
+    id: 191,
+    title: "Neroli Portofino Hand and Body Moisturizer",
+    handle: "neroli-portofino-hand-and-body-moisturizer",
+    body_html: "<p>Hand and body moisturizer</p>",
+    variants: [
+      {
+        id: 1901,
+        sku: "TF-NP-001",
+        title: "Default Title",
+        option1: "Default Title",
+        price: 9500,
+        available: true,
+        inventory_quantity: 4,
+      },
+    ],
+    options: [{ name: "Title" }],
+    images: [{ src: "https://cdn.example.com/tomford-neroli-1.jpg" }],
+  };
+
+  await withMockFetch(
+    {
+      "https://www.tomfordbeauty.com/products/neroli-portofino-hand-and-body-moisturizer.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify(directProduct),
+      },
+      "https://www.tomfordbeauty.com/product/neroli-portofino-hand-and-body-moisturizer": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Tom Ford Beauty",
+        domain: "https://www.tomfordbeauty.com/product/neroli-portofino-hand-and-body-moisturizer",
+        market: "US",
+        limit: 5,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.url, "https://www.tomfordbeauty.com/products/neroli-portofino-hand-and-body-moisturizer");
+      assert.deepEqual(result.products[0]?.variant_skus, ["TF-NP-001"]);
+      assert.equal(result.variants[0]?.price, "95.00");
+      assert.equal(result.variants[0]?.currency, "USD");
+      assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
+      assert.equal(result.platform, "Shopify (Direct PDP)");
+    },
+  );
+});
+
 test("pickBestJsonLdObjectForPage prefers the Product object that matches the current locale page", () => {
   const selected = pickBestJsonLdObjectForPage({
     candidates: [

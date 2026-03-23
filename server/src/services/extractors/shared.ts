@@ -427,6 +427,53 @@ export function scoreProductCandidateUrl(rawUrl: string, baseUrl: string): numbe
   return score;
 }
 
+function tokenizePathSegment(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .filter((token) => token.length > 1)
+    .filter((token) => !["product", "products", "collection", "collections"].includes(token));
+}
+
+function scoreSeedUrlAffinity(candidateUrl: string, seedUrl: string, baseUrl: string): number {
+  const candidate = parseHttpUrl(candidateUrl, baseUrl);
+  const seed = parseHttpUrl(seedUrl, baseUrl);
+  if (!candidate || !seed) return Number.NEGATIVE_INFINITY;
+
+  const candidateSegment = candidate.pathname.split("/").filter(Boolean).pop() || "";
+  const seedSegment = seed.pathname.split("/").filter(Boolean).pop() || "";
+  const candidateTokens = tokenizePathSegment(candidateSegment);
+  const seedTokens = tokenizePathSegment(seedSegment);
+  if (candidateTokens.length === 0 || seedTokens.length === 0) return 0;
+
+  const candidateSet = new Set(candidateTokens);
+  const seedSet = new Set(seedTokens);
+  let shared = 0;
+  for (const token of seedSet) {
+    if (candidateSet.has(token)) shared += 1;
+  }
+
+  const unionSize = new Set([...candidateSet, ...seedSet]).size || 1;
+  let score = shared / unionSize;
+  if (candidateSegment === seedSegment) score += 1;
+  if (candidate.pathname.toLowerCase() === seed.pathname.toLowerCase()) score += 1;
+  return score;
+}
+
+function rankProductUrlsForSeed(productUrls: string[], seedUrl: string, baseUrl: string): string[] {
+  return [...productUrls].sort((a, b) => {
+    const affinityDiff = scoreSeedUrlAffinity(b, seedUrl, baseUrl) - scoreSeedUrlAffinity(a, seedUrl, baseUrl);
+    if (affinityDiff !== 0) return affinityDiff;
+
+    const scoreDiff = scoreProductCandidateUrl(b, baseUrl) - scoreProductCandidateUrl(a, baseUrl);
+    if (scoreDiff !== 0) return scoreDiff;
+
+    return a.localeCompare(b);
+  });
+}
+
 export function isLikelyProductUrl(rawUrl: string, baseUrl: string): boolean {
   const mode = (process.env.PDP_DETECTION_MODE || "score").toLowerCase();
   if (mode !== "score") {
@@ -604,15 +651,16 @@ async function fetchTracked(url: string, context: FetchContext, diagnostics: Ext
   const timeoutMs = clampInt(process.env.PUPPETEER_FETCH_TIMEOUT_MS, 8_000, 2_000, 120_000);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const finalUrl = withUrlParams(url, context.url_params || {});
+  const requestUrl = withUrlParams(url, context.url_params || {});
 
   try {
-    const response = await fetch(finalUrl, {
+    const response = await fetch(requestUrl, {
       redirect: "follow",
       signal: controller.signal,
       headers: buildFetchHeaders(context, accept),
     });
 
+    const finalUrl = response.url || requestUrl;
     const contentType = response.headers.get("content-type");
     const body = await response.text();
     appendHttpTrace(diagnostics, { url: finalUrl, status: response.status });
@@ -634,9 +682,9 @@ async function fetchTracked(url: string, context: FetchContext, diagnostics: Ext
       blockedBy,
     };
   } catch {
-    appendHttpTrace(diagnostics, { url: finalUrl, status: null });
+    appendHttpTrace(diagnostics, { url: requestUrl, status: null });
     return {
-      finalUrl,
+      finalUrl: requestUrl,
       status: null,
       ok: false,
       body: null,
@@ -1094,14 +1142,36 @@ export async function discoverProductUrls(params: {
     if (seed.blockedBy) challengeDetected = true;
 
     if (seed.body) {
+      const requestedSeedUrl = canonicalizeUrl(seedDiscoveryUrl, params.baseUrl);
+      const resolvedSeedUrl = canonicalizeUrl(seed.finalUrl || seedDiscoveryUrl, params.baseUrl);
+      const resolvedSeedLooksProductLike = scoreProductCandidateUrl(resolvedSeedUrl, params.baseUrl) >= 4;
+      const allowSeedHtmlRediscovery = !directSeedCandidate || (seed.ok && !resolvedSeedLooksProductLike);
       const directProductCandidate =
         /"@type"\s*:\s*(?:"Product"|\[[^\]]*"Product")/i.test(seed.body) ||
-        (seed.ok && scoreProductCandidateUrl(seedDiscoveryUrl, params.baseUrl) >= 4 && looksLikeProductPageHtml(seed.body));
+        (seed.ok &&
+          (resolvedSeedLooksProductLike || scoreProductCandidateUrl(requestedSeedUrl, params.baseUrl) >= 4) &&
+          looksLikeProductPageHtml(seed.body));
       if (directProductCandidate) {
         setDiscoveryStrategy(params.diagnostics, "seed_page");
         return {
           sitemapUrl: undefined,
-          productUrls: [canonicalizeUrl(seedDiscoveryUrl, params.baseUrl)],
+          productUrls: [resolvedSeedUrl],
+          deadSitemapDetected,
+          challengeDetected,
+        };
+      }
+
+      const seedUrls = allowSeedHtmlRediscovery
+        ? (directSeedCandidate
+            ? rankProductUrlsForSeed(extractProductUrlsFromHtml(seed.body, params.baseUrl), requestedSeedUrl, params.baseUrl)
+            : extractProductUrlsFromHtml(seed.body, params.baseUrl)
+          ).slice(0, params.maxProducts)
+        : [];
+      if (seedUrls.length > 0) {
+        setDiscoveryStrategy(params.diagnostics, "seed_page");
+        return {
+          sitemapUrl: undefined,
+          productUrls: seedUrls,
           deadSitemapDetected,
           challengeDetected,
         };
@@ -1114,18 +1184,7 @@ export async function discoverProductUrls(params: {
         }
         return {
           sitemapUrl: undefined,
-          productUrls: seed.ok ? [canonicalizeUrl(seedDiscoveryUrl, params.baseUrl)] : [],
-          deadSitemapDetected,
-          challengeDetected,
-        };
-      }
-
-      const seedUrls = extractProductUrlsFromHtml(seed.body, params.baseUrl).slice(0, params.maxProducts);
-      if (seedUrls.length > 0) {
-        setDiscoveryStrategy(params.diagnostics, "seed_page");
-        return {
-          sitemapUrl: undefined,
-          productUrls: seedUrls,
+          productUrls: seed.ok && resolvedSeedLooksProductLike ? [resolvedSeedUrl] : [],
           deadSitemapDetected,
           challengeDetected,
         };

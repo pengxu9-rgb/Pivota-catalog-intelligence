@@ -28,6 +28,7 @@ type MockRoute = {
   status?: number;
   headers?: Record<string, string>;
   body?: string;
+  responseUrl?: string;
 };
 
 function readFixture(name: string): string {
@@ -35,10 +36,17 @@ function readFixture(name: string): string {
 }
 
 function createMockResponse(route: MockRoute): Response {
-  return new Response(route.body ?? "", {
+  const response = new Response(route.body ?? "", {
     status: route.status ?? 200,
     headers: route.headers,
   });
+  if (route.responseUrl) {
+    Object.defineProperty(response, "url", {
+      value: route.responseUrl,
+      configurable: true,
+    });
+  }
+  return response;
 }
 
 async function withMockFetch(routes: Record<string, MockRoute>, fn: () => Promise<void>): Promise<void> {
@@ -419,6 +427,46 @@ test("discoverProductUrls does not fall through from an invalid direct PDP to un
       assert.equal(diagnostics.discovery_strategy, "seed_page");
       assert.equal(diagnostics.failure_category, "no_product_urls");
       assert.deepEqual(discovered.productUrls, []);
+    },
+  );
+});
+
+test("discoverProductUrls re-discovers a target PDP when a stale direct seed redirects to a collection page", async () => {
+  const diagnostics = createDiagnostics("www.tomfordbeauty.com", "https://www.tomfordbeauty.com");
+
+  await withMockFetch(
+    {
+      "https://www.tomfordbeauty.com/product/shade-and-illuminate-soft-radiance-foundation-spf-50": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        responseUrl: "https://www.tomfordbeauty.com/collections/makeup",
+        body: `
+          <html>
+            <head><title>Makeup</title></head>
+            <body>
+              <h1>Makeup</h1>
+              <a href="/products/ombre-leather-parfum">Ombre Leather Parfum</a>
+              <a href="/products/shade-and-illuminate-soft-radiance-foundation-spf-50">Soft Radiance Foundation</a>
+            </body>
+          </html>
+        `,
+      },
+    },
+    async () => {
+      const discovered = await discoverProductUrls({
+        baseUrl: "https://www.tomfordbeauty.com",
+        seedUrl: "https://www.tomfordbeauty.com/product/shade-and-illuminate-soft-radiance-foundation-spf-50",
+        maxProducts: 5,
+        context: {},
+        diagnostics,
+      });
+
+      assert.equal(diagnostics.discovery_strategy, "seed_page");
+      assert.deepEqual(discovered.productUrls, [
+        "https://www.tomfordbeauty.com/products/shade-and-illuminate-soft-radiance-foundation-spf-50",
+        "https://www.tomfordbeauty.com/products/ombre-leather-parfum",
+      ]);
+      assert.equal(diagnostics.failure_category, null);
     },
   );
 });

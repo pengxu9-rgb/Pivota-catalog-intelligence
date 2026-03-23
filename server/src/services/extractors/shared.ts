@@ -1148,9 +1148,7 @@ export async function discoverProductUrls(params: {
       const allowSeedHtmlRediscovery = !directSeedCandidate || (seed.ok && !resolvedSeedLooksProductLike);
       const directProductCandidate =
         /"@type"\s*:\s*(?:"Product"|\[[^\]]*"Product")/i.test(seed.body) ||
-        (seed.ok &&
-          (resolvedSeedLooksProductLike || scoreProductCandidateUrl(requestedSeedUrl, params.baseUrl) >= 4) &&
-          looksLikeProductPageHtml(seed.body));
+        (seed.ok && resolvedSeedLooksProductLike && looksLikeProductPageHtml(seed.body));
       if (directProductCandidate) {
         setDiscoveryStrategy(params.diagnostics, "seed_page");
         return {

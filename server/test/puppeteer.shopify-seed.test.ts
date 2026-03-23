@@ -3,11 +3,13 @@ import test from "node:test";
 
 import {
   PuppeteerExtractor,
+  chooseDiscoveryBatchCandidates,
   choosePreferredProductOverview,
   discoverProductUrls,
   enrichDirectShopifyPdpResponse,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
+  resolveDirectPdpEnrichmentUrl,
 } from "../src/services/extractors/puppeteer";
 
 type MockRoute = {
@@ -249,6 +251,41 @@ test("enrichDirectShopifyPdpResponse preserves direct feed response when browser
   assert.equal(result.products.length, 1);
   assert.equal(result.products[0]?.title, "Fucking Fabulous Parfum");
   assert.match(logs.map((entry) => `${entry.type}:${entry.msg}`).join("\n"), /Browser enrichment failed for Shopify PDP/);
+});
+
+test("resolveDirectPdpEnrichmentUrl prefers canonical /products PDPs over stale singular /product seeds", () => {
+  const resolved = resolveDirectPdpEnrichmentUrl({
+    seedUrl: "https://www.tomfordbeauty.com/product/oud-wood-parfum?size=50_ml",
+    productUrl: "https://www.tomfordbeauty.com/products/oud-wood-parfum",
+    baseUrl: "https://www.tomfordbeauty.com",
+  });
+
+  assert.equal(resolved, "https://www.tomfordbeauty.com/products/oud-wood-parfum");
+});
+
+test("chooseDiscoveryBatchCandidates caps direct seed rediscovery windows to the top seed-affine candidates", () => {
+  const selected = chooseDiscoveryBatchCandidates({
+    productUrls: [
+      "https://www.tomfordbeauty.com/products/architecture-radiance-hydrating-foundation-broad-spectrum-spf-50",
+      "https://www.tomfordbeauty.com/products/shade-and-illuminate-concealer",
+      "https://www.tomfordbeauty.com/products/shade-and-illuminate-contour-duo",
+      "https://www.tomfordbeauty.com/products/architecture-soft-matte-blurring-foundation",
+      "https://www.tomfordbeauty.com/products/brow-sculptor",
+      "https://www.tomfordbeauty.com/products/ombre-leather-eau-de-parfum",
+    ],
+    offset: 0,
+    limit: 10,
+    reserve: 4,
+    seedUrl: "https://www.tomfordbeauty.com/product/shade-and-illuminate-soft-radiance-foundation-spf-50?shade=11.0_Dusk",
+    baseUrl: "https://www.tomfordbeauty.com",
+  });
+
+  assert.deepEqual(selected, [
+    "https://www.tomfordbeauty.com/products/architecture-radiance-hydrating-foundation-broad-spectrum-spf-50",
+    "https://www.tomfordbeauty.com/products/shade-and-illuminate-concealer",
+    "https://www.tomfordbeauty.com/products/shade-and-illuminate-contour-duo",
+    "https://www.tomfordbeauty.com/products/architecture-soft-matte-blurring-foundation",
+  ]);
 });
 
 test("PuppeteerExtractor honors locale-prefixed Shopify direct PDP seed URLs", async () => {

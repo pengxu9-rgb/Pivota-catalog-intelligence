@@ -132,7 +132,14 @@ export class PuppeteerExtractor implements Extractor {
         selectorRootDetected: resolved.selectorRootDetected && !resolved.storefrontResolved,
         log,
       });
-      const batchCandidates = discovered.productUrls.slice(batchOffset, batchOffset + batchLimit + discoveryReserve);
+      const batchCandidates = chooseDiscoveryBatchCandidates({
+        productUrls: discovered.productUrls,
+        offset: batchOffset,
+        limit: batchLimit,
+        reserve: discoveryReserve,
+        seedUrl: target.seedUrl,
+        baseUrl,
+      });
 
       if (batchCandidates.length === 0) {
         log("error", "No product URLs discovered.");
@@ -615,6 +622,49 @@ function productHasMissingPdpFields(product: ExtractedProduct) {
   return descriptionMissing || moduleMissing;
 }
 
+export function resolveDirectPdpEnrichmentUrl(params: {
+  seedUrl?: string;
+  productUrl?: string;
+  baseUrl: string;
+}): string | null {
+  const canonicalProductUrl = cleanText(params.productUrl);
+  if (canonicalProductUrl && isLikelyProductUrlShared(canonicalProductUrl, params.baseUrl)) {
+    return canonicalProductUrl;
+  }
+
+  const seedUrl = cleanText(params.seedUrl);
+  if (seedUrl && isLikelyProductUrlShared(seedUrl, params.baseUrl)) {
+    return seedUrl;
+  }
+
+  return canonicalProductUrl || seedUrl || null;
+}
+
+export function chooseDiscoveryBatchCandidates(params: {
+  productUrls: string[];
+  offset: number;
+  limit: number;
+  reserve: number;
+  seedUrl?: string;
+  baseUrl: string;
+}): string[] {
+  const requestedWindowEnd = params.offset + params.limit + params.reserve;
+  const directSeedCandidate = Boolean(
+    params.seedUrl && scoreProductCandidateUrl(params.seedUrl, params.baseUrl) >= 4,
+  );
+  if (!directSeedCandidate) {
+    return params.productUrls.slice(params.offset, requestedWindowEnd);
+  }
+
+  const seedCandidateLimit = clampIntShared(
+    process.env.PUPPETEER_SEED_DISCOVERY_CANDIDATE_LIMIT,
+    4,
+    1,
+    20,
+  );
+  return params.productUrls.slice(params.offset, Math.min(requestedWindowEnd, params.offset + seedCandidateLimit));
+}
+
 function getCollectionHandle(pathname: string): string | undefined {
   const m = pathname.match(/^\/collections\/([^/]+)/i);
   return m?.[1];
@@ -1042,9 +1092,16 @@ export async function enrichDirectShopifyPdpResponse(params: {
   const productMissingPdpFields = productHasMissingPdpFields(product);
   if (!productMissingImages && !variantMissingImages && !productMissingPdpFields) return params.response;
 
+  const enrichmentUrl = resolveDirectPdpEnrichmentUrl({
+    seedUrl: params.seedUrl,
+    productUrl: product.url,
+    baseUrl: params.baseUrl,
+  });
+  if (!enrichmentUrl) return params.response;
+
   params.log(
     "info",
-    `Shopify direct PDP returned incomplete image/PDP fields. Attempting browser enrichment: ${params.seedUrl}`,
+    `Shopify direct PDP returned incomplete image/PDP fields. Attempting browser enrichment: ${enrichmentUrl}`,
   );
 
   const navigationTimeoutMs = clampIntShared(
@@ -1063,7 +1120,7 @@ export async function enrichDirectShopifyPdpResponse(params: {
         withTimeoutShared(
           scrapeProductPage({
             browser,
-            url: params.seedUrl!,
+            url: enrichmentUrl,
             baseUrl: params.baseUrl,
             navigationTimeoutMs,
             verbose: false,
@@ -1083,7 +1140,7 @@ export async function enrichDirectShopifyPdpResponse(params: {
   }
 
   if (!browserRun.result) {
-    params.log("warn", `Browser enrichment did not recover images for Shopify PDP: ${params.seedUrl}`);
+    params.log("warn", `Browser enrichment did not recover images for Shopify PDP: ${enrichmentUrl}`);
     return params.response;
   }
 

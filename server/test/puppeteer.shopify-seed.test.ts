@@ -711,6 +711,117 @@ test("mergeShopifyDirectPdpFallback discards unrelated fallback page images", ()
   );
 });
 
+test("mergeShopifyDirectPdpFallback preserves fallback PDP fields even when no new images are contributed", () => {
+  const response = {
+    brand: "Tom Ford Beauty",
+    domain: "www.tomfordbeauty.com",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Neroli Portofino Hand and Body Moisturizer",
+        url: "https://www.tomfordbeauty.com/products/neroli-portofino-hand-and-body-moisturizer",
+        image_url: "https://cdn.example.com/tomford-neroli-1.jpg",
+        image_urls: ["https://cdn.example.com/tomford-neroli-1.jpg"],
+        variant_skus: ["TF-NP-001"],
+        variants: [
+          {
+            id: "v1",
+            sku: "TF-NP-001",
+            url: "https://www.tomfordbeauty.com/products/neroli-portofino-hand-and-body-moisturizer",
+            option_name: "Title",
+            option_value: "Default Title",
+            price: "95.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "https://cdn.example.com/tomford-neroli-1.jpg",
+            image_urls: ["https://cdn.example.com/tomford-neroli-1.jpg"],
+            ad_copy: "copy",
+          },
+        ],
+      },
+    ],
+    variants: [
+      {
+        id: "v1",
+        sku: "TF-NP-001",
+        url: "https://www.tomfordbeauty.com/products/neroli-portofino-hand-and-body-moisturizer",
+        option_name: "Title",
+        option_value: "Default Title",
+        price: "95.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "",
+        image_url: "https://cdn.example.com/tomford-neroli-1.jpg",
+        image_urls: ["https://cdn.example.com/tomford-neroli-1.jpg"],
+        ad_copy: "copy",
+        brand: "Tom Ford Beauty",
+        product_title: "Neroli Portofino Hand and Body Moisturizer",
+        product_url: "https://www.tomfordbeauty.com/products/neroli-portofino-hand-and-body-moisturizer",
+        deep_link: "https://www.tomfordbeauty.com/products/neroli-portofino-hand-and-body-moisturizer?variant=v1",
+        simulated: false,
+      },
+    ],
+    pricing: { currency: "USD" as const, min: 95, max: 95, avg: 95 },
+    ad_copy: { by_variant_id: { v1: "copy" } },
+    pagination: { offset: 0, limit: 1, next_offset: null, has_more: false, discovered_urls: 1 },
+    diagnostics: {
+      requested_domain: "www.tomfordbeauty.com",
+      resolved_base_url: "https://www.tomfordbeauty.com",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  const fallbackProduct = {
+    title: "Neroli Portofino Hand and Body Moisturizer",
+    url: "https://www.tomfordbeauty.com/products/neroli-portofino-hand-and-body-moisturizer",
+    image_url: "",
+    image_urls: [],
+    variant_skus: ["TF-NP-001"],
+    details_sections: [
+      {
+        heading: "Ingredients and Safety",
+        body: "Ingredients: Water Aqua Eau, Glycerin, Panthenol.",
+        source_kind: "details_summary" as const,
+      },
+      {
+        heading: "How to Use",
+        body: "Smooth into skin as needed.",
+        source_kind: "details_summary" as const,
+      },
+    ],
+    ingredients_raw: "Ingredients: Water Aqua Eau, Glycerin, Panthenol.",
+    how_to_use_raw: "Smooth into skin as needed.",
+    variants: [
+      {
+        id: "fallback-v1",
+        sku: "TF-NP-001",
+        url: "https://www.tomfordbeauty.com/products/neroli-portofino-hand-and-body-moisturizer",
+        option_name: "Title",
+        option_value: "Default Title",
+        price: "95.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "",
+        image_url: "",
+        image_urls: [],
+        ad_copy: "copy",
+      },
+    ],
+  };
+
+  const merged = mergeShopifyDirectPdpFallback("Tom Ford Beauty", response, fallbackProduct);
+
+  assert.equal(merged.products[0]?.ingredients_raw, "Ingredients: Water Aqua Eau, Glycerin, Panthenol.");
+  assert.equal(merged.products[0]?.how_to_use_raw, "Smooth into skin as needed.");
+  assert.equal(merged.products[0]?.details_sections?.length, 2);
+  assert.equal(merged.products[0]?.image_url, "https://cdn.example.com/tomford-neroli-1.jpg");
+});
+
 test("choosePreferredProductOverview prefers expanded product details over short structured blurbs", () => {
   const overview = choosePreferredProductOverview({
     structured: "A 3-step regimen with Salicylic Acid 2% Solution for clearer skin",

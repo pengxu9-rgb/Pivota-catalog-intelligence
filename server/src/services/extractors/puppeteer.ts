@@ -515,6 +515,17 @@ export function looksLikeFullIngredientListText(text: string | undefined) {
   );
 }
 
+function stripIngredientPackageDisclaimer(text: string | undefined) {
+  const normalized = cleanText(text);
+  if (!normalized) return "";
+  return cleanText(
+    normalized.replace(
+      /\bplease refer to the ingredient list on the product package you receive for the most up-to-date information\.?$/i,
+      "",
+    ),
+  );
+}
+
 export function deriveProductPdpModuleBodies(params: {
   ingredientsMarkdownText?: string;
   activeIngredientsText?: string;
@@ -529,8 +540,10 @@ export function deriveProductPdpModuleBodies(params: {
   const explicitIngredients = cleanText(params.ingredientsMarkdownText);
   const activeIngredients = cleanText(params.activeIngredientsText);
   const ingredientsRaw =
-    explicitIngredients ||
-    (looksLikeFullIngredientListText(ingredientSectionBody) ? ingredientSectionBody : "") ||
+    stripIngredientPackageDisclaimer(explicitIngredients) ||
+    (looksLikeFullIngredientListText(ingredientSectionBody)
+      ? stripIngredientPackageDisclaimer(ingredientSectionBody)
+      : "") ||
     undefined;
   const activeIngredientsRaw =
     activeIngredients ||
@@ -1367,7 +1380,7 @@ export function mergeShopifyDirectPdpFallback(
       rawFallbackProductImages,
     );
 
-    if (fallbackProductImages.length === 0) return product;
+    if (fallbackProductImages.length === 0) return mergedProduct;
 
     const fallbackBySku = new Map(
       fallbackProduct.variants
@@ -1961,6 +1974,24 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
         if (text) return text;
       }
 
+      const summaryHeading = Array.from(document.querySelectorAll("h2, h3, h4")).find((node) =>
+        /^summary$/i.test(normalizeSectionText(node.textContent || "")),
+      );
+      if (summaryHeading) {
+        const bodyParts: string[] = [];
+        let cursor = summaryHeading.nextElementSibling;
+        let guard = 0;
+        while (cursor && guard < 4) {
+          if (/^H[2-4]$/i.test(cursor.tagName)) break;
+          const text = normalizeSectionText((cursor as HTMLElement).innerText || cursor.textContent || "");
+          if (text) bodyParts.push(text);
+          cursor = cursor.nextElementSibling;
+          guard += 1;
+        }
+        const summaryText = normalizeSectionText(bodyParts.join("\n\n"));
+        if (summaryText) return summaryText;
+      }
+
       return "";
     })();
 
@@ -2189,7 +2220,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       const controls = Array.from(
         document.querySelectorAll("button[aria-controls], [role='tab'][aria-controls]"),
       ) as HTMLElement[];
-      for (const control of controls.slice(0, 24)) {
+      for (const control of controls.filter((node) => looksRelevantHeading(node.textContent || "")).slice(0, 24)) {
         const heading =
           control.getAttribute("title") ||
           control.getAttribute("aria-label") ||
@@ -2204,7 +2235,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       }
 
       const accordionButtons = Array.from(document.querySelectorAll("button.accordion-title, .acc__btn")) as HTMLElement[];
-      for (const button of accordionButtons.slice(0, 24)) {
+      for (const button of accordionButtons.filter((node) => looksRelevantHeading(node.textContent || "")).slice(0, 24)) {
         const heading =
           button.getAttribute("title") ||
           button.getAttribute("aria-label") ||
@@ -2230,6 +2261,29 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
         pushSection(heading, body, "accordion_button");
       }
 
+      const detailSummaries = Array.from(document.querySelectorAll("details > summary")) as HTMLElement[];
+      for (const summary of detailSummaries.filter((node) => looksRelevantHeading(node.textContent || "")).slice(0, 24)) {
+        const heading =
+          summary.getAttribute("title") ||
+          summary.getAttribute("aria-label") ||
+          summary.textContent ||
+          "";
+        const details = summary.closest("details");
+        let body = "";
+        if (details) {
+          const bodyParts = Array.from(details.children)
+            .filter((child) => child !== summary)
+            .map((child) => (child as HTMLElement).innerText || child.textContent || "")
+            .filter((text) => normalizeSectionText(text));
+          body = bodyParts.join("\n\n");
+        }
+        if (!normalizeSectionText(body)) {
+          const content = summary.nextElementSibling;
+          body = (content as HTMLElement | null)?.innerText || content?.textContent || "";
+        }
+        pushSection(heading, body, "details_summary");
+      }
+
       const modalNodes = Array.from(document.querySelectorAll("aside.modal, .modal.js-modal, [role='dialog']"));
       for (const modal of modalNodes.slice(0, 16)) {
         const heading =
@@ -2240,9 +2294,8 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       }
 
       const headingNodes = Array.from(document.querySelectorAll("h2, h3, h4"));
-      for (const headingNode of headingNodes.slice(0, 24)) {
+      for (const headingNode of headingNodes.filter((node) => looksRelevantHeading(node.textContent || "")).slice(0, 24)) {
         const heading = headingNode.textContent || "";
-        if (!looksRelevantHeading(heading)) continue;
         const bodyParts: string[] = [];
         let cursor = headingNode.nextElementSibling;
         let guard = 0;
@@ -2607,6 +2660,41 @@ async function scrapeProductPage(params: {
 }): Promise<ExtractedProduct | null> {
   const page = await params.browser.newPage();
 
+  const expandRelevantPdpModules = async () => {
+    await page.evaluate(() => {
+      const relevantHeadingRe =
+        /\b(product details|details?|benefits?|how to (?:use|apply)|ingredients?(?:\s*&\s*|\s+and\s+)safety|ingredients?|active ingredients?|inci|what(?:'|’)s in it\??)\b/i;
+
+      const summaries = Array.from(document.querySelectorAll("details > summary")) as HTMLElement[];
+      for (const summary of summaries.filter((node) => relevantHeadingRe.test(node.textContent || "")).slice(0, 24)) {
+        const heading =
+          summary.getAttribute("title") ||
+          summary.getAttribute("aria-label") ||
+          summary.textContent ||
+          "";
+        if (!relevantHeadingRe.test(heading)) continue;
+        const details = summary.closest("details");
+        if (details && !details.hasAttribute("open")) details.setAttribute("open", "");
+      }
+
+      const controls = Array.from(
+        document.querySelectorAll("button[aria-controls], [role='tab'][aria-controls], button.accordion-title, .acc__btn"),
+      ) as HTMLElement[];
+      for (const control of controls.filter((node) => relevantHeadingRe.test(node.textContent || "")).slice(0, 24)) {
+        const heading =
+          control.getAttribute("title") ||
+          control.getAttribute("aria-label") ||
+          control.textContent ||
+          "";
+        if (!relevantHeadingRe.test(heading)) continue;
+        const expanded = (control.getAttribute("aria-expanded") || "").toLowerCase();
+        if (expanded === "true") continue;
+        control.click();
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  };
+
   try {
     if (params.verbose) params.log("info", `Scraping: ${params.url}`);
     await preparePage(page, {
@@ -2635,7 +2723,7 @@ async function scrapeProductPage(params: {
         verbose: params.verbose,
         log: params.log,
       });
-      if (prefetchedProduct) return prefetchedProduct;
+      if (prefetchedProduct && !productHasMissingPdpFields(prefetchedProduct)) return prefetchedProduct;
     }
 
     const visit = await gotoPageOrThrow(page, {
@@ -2645,9 +2733,22 @@ async function scrapeProductPage(params: {
       diagnostics: params.diagnostics!,
     });
 
+    await expandRelevantPdpModules();
+
+    const extracted = await extractPageSignals(page);
+    const liveLooksLikeProduct =
+      looksLikeProductPageHtml(visit.content) ||
+      (isLikelyProductUrlShared(params.url, params.baseUrl) &&
+        Boolean(cleanText(extracted.title)) &&
+        (
+          extracted.priceTexts.length > 0 ||
+          extracted.detailsSections.length > 0 ||
+          extracted.imageCandidates.length > 0
+        ));
+
     return buildProductFromPageSignals({
-      extracted: await extractPageSignals(page),
-      pageLooksLikeProduct: looksLikeProductPageHtml(visit.content),
+      extracted,
+      pageLooksLikeProduct: liveLooksLikeProduct,
       sourceUrl: params.url,
       baseUrl: params.baseUrl,
       verbose: params.verbose,

@@ -161,6 +161,39 @@ test("deriveProductPdpModuleBodies keeps summary-style ingredient accordions out
   assert.equal(bodies.howToUseRaw, "Use daily after cleansing and serum.");
 });
 
+test("deriveProductPdpModuleBodies extracts Tom Ford-style details summary accordions", () => {
+  const bodies = deriveProductPdpModuleBodies({
+    detailsSections: [
+      {
+        heading: "Product Details",
+        body: "Key Notes\nTunisian Neroli, Italian Bergamot\nBenefits\nLeaves skin feeling soft and smooth without a greasy residue",
+        source_kind: "details_summary",
+      },
+      {
+        heading: "How to Use",
+        body: "Hands - After washing hands, smooth into the skin as needed.",
+        source_kind: "details_summary",
+      },
+      {
+        heading: "Ingredients and Safety",
+        body:
+          "Ingredients: Water Aqua Eau, Sodium Laureth Sulfate, Squalane, Panthenol, Glycerin. Please refer to the ingredient list on the product package you receive for the most up-to-date information.",
+        source_kind: "details_summary",
+      },
+    ],
+  });
+
+  assert.equal(
+    bodies.ingredientsRaw,
+    "Ingredients: Water Aqua Eau, Sodium Laureth Sulfate, Squalane, Panthenol, Glycerin.",
+  );
+  assert.equal(
+    bodies.howToUseRaw,
+    "Hands - After washing hands, smooth into the skin as needed.",
+  );
+  assert.equal(bodies.activeIngredientsRaw, undefined);
+});
+
 test("resolveStorefrontFromHtml resolves selector roots to the requested market storefront", () => {
   const html = readFixture("caudalie-selector.html");
   const resolved = resolveStorefrontFromHtml(html, "https://caudalie.com", "US");

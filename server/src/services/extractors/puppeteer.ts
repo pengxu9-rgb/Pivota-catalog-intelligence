@@ -650,7 +650,7 @@ function pushRelevantHtmlSection(
   const body = cleanHtmlText(bodyRaw);
   if (!heading || !body) return;
   if (
-    !/\b(details?|benefits?|how to (?:use|apply)|usage(?: details)?|suggested usage|directions?|ingredients?|active ingredients?|inci|description|beauty tips|formula|about|what(?:'|’)s in it\??)\b/i.test(
+    !/\b(details?|benefits?|how to (?:use|apply)|usage(?: details)?|suggested usage|directions?|ingredients?|active ingredients?|key ingredients?|inci|description|beauty tips|formula|about|what(?:'|’)s in it\??)\b/i.test(
       heading,
     )
   ) {
@@ -693,6 +693,39 @@ function extractHtmlDetailSections(html: string) {
           ? "title_flyout_how_to_use"
           : "title_flyout_description";
     pushRelevantHtmlSection(sections, heading, match[3] || "", sourceKind);
+  }
+
+  for (const match of html.matchAll(
+    /<div\b[^>]*class=["'][^"']*product-accordion[^"']*["'][^>]*>[\s\S]*?<div\b[^>]*class=["'][^"']*product-accordion-header[^"']*["'][^>]*>[\s\S]*?<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]>[\s\S]*?<\/div>[\s\S]*?<div\b[^>]*class=["'][^"']*accordion-panel[^"']*["'][^>]*>([\s\S]*?)<\/div>[\s\S]*?<\/div>/gi,
+  )) {
+    pushRelevantHtmlSection(sections, match[1] || "", match[2] || "", "product_accordion_html");
+  }
+
+  for (const match of html.matchAll(
+    /<div\b[^>]*class=["'][^"']*description-container[^"']*["'][^>]*>[\s\S]*?<h[1-6]\b[^>]*class=["'][^"']*description-header[^"']*["'][^>]*>([\s\S]*?)<\/h[1-6]>[\s\S]*?<div\b[^>]*class=["'][^"']*description-body[^"']*["'][^>]*>([\s\S]*?)<\/div>[\s\S]*?<\/div>/gi,
+  )) {
+    pushRelevantHtmlSection(sections, match[1] || "", match[2] || "", "description_header_html");
+  }
+
+  const keyIngredientEntries = Array.from(
+    html.matchAll(
+      /<div\b[^>]*class=["'][^"']*child-ingredient[^"']*["'][^>]*>[\s\S]*?<div\b[^>]*class=["'][^"']*name[^"']*["'][^>]*>([\s\S]*?)<\/div>[\s\S]*?<div\b[^>]*class=["'][^"']*description[^"']*["'][^>]*>([\s\S]*?)<\/div>[\s\S]*?<\/div>/gi,
+    ),
+  )
+    .map((match) => {
+      const name = cleanHtmlText(match[1] || "");
+      const description = cleanHtmlText(match[2] || "");
+      if (!name && !description) return "";
+      return [name, description].filter(Boolean).join(": ");
+    })
+    .filter(Boolean);
+  if (keyIngredientEntries.length > 0) {
+    pushRelevantHtmlSection(
+      sections,
+      "Key Ingredients",
+      keyIngredientEntries.join("\n\n"),
+      "key_ingredients_html",
+    );
   }
 
   const descriptionBlock =
@@ -935,9 +968,10 @@ export function deriveProductPdpModuleBodies(params: {
     firstMatchingSectionBody(detailsSections, [/\b(ingredients?|inci)\b/i]) ||
     firstMatchingSectionBody(detailsSections, [/\bwhat(?:'|’)s in it\??\b/i]) ||
     firstMatchingSectionBody(detailsSections, [/\bformula\b/i]);
+  const activeIngredientSection = firstMatchingSectionBody(detailsSections, [/\b(?:active|key) ingredients?\b/i]);
   const ingredientSectionBody = cleanText(ingredientSection?.body);
   const explicitIngredients = cleanText(params.ingredientsMarkdownText);
-  const activeIngredients = cleanText(params.activeIngredientsText);
+  const activeIngredients = cleanText(params.activeIngredientsText) || cleanText(activeIngredientSection?.body);
   const ingredientsRaw =
     stripIngredientPackageDisclaimer(explicitIngredients) ||
     (looksLikeFullIngredientListText(ingredientSectionBody)
@@ -2740,7 +2774,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       const sections: ExtractedProductDetailSection[] = [];
       const seen = new Set<string>();
       const looksRelevantHeading = (heading: string) =>
-        /\b(details?|benefits?|how to (?:use|apply)|ingredients?|active ingredients?|inci|about|what(?:'|’)s in it\??)\b/i.test(
+        /\b(details?|benefits?|how to (?:use|apply)|ingredients?|active ingredients?|key ingredients?|inci|about|what(?:'|’)s in it\??)\b/i.test(
           heading,
         );
       const pushSection = (headingRaw: string, bodyRaw: string, sourceKind: string) => {
@@ -2768,6 +2802,33 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       }
       if (ingredientsDisclaimerText) {
         pushSection("Ingredients Disclaimer", ingredientsDisclaimerText, "accordion_ingredients_disclaimer");
+      }
+
+      const productAccordions = Array.from(document.querySelectorAll(".product-accordion")) as HTMLElement[];
+      for (const accordion of productAccordions.slice(0, 16)) {
+        const heading =
+          accordion.querySelector(".product-accordion-header h1, .product-accordion-header h2, .product-accordion-header h3, .product-accordion-header h4, .product-accordion-header h5, .product-accordion-header h6")
+            ?.textContent ||
+          accordion.querySelector(".product-accordion-header")?.textContent ||
+          "";
+        const body =
+          accordion.querySelector(".accordion-panel, [accordion-body]")?.textContent ||
+          "";
+        pushSection(heading, body, "product_accordion");
+      }
+
+      const keyIngredientCards = Array.from(document.querySelectorAll(".product-key-ingredients .child-ingredient")) as HTMLElement[];
+      if (keyIngredientCards.length > 0) {
+        const body = keyIngredientCards
+          .map((card) => {
+            const name = card.querySelector(".name")?.textContent?.trim() || "";
+            const description = card.querySelector(".description")?.textContent?.trim() || "";
+            if (!name && !description) return "";
+            return [name, description].filter(Boolean).join(": ");
+          })
+          .filter(Boolean)
+          .join("\n\n");
+        pushSection("Key Ingredients", body, "key_ingredients_section");
       }
 
       const controls = Array.from(
@@ -2867,7 +2928,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       return sections;
     })();
     const activeIngredientsText =
-      detailsSections.find((section) => /\bactive ingredients?\b/i.test(section.heading))?.body || undefined;
+      detailsSections.find((section) => /\b(?:active|key) ingredients?\b/i.test(section.heading))?.body || undefined;
 
     return {
       title,

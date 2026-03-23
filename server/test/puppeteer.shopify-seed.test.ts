@@ -1174,6 +1174,65 @@ test("extractProductFromHtmlSnapshot parses The Ordinary ingredients and usage w
   assert.equal(product?.field_capture_status?.details_sections, "present");
 });
 
+test("extractProductFromHtmlSnapshot parses Jurlique ingredient accordions and key ingredients", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>Radiant Skin Foaming Cleanser</title>
+          <meta property="og:price:amount" content="34.00">
+          <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "Product",
+              "name": "Radiant Skin Foaming Cleanser",
+              "url": "https://www.jurlique.com/products/radiant-skin-foam-cleanser",
+              "description": "This foaming cleanser delivers a powerful clean without drying."
+            }
+          </script>
+        </head>
+        <body>
+          <h1>Radiant Skin Foaming Cleanser</h1>
+          <div class="product-accordion ingredients_list">
+            <div class="product-accordion-header"><h2>ingredients List</h2></div>
+            <div class="accordion-panel">
+              <p>Aqua (Water), Glycerin, Decyl Glucoside, Rosa canina Fruit Oil, Calendula officinalis Flower Extract.</p>
+            </div>
+          </div>
+          <div class="description-container">
+            <h2 class="description-header">How to Use</h2>
+            <div class="description-body">
+              Gently lather a small amount between damp hands and massage over face.
+            </div>
+          </div>
+          <div class="product-ingredient-section">
+            <div class="product-key-ingredients" id="key-ingredients">
+              <div class="child-ingredient">
+                <div class="name">Calendula</div>
+                <div class="description">Calendula extracts provide soothing, environmental protection and moisturisation to the skin.</div>
+              </div>
+              <div class="child-ingredient">
+                <div class="name">Lemon Balm</div>
+                <div class="description">Lemon Balm has a refreshing effect on the skin.</div>
+              </div>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+    url: "https://www.jurlique.com/products/radiant-skin-foam-cleanser",
+    baseUrl: "https://www.jurlique.com",
+  });
+
+  assert.ok(product);
+  assert.match(product?.ingredients_raw || "", /Aqua \(Water\)/i);
+  assert.match(product?.active_ingredients_raw || "", /Calendula/i);
+  assert.match(product?.how_to_use_raw || "", /Gently lather/i);
+  assert.equal(product?.field_capture_status?.ingredients_raw, "present");
+  assert.equal(product?.field_capture_status?.active_ingredients_raw, "present");
+  assert.equal(product?.field_capture_status?.how_to_use_raw, "present");
+});
+
 test("PuppeteerExtractor returns a generic product from static HTML without launching a browser", async () => {
   const server = http.createServer((req, res) => {
     const url = req.url || "/";

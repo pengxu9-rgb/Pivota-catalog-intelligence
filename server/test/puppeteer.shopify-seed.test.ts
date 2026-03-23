@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   PuppeteerExtractor,
   choosePreferredProductOverview,
+  enrichDirectShopifyPdpResponse,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
 } from "../src/services/extractors/puppeteer";
@@ -169,6 +170,76 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
       assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
     },
   );
+});
+
+test("enrichDirectShopifyPdpResponse preserves direct feed response when browser enrichment throws", async () => {
+  const logs: Array<{ type: string; msg: string }> = [];
+  const response = {
+    brand: "Tom Ford Beauty",
+    domain: "https://www.tomfordbeauty.com/product/fucking-fabulous-parfum?size=50_ml",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Fucking Fabulous Parfum",
+        url: "https://www.tomfordbeauty.com/products/fucking-fabulous-parfum",
+        image_url: "",
+        image_urls: [],
+        variant_skus: ["TF-FF-050"],
+        variants: [
+          {
+            id: "5001",
+            sku: "TF-FF-050",
+            url: "https://www.tomfordbeauty.com/products/fucking-fabulous-parfum",
+            option_name: "Size",
+            option_value: "50 ml",
+            price: "395.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "",
+            image_urls: [],
+            ad_copy: "",
+          },
+        ],
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 395, max: 395, avg: 395 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "www.tomfordbeauty.com",
+      resolved_base_url: "https://www.tomfordbeauty.com",
+      discovery_strategy: "shopify_json",
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  const result = await enrichDirectShopifyPdpResponse({
+    brand: "Tom Ford Beauty",
+    baseUrl: "https://www.tomfordbeauty.com",
+    seedUrl: "https://www.tomfordbeauty.com/product/fucking-fabulous-parfum?size=50_ml",
+    response,
+    diagnostics: response.diagnostics,
+    log: (type, msg) => logs.push({ type, msg }),
+    browserRunner: async () => {
+      throw new Error("browser explode");
+    },
+  });
+
+  assert.equal(result.platform, "Shopify (Direct PDP)");
+  assert.equal(result.products.length, 1);
+  assert.equal(result.products[0]?.title, "Fucking Fabulous Parfum");
+  assert.match(logs.map((entry) => `${entry.type}:${entry.msg}`).join("\n"), /Browser enrichment failed for Shopify PDP/);
 });
 
 test("PuppeteerExtractor honors locale-prefixed Shopify direct PDP seed URLs", async () => {

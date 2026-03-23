@@ -1024,13 +1024,14 @@ async function tryExtractShopify(params: {
   });
 }
 
-async function enrichDirectShopifyPdpResponse(params: {
+export async function enrichDirectShopifyPdpResponse(params: {
   brand: string;
   baseUrl: string;
   seedUrl?: string;
   response: Omit<ExtractResponse, "generated_at" | "logs">;
   diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
   log: Logger;
+  browserRunner?: typeof runBrowserTaskWithFallback<ExtractedProduct | null>;
 }): Promise<Omit<ExtractResponse, "generated_at" | "logs">> {
   const product = params.response.products[0];
   if (!params.seedUrl || !product || params.response.products.length !== 1) return params.response;
@@ -1053,24 +1054,32 @@ async function enrichDirectShopifyPdpResponse(params: {
   );
   const scrapeTimeoutMs = clampIntShared(process.env.PUPPETEER_SCRAPE_TIMEOUT_MS, DEFAULT_SCRAPE_TIMEOUT_MS, 10_000, 300_000);
 
-  const browserRun = await runBrowserTaskWithFallback<ExtractedProduct | null>(
-    async (browser) =>
-      withTimeoutShared(
-        scrapeProductPage({
-          browser,
-          url: params.seedUrl!,
-          baseUrl: params.baseUrl,
-          navigationTimeoutMs,
-          verbose: false,
-          log: params.log,
-          diagnostics: params.diagnostics!,
-          context: {},
-        }),
-        scrapeTimeoutMs,
-        "Shopify direct PDP image enrichment",
-      ),
-    { diagnostics: params.diagnostics, log: params.log },
-  );
+  const browserRunner = params.browserRunner || runBrowserTaskWithFallback;
+  let browserRun: Awaited<ReturnType<typeof runBrowserTaskWithFallback<ExtractedProduct | null>>>;
+  try {
+    browserRun = await browserRunner(
+      async (browser) =>
+        withTimeoutShared(
+          scrapeProductPage({
+            browser,
+            url: params.seedUrl!,
+            baseUrl: params.baseUrl,
+            navigationTimeoutMs,
+            verbose: false,
+            log: params.log,
+            diagnostics: params.diagnostics!,
+            context: {},
+          }),
+          scrapeTimeoutMs,
+          "Shopify direct PDP image enrichment",
+        ),
+      { diagnostics: params.diagnostics, log: params.log },
+    );
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error || "unknown_error");
+    params.log("warn", `Browser enrichment failed for Shopify PDP; returning direct feed response: ${msg}`);
+    return params.response;
+  }
 
   if (!browserRun.result) {
     params.log("warn", `Browser enrichment did not recover images for Shopify PDP: ${params.seedUrl}`);

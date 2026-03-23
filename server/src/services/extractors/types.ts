@@ -44,6 +44,7 @@ export type ExtractRequestBody = {
   market?: MarketId;
   offset?: number;
   limit?: number;
+  storefront_password?: string;
 };
 
 export type ExtractInput = ExtractRequestBody;
@@ -66,6 +67,20 @@ export type ExtractedVariant = {
   ad_copy: string;
 };
 
+export type ExtractedProductDetailSection = {
+  heading: string;
+  body: string;
+  source_kind: string;
+};
+
+export type ExtractedProductFieldCaptureStatus = {
+  description_raw: "present" | "missing";
+  details_sections: "present" | "missing";
+  ingredients_raw: "present" | "missing";
+  active_ingredients_raw: "present" | "missing";
+  how_to_use_raw: "present" | "missing";
+};
+
 export type ExtractedProduct = {
   title: string;
   url: string;
@@ -73,6 +88,13 @@ export type ExtractedProduct = {
   image_urls: string[];
   variant_skus: string[];
   variants: ExtractedVariant[];
+  description_raw?: string;
+  details_sections?: ExtractedProductDetailSection[];
+  ingredients_raw?: string;
+  active_ingredients_raw?: string;
+  how_to_use_raw?: string;
+  field_capture_status?: ExtractedProductFieldCaptureStatus;
+  field_sources?: Record<string, string[]>;
 };
 
 export type ExtractedVariantRow = ExtractedVariant & {

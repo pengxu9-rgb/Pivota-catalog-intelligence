@@ -11,12 +11,18 @@ import {
   detectBlockProvider,
   discoverProductUrls,
   isCookieActionLabel,
+  looksLikeStorefrontPasswordPage,
   looksLikeProductPageHtml,
   parseTarget,
   resolveStorefrontFromHtml,
   resolveStorefrontTarget,
   runBrowserTaskWithFallback,
 } from "../src/services/extractors/shared";
+import {
+  buildProductPdpFields,
+  deriveProductPdpModuleBodies,
+  looksLikeFullIngredientListText,
+} from "../src/services/extractors/puppeteer";
 
 type MockRoute = {
   status?: number;
@@ -54,6 +60,106 @@ async function withMockFetch(routes: Record<string, MockRoute>, fn: () => Promis
     globalThis.fetch = originalFetch;
   }
 }
+
+test("buildProductPdpFields preserves explicit PDP module fields and sources", () => {
+  const fields = buildProductPdpFields({
+    descriptionRaw: "A lightweight moisturizer with SPF 20.",
+    detailsSections: [
+      {
+        heading: "Ingredients",
+        body: "Titanium Dioxide, Zinc Oxide, Glycerin",
+        source_kind: "accordion_ingredients",
+      },
+      {
+        heading: "How to Use",
+        body: "Apply evenly before sun exposure.",
+        source_kind: "accordion_how_to_use",
+      },
+    ],
+    ingredientsRaw: "Titanium Dioxide, Zinc Oxide, Glycerin",
+    activeIngredientsRaw: "Titanium Dioxide, Zinc Oxide",
+    howToUseRaw: "Apply evenly before sun exposure.",
+    fieldSources: {
+      description_raw: ["structured_overview"],
+      details_sections: ["accordion_ingredients", "accordion_how_to_use"],
+      ingredients_raw: ["page_ingredients_section"],
+      active_ingredients_raw: ["page_active_ingredients_section"],
+      how_to_use_raw: ["page_how_to_use_section"],
+    },
+  });
+
+  assert.equal(fields.description_raw, "A lightweight moisturizer with SPF 20.");
+  assert.equal(fields.field_capture_status?.ingredients_raw, "present");
+  assert.equal(fields.field_capture_status?.how_to_use_raw, "present");
+  assert.equal(fields.details_sections?.length, 2);
+  assert.deepEqual(fields.field_sources?.ingredients_raw, ["page_ingredients_section"]);
+});
+
+test("buildProductPdpFields does not fabricate ingredient fields from generic copy", () => {
+  const fields = buildProductPdpFields({
+    descriptionRaw: "Hydrates and smooths for softer-feeling skin.",
+    fieldSources: {
+      description_raw: ["structured_overview"],
+    },
+  });
+
+  assert.equal(fields.description_raw, "Hydrates and smooths for softer-feeling skin.");
+  assert.equal(fields.ingredients_raw, undefined);
+  assert.equal(fields.active_ingredients_raw, undefined);
+  assert.equal(fields.how_to_use_raw, undefined);
+  assert.equal(fields.field_capture_status?.ingredients_raw, "missing");
+});
+
+test("deriveProductPdpModuleBodies extracts full modal ingredients and active ingredients separately", () => {
+  const bodies = deriveProductPdpModuleBodies({
+    detailsSections: [
+      {
+        heading: "Full Ingredients",
+        body:
+          "Active ingredients: Homosalate: 9.0%, Titanium Dioxide: 1.8%, Zinc Oxide: 0.9%. Inactive ingredients: Water/Aqua, Dimethicone, Talc, Iron Oxides (CI 77491, CI 77492, CI 77499).",
+        source_kind: "modal_content",
+      },
+      {
+        heading: "How to use",
+        body: "Shake well and blend with fingers.",
+        source_kind: "accordion_button",
+      },
+    ],
+  });
+
+  assert.equal(
+    bodies.ingredientsRaw,
+    "Active ingredients: Homosalate: 9.0%, Titanium Dioxide: 1.8%, Zinc Oxide: 0.9%. Inactive ingredients: Water/Aqua, Dimethicone, Talc, Iron Oxides (CI 77491, CI 77492, CI 77499).",
+  );
+  assert.equal(bodies.activeIngredientsRaw, "Homosalate: 9.0%, Titanium Dioxide: 1.8%, Zinc Oxide: 0.9%.");
+  assert.equal(bodies.howToUseRaw, "Shake well and blend with fingers.");
+});
+
+test("deriveProductPdpModuleBodies keeps summary-style ingredient accordions out of ingredients_raw", () => {
+  assert.equal(looksLikeFullIngredientListText("Rose Flower Oil nourishes & restores. Ceramide provides time-release moisture."), false);
+
+  const bodies = deriveProductPdpModuleBodies({
+    detailsSections: [
+      {
+        heading: "Ingredients",
+        body: "Rose Flower Oil nourishes & restores. Ceramide provides time-release moisture. Probiotics protect & balance.",
+        source_kind: "accordion_button",
+      },
+      {
+        heading: "How To Apply",
+        body: "Use daily after cleansing and serum.",
+        source_kind: "accordion_button",
+      },
+    ],
+  });
+
+  assert.equal(bodies.ingredientsRaw, undefined);
+  assert.equal(
+    bodies.activeIngredientsRaw,
+    "Rose Flower Oil nourishes & restores. Ceramide provides time-release moisture. Probiotics protect & balance.",
+  );
+  assert.equal(bodies.howToUseRaw, "Use daily after cleansing and serum.");
+});
 
 test("resolveStorefrontFromHtml resolves selector roots to the requested market storefront", () => {
   const html = readFixture("caudalie-selector.html");
@@ -329,6 +435,28 @@ test("detectBlockProvider does not classify normal Cloudflare-served pages from 
   });
 
   assert.equal(provider, null);
+});
+
+test("looksLikeStorefrontPasswordPage detects Shopify password gates", () => {
+  assert.equal(
+    looksLikeStorefrontPasswordPage({
+      url: "https://pivota-market.myshopify.com/password",
+      title: "– Pivota Market",
+      content: "<h1>Opening soon</h1><button>Enter using password</button>",
+    }),
+    true,
+  );
+});
+
+test("looksLikeStorefrontPasswordPage ignores normal product pages", () => {
+  assert.equal(
+    looksLikeStorefrontPasswordPage({
+      url: "https://pivota-market.myshopify.com/products/winona-soothing-repair-serum",
+      title: "Winona Soothing Repair Serum – Pivota Market",
+      content: "<h1>Winona Soothing Repair Serum</h1><button>Add to cart</button>",
+    }),
+    false,
+  );
 });
 
 test("runBrowserTaskWithFallback retries once with a managed browser after a bot challenge", async () => {

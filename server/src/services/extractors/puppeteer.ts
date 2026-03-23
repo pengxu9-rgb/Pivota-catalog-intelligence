@@ -35,6 +35,7 @@ import {
   preparePage,
   resolveStorefrontTarget,
   runBrowserTaskWithFallback,
+  scoreProductCandidateUrl,
   setDiscoveryStrategy,
   setFailureCategory,
   toAbsoluteUrl as toAbsoluteUrlShared,
@@ -1514,6 +1515,11 @@ async function fetchJson<T>(url: string): Promise<T | null> {
 }
 
 async function fetchText(url: string): Promise<string | null> {
+  const result = await fetchTextWithFinalUrl(url);
+  return result.ok ? result.body : null;
+}
+
+async function fetchTextWithFinalUrl(url: string): Promise<{ ok: boolean; body: string | null; finalUrl: string }> {
   const timeoutMs = clampInt(process.env.PUPPETEER_FETCH_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, 2_000, 120_000);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -1526,13 +1532,61 @@ async function fetchText(url: string): Promise<string | null> {
         "user-agent": process.env.PUPPETEER_USER_AGENT || "PivotaCatalogIntelligence/1.0",
       },
     });
-    if (!res.ok) return null;
-    return await res.text();
+    const finalUrl = res.url || url;
+    if (!res.ok) return { ok: false, body: null, finalUrl };
+    return { ok: true, body: await res.text(), finalUrl };
   } catch {
-    return null;
+    return { ok: false, body: null, finalUrl: url };
   } finally {
     clearTimeout(timer);
   }
+}
+
+function tokenizePathSegment(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .filter((token) => token.length > 1)
+    .filter((token) => !["product", "products", "collection", "collections"].includes(token));
+}
+
+function scoreSeedUrlAffinity(candidateUrl: string, seedUrl: string, baseUrl: string): number {
+  const candidate = parseHttpUrl(candidateUrl, baseUrl);
+  const seed = parseHttpUrl(seedUrl, baseUrl);
+  if (!candidate || !seed) return Number.NEGATIVE_INFINITY;
+
+  const candidateSegment = candidate.pathname.split("/").filter(Boolean).pop() || "";
+  const seedSegment = seed.pathname.split("/").filter(Boolean).pop() || "";
+  const candidateTokens = tokenizePathSegment(candidateSegment);
+  const seedTokens = tokenizePathSegment(seedSegment);
+  if (candidateTokens.length === 0 || seedTokens.length === 0) return 0;
+
+  const candidateSet = new Set(candidateTokens);
+  const seedSet = new Set(seedTokens);
+  let shared = 0;
+  for (const token of seedSet) {
+    if (candidateSet.has(token)) shared += 1;
+  }
+
+  const unionSize = new Set([...candidateSet, ...seedSet]).size || 1;
+  let score = shared / unionSize;
+  if (candidateSegment === seedSegment) score += 1;
+  if (candidate.pathname.toLowerCase() === seed.pathname.toLowerCase()) score += 1;
+  return score;
+}
+
+function rankProductUrlsForSeed(productUrls: string[], seedUrl: string, baseUrl: string): string[] {
+  return [...productUrls].sort((a, b) => {
+    const affinityDiff = scoreSeedUrlAffinity(b, seedUrl, baseUrl) - scoreSeedUrlAffinity(a, seedUrl, baseUrl);
+    if (affinityDiff !== 0) return affinityDiff;
+
+    const scoreDiff = scoreProductCandidateUrl(b, baseUrl) - scoreProductCandidateUrl(a, baseUrl);
+    if (scoreDiff !== 0) return scoreDiff;
+
+    return a.localeCompare(b);
+  });
 }
 
 export function extractProductUrlsFromHtml(html: string, baseUrl: string) {
@@ -1580,12 +1634,24 @@ function extractLocUrlsFromSitemap(xml: string) {
   return urls;
 }
 
-async function discoverProductUrls(params: { baseUrl: string; maxProducts: number; seedUrl?: string; log: Logger }) {
+export async function discoverProductUrls(params: { baseUrl: string; maxProducts: number; seedUrl?: string; log: Logger }) {
   if (params.seedUrl) {
     params.log("info", `GET ${params.seedUrl}`);
-    const seedHtml = await fetchText(params.seedUrl);
+    const seed = await fetchTextWithFinalUrl(params.seedUrl);
+    const seedHtml = seed.body;
     if (seedHtml) {
-      const seedUrls = extractProductUrlsFromHtml(seedHtml, params.baseUrl);
+      const requestedSeedUrl = canonicalizeUrlShared(params.seedUrl, params.baseUrl);
+      const resolvedSeedUrl = canonicalizeUrlShared(seed.finalUrl || params.seedUrl, params.baseUrl);
+      const resolvedSeedLooksProductLike = scoreProductCandidateUrl(resolvedSeedUrl, params.baseUrl) >= 4;
+      if (resolvedSeedLooksProductLike && looksLikeProductPageHtml(seedHtml)) {
+        params.log("success", "Seed page resolved directly to a PDP.");
+        return { sitemapUrl: undefined, productUrls: [resolvedSeedUrl] };
+      }
+
+      const seedUrls = (!seed.ok || resolvedSeedLooksProductLike
+        ? []
+        : rankProductUrlsForSeed(extractProductUrlsFromHtml(seedHtml, params.baseUrl), requestedSeedUrl, params.baseUrl)
+      ).slice(0, params.maxProducts);
       if (seedUrls.length > 0) {
         params.log("success", `Seed page yielded ${seedUrls.length} product links.`);
         return { sitemapUrl: undefined, productUrls: seedUrls.slice(0, params.maxProducts) };

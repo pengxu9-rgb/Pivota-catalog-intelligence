@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   PuppeteerExtractor,
   choosePreferredProductOverview,
+  discoverProductUrls,
   enrichDirectShopifyPdpResponse,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
@@ -13,13 +14,21 @@ type MockRoute = {
   status?: number;
   headers?: Record<string, string>;
   body?: string;
+  responseUrl?: string;
 };
 
 function createMockResponse(route: MockRoute): Response {
-  return new Response(route.body ?? "", {
+  const response = new Response(route.body ?? "", {
     status: route.status ?? 200,
     headers: route.headers,
   });
+  if (route.responseUrl) {
+    Object.defineProperty(response, "url", {
+      value: route.responseUrl,
+      configurable: true,
+    });
+  }
+  return response;
 }
 
 async function withMockFetch(routes: Record<string, MockRoute>, fn: () => Promise<void>): Promise<void> {
@@ -345,6 +354,46 @@ test("PuppeteerExtractor honors singular /product Shopify direct PDP seed URLs",
       assert.equal(result.variants[0]?.currency, "USD");
       assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
       assert.equal(result.platform, "Shopify (Direct PDP)");
+    },
+  );
+});
+
+test("discoverProductUrls re-discovers Tom Ford foundation PDPs when stale /product seeds redirect to makeup collections", async () => {
+  await withMockFetch(
+    {
+      "https://www.tomfordbeauty.com/products/shade-and-illuminate-soft-radiance-foundation-spf-50.js": {
+        status: 404,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: "{}",
+      },
+      "https://www.tomfordbeauty.com/product/shade-and-illuminate-soft-radiance-foundation-spf-50?shade=12.5_Walnut": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        responseUrl: "https://www.tomfordbeauty.com/collections/makeup",
+        body: `
+          <html>
+            <head><title>Makeup</title></head>
+            <body>
+              <h1>Makeup</h1>
+              <a href="/products/ombre-leather-parfum">Ombre Leather Parfum</a>
+              <a href="/products/shade-and-illuminate-soft-radiance-foundation-spf-50">Soft Radiance Foundation SPF 50</a>
+            </body>
+          </html>
+        `,
+      },
+    },
+    async () => {
+      const result = await discoverProductUrls({
+        baseUrl: "https://www.tomfordbeauty.com",
+        seedUrl: "https://www.tomfordbeauty.com/product/shade-and-illuminate-soft-radiance-foundation-spf-50?shade=12.5_Walnut",
+        maxProducts: 5,
+        log: () => undefined,
+      });
+
+      assert.deepEqual(result.productUrls.slice(0, 2), [
+        "https://www.tomfordbeauty.com/products/shade-and-illuminate-soft-radiance-foundation-spf-50",
+        "https://www.tomfordbeauty.com/products/ombre-leather-parfum",
+      ]);
     },
   );
 });

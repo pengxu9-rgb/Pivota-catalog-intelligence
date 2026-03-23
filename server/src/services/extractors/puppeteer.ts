@@ -179,29 +179,125 @@ export class PuppeteerExtractor implements Extractor {
       const navigationTimeoutMs = clampIntShared(process.env.PUPPETEER_NAV_TIMEOUT_MS, DEFAULT_NAV_TIMEOUT_MS, 5_000, 120_000);
       const scrapeTimeoutMs = clampIntShared(process.env.PUPPETEER_SCRAPE_TIMEOUT_MS, DEFAULT_SCRAPE_TIMEOUT_MS, 10_000, 300_000);
 
-      const browserRun = await runBrowserTaskWithFallback(
-        async (browser) =>
-          withTimeoutShared(
-            mapWithConcurrencyShared(batchCandidates, concurrency, async (url, idx) => {
-              const verbose = idx < 3;
-              return scrapeProductPage({
-                browser,
-                url,
-                baseUrl,
-                navigationTimeoutMs,
-                verbose,
-                log,
-                diagnostics,
-                context: browserContext,
-              });
-            }),
-            scrapeTimeoutMs,
-            "Product scraping",
-          ),
-        { diagnostics, log },
+      const htmlPrefetched = await withTimeoutShared(
+        mapWithConcurrencyShared(batchCandidates, concurrency, async (url, idx) => {
+          const verbose = idx < 3;
+          return scrapeProductPageViaHtml({
+            url,
+            baseUrl,
+            diagnostics,
+            verbose,
+            log,
+          });
+        }),
+        scrapeTimeoutMs,
+        "Native HTML product scraping",
       );
+      const htmlProducts = htmlPrefetched.filter((product): product is ExtractedProduct => Boolean(product));
+      if (htmlProducts.length === batchCandidates.length && htmlProducts.length > 0) {
+        const products = htmlProducts.slice(0, batchLimit);
+        const { variants, adCopyById } = flattenVariants({
+          brand: input.brand,
+          products,
+          simulated: false,
+        });
+        const nextOffset = batchOffset + batchLimit;
+        const reachedDiscoveryCap = discovered.productUrls.length >= discoveryLimit && discoveryLimit < maxProductsTotal;
+        const hasMore =
+          nextOffset < maxProductsTotal && (nextOffset < discovered.productUrls.length || reachedDiscoveryCap);
+        const pricing = computePricingStats(variants);
+        log("success", `Extraction Complete. ${variants.length} variants processed successfully.`);
 
-      const products = browserRun.result.filter((product): product is ExtractedProduct => Boolean(product)).slice(0, batchLimit);
+        return {
+          brand: input.brand,
+          domain: target.domain,
+          generated_at: generatedAt,
+          mode: "puppeteer",
+          platform: "Generic Website",
+          sitemap: discovered.sitemapUrl,
+          products,
+          variants,
+          pricing,
+          ad_copy: { by_variant_id: adCopyById },
+          pagination: {
+            offset: batchOffset,
+            limit: batchLimit,
+            next_offset: hasMore ? nextOffset : null,
+            has_more: hasMore,
+            discovered_urls: discovered.productUrls.length,
+          },
+          logs,
+          diagnostics,
+        };
+      }
+
+      let browserRun: Awaited<ReturnType<typeof runBrowserTaskWithFallback<Array<ExtractedProduct | null>>>> | null = null;
+      try {
+        browserRun = await runBrowserTaskWithFallback(
+          async (browser) =>
+            withTimeoutShared(
+              mapWithConcurrencyShared(batchCandidates, concurrency, async (url, idx) => {
+                const verbose = idx < 3;
+                return scrapeProductPage({
+                  browser,
+                  url,
+                  baseUrl,
+                  navigationTimeoutMs,
+                  verbose,
+                  log,
+                  diagnostics,
+                  context: browserContext,
+                });
+              }),
+              scrapeTimeoutMs,
+              "Product scraping",
+            ),
+          { diagnostics, log },
+        );
+      } catch (error) {
+        if (htmlProducts.length > 0) {
+          const msg = error instanceof Error ? error.message : String(error || "unknown_error");
+          log("warn", `Browser scraping failed; returning native HTML results: ${msg}`);
+          const products = htmlProducts.slice(0, batchLimit);
+          const { variants, adCopyById } = flattenVariants({
+            brand: input.brand,
+            products,
+            simulated: false,
+          });
+          const nextOffset = batchOffset + batchLimit;
+          const reachedDiscoveryCap = discovered.productUrls.length >= discoveryLimit && discoveryLimit < maxProductsTotal;
+          const hasMore =
+            nextOffset < maxProductsTotal && (nextOffset < discovered.productUrls.length || reachedDiscoveryCap);
+          const pricing = computePricingStats(variants);
+          log("success", `Extraction Complete. ${variants.length} variants processed successfully.`);
+
+          return {
+            brand: input.brand,
+            domain: target.domain,
+            generated_at: generatedAt,
+            mode: "puppeteer",
+            platform: "Generic Website",
+            sitemap: discovered.sitemapUrl,
+            products,
+            variants,
+            pricing,
+            ad_copy: { by_variant_id: adCopyById },
+            pagination: {
+              offset: batchOffset,
+              limit: batchLimit,
+              next_offset: hasMore ? nextOffset : null,
+              has_more: hasMore,
+              discovered_urls: discovered.productUrls.length,
+            },
+            logs,
+            diagnostics,
+          };
+        }
+        throw error;
+      }
+
+      const browserProducts = browserRun.result.filter((product): product is ExtractedProduct => Boolean(product));
+      const products = (browserProducts.length > 0 ? browserProducts : htmlProducts).slice(0, batchLimit);
       const { variants, adCopyById } = flattenVariants({
         brand: input.brand,
         products,
@@ -449,6 +545,300 @@ function cleanText(text?: string) {
     .trim();
 }
 
+function safeDecodeURIComponent(text: string) {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+function decodeHtmlEntities(text: string) {
+  return text.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (match, entity: string) => {
+    const normalized = String(entity || "").toLowerCase();
+    if (normalized.startsWith("#x")) {
+      const code = Number.parseInt(normalized.slice(2), 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+    }
+    if (normalized.startsWith("#")) {
+      const code = Number.parseInt(normalized.slice(1), 10);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+    }
+
+    switch (normalized) {
+      case "amp":
+        return "&";
+      case "lt":
+        return "<";
+      case "gt":
+        return ">";
+      case "quot":
+        return '"';
+      case "apos":
+      case "#39":
+        return "'";
+      case "nbsp":
+        return " ";
+      case "ndash":
+        return "–";
+      case "mdash":
+        return "—";
+      case "hellip":
+        return "…";
+      case "copy":
+        return "©";
+      case "reg":
+        return "®";
+      case "trade":
+        return "™";
+      default:
+        return match;
+    }
+  });
+}
+
+function cleanHtmlText(html: string | undefined) {
+  if (!html) return "";
+  return cleanText(
+    decodeHtmlEntities(
+      html
+        .replace(/<!--[\s\S]*?-->/g, " ")
+        .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+        .replace(/<li\b[^>]*>/gi, "\n- ")
+        .replace(/<\/li\s*>/gi, "\n")
+        .replace(/<\/(?:ul|ol|p|div|section|article|details|summary|h[1-6])\s*>/gi, "\n")
+        .replace(/<br\s*\/?>/gi, "\n"),
+    ),
+  );
+}
+
+function extractHtmlAttribute(tag: string, attribute: string) {
+  const quotedMatch = tag.match(new RegExp(`${attribute}\\s*=\\s*(['"])([\\s\\S]*?)\\1`, "i"));
+  if (quotedMatch?.[2]) return decodeHtmlEntities(quotedMatch[2].trim());
+  const bareMatch = tag.match(new RegExp(`${attribute}\\s*=\\s*([^\\s>]+)`, "i"));
+  return bareMatch?.[1] ? decodeHtmlEntities(bareMatch[1].trim()) : "";
+}
+
+function extractMetaTagContent(
+  html: string,
+  params: { name?: string; property?: string; itemprop?: string },
+) {
+  const metaTags = html.match(/<meta\b[^>]*>/gi) || [];
+  for (const tag of metaTags) {
+    const name = extractHtmlAttribute(tag, "name").toLowerCase();
+    const property = extractHtmlAttribute(tag, "property").toLowerCase();
+    const itemprop = extractHtmlAttribute(tag, "itemprop").toLowerCase();
+
+    if (
+      (params.name && name === params.name.toLowerCase()) ||
+      (params.property && property === params.property.toLowerCase()) ||
+      (params.itemprop && itemprop === params.itemprop.toLowerCase())
+    ) {
+      return cleanHtmlText(extractHtmlAttribute(tag, "content"));
+    }
+  }
+  return "";
+}
+
+function pushRelevantHtmlSection(
+  sections: ExtractedProductDetailSection[],
+  headingRaw: string,
+  bodyRaw: string,
+  sourceKind: string,
+) {
+  const heading = cleanHtmlText(headingRaw);
+  const body = cleanHtmlText(bodyRaw);
+  if (!heading || !body) return;
+  if (
+    !/\b(details?|benefits?|how to (?:use|apply)|usage(?: details)?|suggested usage|directions?|ingredients?|active ingredients?|inci|description|beauty tips|formula|about|what(?:'|’)s in it\??)\b/i.test(
+      heading,
+    )
+  ) {
+    return;
+  }
+
+  sections.push({
+    heading,
+    body,
+    source_kind: sourceKind,
+  });
+}
+
+function extractHtmlDetailSections(html: string) {
+  const sections: ExtractedProductDetailSection[] = [];
+
+  for (const match of html.matchAll(/<details\b[^>]*>([\s\S]*?)<\/details>/gi)) {
+    const block = match[1] || "";
+    const summaryMatch = block.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/i);
+    if (!summaryMatch) continue;
+    const bodyHtml = block.replace(summaryMatch[0], "");
+    pushRelevantHtmlSection(sections, summaryMatch[1] || "", bodyHtml, "details_summary");
+  }
+
+  for (const match of html.matchAll(
+    /<button\b[^>]*(?:aria-label|title)=["']([^"']+)["'][^>]*>[\s\S]*?<\/button>[\s\S]{0,12000}?<div\b[^>]*class=["'][^"']*accordion__content[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi,
+  )) {
+    pushRelevantHtmlSection(sections, match[1] || "", match[2] || "", "accordion_button_html");
+  }
+
+  for (const match of html.matchAll(
+    /<(?:div|p)\b[^>]*class=["'][^"']*\btitle\b[^"']*["'][^>]*>\s*(Ingredients|How to Use|Usage Details|Directions?|Benefits?|Description)\s*<\/(?:div|p)>[\s\S]{0,12000}?<(?:div|p)\b[^>]*class=["'][^"']*(ingredients-flyout-content|product-flyout-directions-list|description)[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|p)>/gi,
+  )) {
+    const heading = match[1] || "";
+    const sourceClass = (match[2] || "").toLowerCase();
+    const sourceKind =
+      sourceClass.includes("ingredients")
+        ? "title_flyout_ingredients"
+        : sourceClass.includes("directions")
+          ? "title_flyout_how_to_use"
+          : "title_flyout_description";
+    pushRelevantHtmlSection(sections, heading, match[3] || "", sourceKind);
+  }
+
+  const descriptionBlock =
+    html.match(
+      /<div\b[^>]*class=["'][^"']*product-info-description[^"']*["'][^>]*>[\s\S]*?<div\b[^>]*class=["'][^"']*description[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+    )?.[1] || "";
+  if (descriptionBlock) {
+    pushRelevantHtmlSection(sections, "Description", descriptionBlock, "page_product_description");
+  }
+
+  return dedupeDetailSections(sections);
+}
+
+function extractHtmlImageCandidates(html: string, baseUrl: string) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string | undefined) => {
+    const trimmed = typeof raw === "string" ? raw.trim() : "";
+    if (!trimmed) return;
+    const candidates = trimmed
+      .split(",")
+      .map((part) => part.trim().split(/\s+/)[0] || "")
+      .filter(Boolean);
+    for (const candidate of candidates) {
+      const normalized = normalizeImageUrlCandidate(baseUrl, decodeHtmlEntities(candidate));
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      out.push(normalized);
+    }
+  };
+
+  const metaTags = html.match(/<meta\b[^>]*>/gi) || [];
+  for (const tag of metaTags) {
+    const property = extractHtmlAttribute(tag, "property").toLowerCase();
+    const name = extractHtmlAttribute(tag, "name").toLowerCase();
+    const itemprop = extractHtmlAttribute(tag, "itemprop").toLowerCase();
+    if (
+      property === "og:image" ||
+      name === "twitter:image" ||
+      itemprop === "image" ||
+      property === "product:image"
+    ) {
+      push(extractHtmlAttribute(tag, "content"));
+    }
+  }
+
+  for (const tag of html.match(/<img\b[^>]*>/gi) || []) {
+    push(extractHtmlAttribute(tag, "zoom-src"));
+    push(extractHtmlAttribute(tag, "data-zoom-src"));
+    push(extractHtmlAttribute(tag, "data-zoom-image"));
+    push(extractHtmlAttribute(tag, "data-large-image"));
+    push(extractHtmlAttribute(tag, "data-src"));
+    push(extractHtmlAttribute(tag, "srcset"));
+    push(extractHtmlAttribute(tag, "src"));
+    if (out.length >= 12) break;
+  }
+
+  return out;
+}
+
+function extractJsonLdScriptsFromHtml(html: string) {
+  return Array.from(html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi))
+    .map((match) => decodeHtmlEntities((match[1] || "").trim()))
+    .filter(Boolean);
+}
+
+export function extractProductFromHtmlSnapshot(params: {
+  html: string;
+  url: string;
+  baseUrl: string;
+  verbose?: boolean;
+  log?: Logger;
+}): ExtractedProduct | null {
+  const html = params.html || "";
+  if (!html) return null;
+
+  const title =
+    cleanHtmlText(html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1]) ||
+    extractMetaTagContent(html, { property: "og:title" }) ||
+    cleanHtmlText(html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]);
+
+  const canonical =
+    canonicalizeUrlShared(
+      toAbsoluteUrlShared(
+        params.baseUrl,
+        extractHtmlAttribute(html.match(/<link\b[^>]*rel=["']canonical["'][^>]*>/i)?.[0] || "", "href") ||
+          extractMetaTagContent(html, { property: "og:url" }) ||
+          params.url,
+      ),
+      params.baseUrl,
+    );
+
+  const metaDescription =
+    extractMetaTagContent(html, { name: "description" }) ||
+    extractMetaTagContent(html, { property: "og:description" });
+
+  const detailsSections = extractHtmlDetailSections(html);
+  const ingredientsSection =
+    firstMatchingSectionBody(detailsSections, [/\b(ingredients?|inci)\b/i]) ||
+    firstMatchingSectionBody(detailsSections, [/\bwhat(?:'|’)s in it\??\b/i]);
+  const howToUseSection =
+    firstMatchingSectionBody(detailsSections, [/\bhow to (?:use|apply)\b/i]) ||
+    firstMatchingSectionBody(detailsSections, [/\b(usage(?: details)?|suggested usage|directions?|beauty tips)\b/i]);
+  const activeIngredientsSection = firstMatchingSectionBody(detailsSections, [/\bactive ingredients?\b/i]);
+  const descriptionSection =
+    firstMatchingSectionBody(detailsSections, [/\bdescription\b/i]) ||
+    firstMatchingSectionBody(detailsSections, [/\b(details?|benefits?|about)\b/i]);
+
+  const extracted: ScrapedPageSignals = {
+    title,
+    canonical,
+    metaDescription,
+    priceTexts: dedupeStringList(
+      [
+        extractMetaTagContent(html, { property: "og:price:amount" }),
+        extractMetaTagContent(html, { property: "product:price:amount" }),
+        ...Array.from(html.matchAll(/\$\s*\d+(?:\.\d{2})?/g)).slice(0, 6).map((match) => match[0] || ""),
+      ].map((value) => cleanHtmlText(value)),
+    ),
+    imageCandidates: extractHtmlImageCandidates(html, params.baseUrl),
+    scripts: extractJsonLdScriptsFromHtml(html),
+    domVariants: [],
+    productDetailsText: descriptionSection?.body || "",
+    howToUseText: howToUseSection?.body,
+    ingredientsMarkdownText: ingredientsSection?.body,
+    ingredientsDisclaimerText: undefined,
+    activeIngredientsText: activeIngredientsSection?.body,
+    detailsSections,
+  };
+
+  const pageLooksLikeProduct =
+    looksLikeProductPageHtml(html) ||
+    (isLikelyProductUrlShared(params.url, params.baseUrl) &&
+      Boolean(cleanText(extracted.title)) &&
+      (extracted.priceTexts.length > 0 || extracted.detailsSections.length > 0 || extracted.imageCandidates.length > 0));
+
+  return buildProductFromPageSignals({
+    extracted,
+    pageLooksLikeProduct,
+    sourceUrl: params.url,
+    baseUrl: params.baseUrl,
+    verbose: Boolean(params.verbose),
+    log: params.log || (() => undefined),
+  });
+}
+
 function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
   const out: ExtractedProductDetailSection[] = [];
   const seen = new Set<string>();
@@ -517,7 +907,7 @@ export function looksLikeFullIngredientListText(text: string | undefined) {
   const commaCount = (normalized.match(/,/g) || []).length;
   return (
     /\b(active ingredients?|inactive ingredients?|full ingredients?|ingredient list|inci)\b/i.test(normalized) ||
-    /\bwater\/aqua\b/i.test(normalized) ||
+    /\b(?:water\/aqua|aqua\/water)\b/i.test(normalized) ||
     /\bci\s*\d{5}\b/i.test(normalized) ||
     commaCount >= 4
   );
@@ -543,7 +933,8 @@ export function deriveProductPdpModuleBodies(params: {
   const detailsSections = dedupeDetailSections(params.detailsSections || []);
   const ingredientSection =
     firstMatchingSectionBody(detailsSections, [/\b(ingredients?|inci)\b/i]) ||
-    firstMatchingSectionBody(detailsSections, [/\bwhat(?:'|’)s in it\??\b/i]);
+    firstMatchingSectionBody(detailsSections, [/\bwhat(?:'|’)s in it\??\b/i]) ||
+    firstMatchingSectionBody(detailsSections, [/\bformula\b/i]);
   const ingredientSectionBody = cleanText(ingredientSection?.body);
   const explicitIngredients = cleanText(params.ingredientsMarkdownText);
   const activeIngredients = cleanText(params.activeIngredientsText);
@@ -750,7 +1141,7 @@ const IMAGE_HINT_STOPWORDS = new Set([
 function tokenizeImageHints(values: Array<string | undefined | null>) {
   const tokens = new Set<string>();
   for (const value of values) {
-    const decoded = decodeURIComponent(String(value || "").toLowerCase());
+    const decoded = safeDecodeURIComponent(String(value || "").toLowerCase());
     const matches = decoded.match(/[\p{L}\p{N}]+/gu) || [];
     for (const match of matches) {
       if (match.length < 4) continue;
@@ -763,7 +1154,7 @@ function tokenizeImageHints(values: Array<string | undefined | null>) {
 }
 
 function imageUrlMatchScore(url: string, tokens: string[]) {
-  const haystack = decodeURIComponent(url.toLowerCase());
+  const haystack = safeDecodeURIComponent(url.toLowerCase());
   let score = 0;
   for (const token of tokens) {
     if (haystack.includes(token)) score += token.length >= 8 ? 3 : 2;
@@ -1083,6 +1474,7 @@ export async function enrichDirectShopifyPdpResponse(params: {
   diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
   log: Logger;
   browserRunner?: typeof runBrowserTaskWithFallback<ExtractedProduct | null>;
+  htmlFetcher?: typeof fetchHtmlViaNativeRequest;
 }): Promise<Omit<ExtractResponse, "generated_at" | "logs">> {
   const product = params.response.products[0];
   if (!params.seedUrl || !product || params.response.products.length !== 1) return params.response;
@@ -1098,6 +1490,35 @@ export async function enrichDirectShopifyPdpResponse(params: {
     baseUrl: params.baseUrl,
   });
   if (!enrichmentUrl) return params.response;
+
+  const htmlFetcher = params.htmlFetcher || fetchHtmlViaNativeRequest;
+  const htmlSnapshot = await htmlFetcher(enrichmentUrl, params.diagnostics);
+  if (htmlSnapshot.body) {
+    const htmlProduct = extractProductFromHtmlSnapshot({
+      html: htmlSnapshot.body,
+      url: htmlSnapshot.finalUrl || enrichmentUrl,
+      baseUrl: params.baseUrl,
+      log: params.log,
+    });
+    if (htmlProduct) {
+      const htmlMerged = mergeShopifyDirectPdpFallback(params.brand, params.response, htmlProduct);
+      const htmlMergedProduct = htmlMerged.products[0];
+      const htmlStillMissingImages =
+        (htmlMergedProduct?.image_urls.length || 0) === 0 ||
+        Boolean(htmlMergedProduct?.variants.some((variant) => variant.image_urls.length === 0));
+      const htmlStillMissingPdpFields = htmlMergedProduct ? productHasMissingPdpFields(htmlMergedProduct) : true;
+
+      if (!htmlStillMissingImages && !htmlStillMissingPdpFields) {
+        params.log("success", `Recovered Shopify PDP fields from native HTML snapshot: ${enrichmentUrl}`);
+        return htmlMerged;
+      }
+
+      if (!productMissingImages && !variantMissingImages && !htmlStillMissingPdpFields) {
+        params.log("success", `Recovered Shopify PDP modules from native HTML snapshot: ${enrichmentUrl}`);
+        return htmlMerged;
+      }
+    }
+  }
 
   params.log(
     "info",
@@ -1159,7 +1580,7 @@ function extractShopifyProductHandle(seedUrl: string | undefined, baseUrl: strin
   try {
     const parsed = new URL(seedUrl, baseUrl);
     const match = parsed.pathname.match(/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?products?\/([^/?#]+)/i);
-    return match?.[1] ? decodeURIComponent(match[1]) : null;
+    return match?.[1] ? safeDecodeURIComponent(match[1]) : null;
   } catch {
     return null;
   }
@@ -2896,4 +3317,23 @@ async function scrapeProductPage(params: {
   } finally {
     await page.close().catch(() => undefined);
   }
+}
+
+async function scrapeProductPageViaHtml(params: {
+  url: string;
+  baseUrl: string;
+  diagnostics: ExtractResponse["diagnostics"];
+  verbose: boolean;
+  log: Logger;
+}) {
+  const snapshot = await fetchHtmlViaNativeRequest(params.url, params.diagnostics!);
+  if (!snapshot.body) return null;
+
+  return extractProductFromHtmlSnapshot({
+    html: snapshot.body,
+    url: snapshot.finalUrl || params.url,
+    baseUrl: params.baseUrl,
+    verbose: params.verbose,
+    log: params.log,
+  });
 }

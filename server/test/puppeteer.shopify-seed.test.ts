@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import test from "node:test";
 
 import {
@@ -7,6 +8,7 @@ import {
   choosePreferredProductOverview,
   discoverProductUrls,
   enrichDirectShopifyPdpResponse,
+  extractProductFromHtmlSnapshot,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
   resolveDirectPdpEnrichmentUrl,
@@ -130,7 +132,8 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
     id: 101,
     title: "Banana Bright 15% Vitamin C Dark Spot Serum",
     handle: "banana-bright-vitamin-c-serum",
-    body_html: "<p>Brightening serum</p>",
+    body_html:
+      "<p>Brightening serum</p><p>Ingredients: Aqua/Water, Vitamin C, Hyaluronic Acid.</p><p>How to Use: Apply evenly to face and neck daily.</p>",
     variants: [
       {
         id: 1001,
@@ -286,6 +289,126 @@ test("chooseDiscoveryBatchCandidates caps direct seed rediscovery windows to the
     "https://www.tomfordbeauty.com/products/shade-and-illuminate-contour-duo",
     "https://www.tomfordbeauty.com/products/architecture-soft-matte-blurring-foundation",
   ]);
+});
+
+test("enrichDirectShopifyPdpResponse recovers PDP modules from native HTML before browser enrichment", async () => {
+  const response = {
+    brand: "NUXE",
+    domain: "https://us.nuxe.com/products/face-cleansing-and-make-up-removing-gel",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Face Cleansing and Make-Up Removing Gel",
+        url: "https://us.nuxe.com/products/face-cleansing-and-make-up-removing-gel",
+        image_url: "https://cdn.example.com/nuxe-gel.jpg",
+        image_urls: ["https://cdn.example.com/nuxe-gel.jpg"],
+        variant_skus: ["NX9702910"],
+        variants: [
+          {
+            id: "v1",
+            sku: "NX9702910",
+            url: "https://us.nuxe.com/products/face-cleansing-and-make-up-removing-gel",
+            option_name: "Title",
+            option_value: "Default Title",
+            price: "21.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "https://cdn.example.com/nuxe-gel.jpg",
+            image_urls: ["https://cdn.example.com/nuxe-gel.jpg"],
+            ad_copy: "copy",
+          },
+        ],
+        field_capture_status: {
+          description_raw: "missing" as const,
+          details_sections: "missing" as const,
+          ingredients_raw: "missing" as const,
+          active_ingredients_raw: "missing" as const,
+          how_to_use_raw: "missing" as const,
+        },
+        field_sources: {
+          description_raw: [],
+          details_sections: [],
+          ingredients_raw: [],
+          active_ingredients_raw: [],
+          how_to_use_raw: [],
+        },
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 21, max: 21, avg: 21 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "us.nuxe.com",
+      resolved_base_url: "https://us.nuxe.com",
+      discovery_strategy: "shopify_json",
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  let browserCalled = false;
+  const merged = await enrichDirectShopifyPdpResponse({
+    brand: "NUXE",
+    baseUrl: "https://us.nuxe.com",
+    seedUrl: "https://us.nuxe.com/products/face-cleansing-and-make-up-removing-gel",
+    response,
+    diagnostics: response.diagnostics,
+    log: () => undefined,
+    htmlFetcher: async () => ({
+      status: 200,
+      finalUrl: "https://us.nuxe.com/products/face-cleansing-and-make-up-removing-gel",
+      body: `
+        <html>
+          <head>
+            <meta name="description" content="Gentle cleansing gel for dry and sensitive skin.">
+          </head>
+          <body>
+            <h1>Face Cleansing and Make-Up Removing Gel</h1>
+            <details>
+              <summary>Description</summary>
+              <div class="accordion__content">
+                <p>Gentle cleansing gel for dry and sensitive skin.</p>
+              </div>
+            </details>
+            <details>
+              <summary>Beauty tips</summary>
+              <div class="accordion__content">
+                <p>Apply to damp face, massage, then rinse.</p>
+              </div>
+            </details>
+            <details>
+              <summary>Formula</summary>
+              <div class="accordion__content">
+                <p>Ingredients: Aqua/Water, Glycerin, Honey Extract, Sunflower Seed Oil.</p>
+              </div>
+            </details>
+          </body>
+        </html>
+      `,
+    }),
+    browserRunner: async () => {
+      browserCalled = true;
+      throw new Error("browser should not be called");
+    },
+  });
+
+  assert.equal(browserCalled, false);
+  assert.equal(merged.products[0]?.field_capture_status?.description_raw, "present");
+  assert.equal(merged.products[0]?.field_capture_status?.details_sections, "present");
+  assert.equal(merged.products[0]?.field_capture_status?.ingredients_raw, "present");
+  assert.equal(merged.products[0]?.field_capture_status?.how_to_use_raw, "present");
+  assert.match(merged.products[0]?.ingredients_raw || "", /Honey Extract/i);
+  assert.match(merged.products[0]?.how_to_use_raw || "", /Apply to damp face/i);
 });
 
 test("PuppeteerExtractor honors locale-prefixed Shopify direct PDP seed URLs", async () => {
@@ -991,4 +1114,144 @@ test("choosePreferredProductOverview prefers expanded product details over short
     overview,
     "The Acne Set offers a targeted skincare regimen featuring Salicylic Acid 2% Solution for treating acne.\n\nThis set includes...\n\nGlucoside Foaming Cleanser removes dirt and environmental impurities.\nSalicylic Acid 2% Solution exfoliates and helps clear pores.",
   );
+});
+
+test("extractProductFromHtmlSnapshot parses The Ordinary ingredients and usage without a browser", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>Niacinamide 10% + Zinc 1% Serum</title>
+          <meta property="og:price:amount" content="6.50">
+          <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "Product",
+              "name": "Niacinamide 10% + Zinc 1% Serum",
+              "url": "https://theordinary.com/en-us/niacinamide-10-zinc-1-serum-100436.html",
+              "description": "A universal serum for blemish-prone skin that smooths, brightens, and supports.",
+              "image": ["https://theordinary.com/images/niacinamide.jpg"],
+              "offers": {
+                "@type": "Offer",
+                "price": "6.50",
+                "priceCurrency": "USD",
+                "availability": "https://schema.org/InStock"
+              }
+            }
+          </script>
+        </head>
+        <body>
+          <h1>Niacinamide 10% + Zinc 1% Serum</h1>
+          <div class="active-ingredient-flyout-root">
+            <aside class="active-ingredient-flyout">
+              <div class="title">Ingredients</div>
+              <p class="ingredients-flyout-content">Aqua (Water), Niacinamide, Pentylene Glycol, Zinc PCA.</p>
+            </aside>
+          </div>
+          <div class="directions-overview-flyout-container-root">
+            <div class="product-flyout-content">
+              <p class="title">How to Use</p>
+              <div class="product-flyout-directions-list">
+                <ul><li>Apply a few drops to the face in the morning and evening.</li></ul>
+              </div>
+            </div>
+          </div>
+          <div class="product-info-description">
+            <div class="description">A universal serum for blemish-prone skin that smooths, brightens, and supports.</div>
+          </div>
+        </body>
+      </html>
+    `,
+    url: "https://theordinary.com/en-us/niacinamide-10-zinc-1-serum-100436.html",
+    baseUrl: "https://theordinary.com",
+  });
+
+  assert.ok(product);
+  assert.equal(product?.title, "Niacinamide 10% + Zinc 1% Serum");
+  assert.match(product?.ingredients_raw || "", /Niacinamide/i);
+  assert.match(product?.how_to_use_raw || "", /Apply a few drops/i);
+  assert.equal(product?.field_capture_status?.description_raw, "present");
+  assert.equal(product?.field_capture_status?.details_sections, "present");
+});
+
+test("PuppeteerExtractor returns a generic product from static HTML without launching a browser", async () => {
+  const server = http.createServer((req, res) => {
+    const url = req.url || "/";
+
+    if (url === "/products.json?limit=1") {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not_found" }));
+      return;
+    }
+
+    if (url === "/niacinamide-10-zinc-1-serum-100436.html") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`
+        <html>
+          <head>
+            <title>Niacinamide 10% + Zinc 1% Serum</title>
+            <meta property="og:price:amount" content="6.50">
+            <meta property="og:image" content="http://127.0.0.1/static/niacinamide.jpg">
+            <script type="application/ld+json">
+              {
+                "@context": "https://schema.org",
+                "@type": "Product",
+                "name": "Niacinamide 10% + Zinc 1% Serum",
+                "url": "http://127.0.0.1:${(server.address() as any)?.port || 0}/niacinamide-10-zinc-1-serum-100436.html",
+                "description": "A universal serum for blemish-prone skin that smooths, brightens, and supports.",
+                "image": ["http://127.0.0.1/static/niacinamide.jpg"],
+                "offers": {
+                  "@type": "Offer",
+                  "price": "6.50",
+                  "priceCurrency": "USD",
+                  "availability": "https://schema.org/InStock"
+                }
+              }
+            </script>
+          </head>
+          <body>
+            <h1>Niacinamide 10% + Zinc 1% Serum</h1>
+            <div class="title">Ingredients</div>
+            <p class="ingredients-flyout-content">Aqua (Water), Niacinamide, Pentylene Glycol, Zinc PCA.</p>
+            <div class="product-flyout-content">
+              <p class="title">How to Use</p>
+              <div class="product-flyout-directions-list">
+                <ul><li>Apply a few drops to the face in the morning and evening.</li></ul>
+              </div>
+            </div>
+            <div class="product-info-description">
+              <div class="description">A universal serum for blemish-prone skin that smooths, brightens, and supports.</div>
+            </div>
+          </body>
+        </html>
+      `);
+      return;
+    }
+
+    res.writeHead(404, { "content-type": "text/plain" });
+    res.end("not found");
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const port = address.port;
+
+  try {
+    const extractor = new PuppeteerExtractor();
+    const result = await extractor.extract({
+      brand: "The Ordinary",
+      domain: `http://127.0.0.1:${port}/niacinamide-10-zinc-1-serum-100436.html`,
+      market: "US",
+      limit: 5,
+    });
+
+    assert.equal(result.platform, "Generic Website");
+    assert.equal(result.products.length, 1);
+    assert.match(result.products[0]?.ingredients_raw || "", /Niacinamide/i);
+    assert.match(result.products[0]?.how_to_use_raw || "", /Apply a few drops/i);
+    assert.equal(result.products[0]?.field_capture_status?.description_raw, "present");
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
 });

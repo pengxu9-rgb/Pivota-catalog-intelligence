@@ -229,6 +229,30 @@ test("deriveProductPdpModuleBodies keeps Guerlain key ingredients separate from 
   );
 });
 
+test("deriveProductPdpModuleBodies prefers the richer duplicate hero-ingredients accordion body", () => {
+  const bodies = deriveProductPdpModuleBodies({
+    detailsSections: [
+      {
+        heading: "HERO INGREDIENTS",
+        body: "HERO INGREDIENTS",
+        source_kind: "accordion_control",
+      },
+      {
+        heading: "HERO INGREDIENTS",
+        body:
+          "• Hyaluronic Acid, Sea Moss, Centella\nMoisturized and hydrate the skin all day long\n• EGT (L-Ergothioneine), Carnosine\nProtect the skin against free radicals.",
+        source_kind: "accordion_control",
+      },
+    ],
+  });
+
+  assert.equal(
+    bodies.activeIngredientsRaw,
+    "• Hyaluronic Acid, Sea Moss, Centella\nMoisturized and hydrate the skin all day long\n• EGT (L-Ergothioneine), Carnosine\nProtect the skin against free radicals.",
+  );
+  assert.equal(bodies.ingredientsRaw, undefined);
+});
+
 test("resolveStorefrontFromHtml resolves selector roots to the requested market storefront", () => {
   const html = readFixture("caudalie-selector.html");
   const resolved = resolveStorefrontFromHtml(html, "https://caudalie.com", "US");

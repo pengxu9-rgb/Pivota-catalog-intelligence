@@ -828,12 +828,15 @@ export function extractProductFromHtmlSnapshot(params: {
 
   const detailsSections = extractHtmlDetailSections(html);
   const ingredientsSection =
-    firstMatchingSectionBody(detailsSections, [/\b(ingredients?|inci)\b/i]) ||
+    detailsSections.find((section) => {
+      const heading = cleanText(section?.heading);
+      return /\b(ingredients?|inci)\b/i.test(heading) && !/\b(?:active|key|hero) ingredients?\b/i.test(heading);
+    }) ||
     firstMatchingSectionBody(detailsSections, [/\bwhat(?:'|’)s in it\??\b/i]);
   const howToUseSection =
     firstMatchingSectionBody(detailsSections, [/\bhow to (?:use|apply)\b/i]) ||
     firstMatchingSectionBody(detailsSections, [/\b(usage(?: details)?|suggested usage|directions?|beauty tips)\b/i]);
-  const activeIngredientsSection = firstMatchingSectionBody(detailsSections, [/\bactive ingredients?\b/i]);
+  const activeIngredientsSection = firstMatchingSectionBody(detailsSections, [/\b(?:active|key|hero) ingredients?\b/i]);
   const descriptionSection =
     firstMatchingSectionBody(detailsSections, [/\bdescription\b/i]) ||
     firstMatchingSectionBody(detailsSections, [/\b(details?|benefits?|about)\b/i]);
@@ -896,6 +899,19 @@ function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
   return out;
 }
 
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizedSectionBody(section: ExtractedProductDetailSection | null | undefined) {
+  const heading = cleanText(section?.heading);
+  const body = cleanText(section?.body);
+  if (!body) return "";
+  if (!heading) return body;
+  const stripped = cleanText(body.replace(new RegExp(`^${escapeRegex(heading)}(?:\\s*[:\\-–—]?\\s*)?`, "i"), ""));
+  return stripped || body;
+}
+
 function uniqueFieldSources(values: Array<string | undefined | null>) {
   return dedupeStringList(values.map((value) => cleanText(typeof value === "string" ? value : undefined)));
 }
@@ -904,12 +920,24 @@ function firstMatchingSectionBody(
   sections: ExtractedProductDetailSection[],
   patterns: RegExp[],
 ): ExtractedProductDetailSection | null {
+  let bestMatch: ExtractedProductDetailSection | null = null;
+  let bestScore = -1;
   for (const section of Array.isArray(sections) ? sections : []) {
     const heading = cleanText(section?.heading);
     if (!heading) continue;
-    if (patterns.some((pattern) => pattern.test(heading))) return section;
+    if (!patterns.some((pattern) => pattern.test(heading))) continue;
+    const normalizedBody = normalizedSectionBody(section);
+    const lineCount = normalizedBody.split("\n").map((line) => cleanText(line)).filter(Boolean).length;
+    const score = normalizedBody.length + lineCount * 20;
+    if (score <= bestScore) continue;
+    bestScore = score;
+    bestMatch = {
+      heading: cleanText(section.heading),
+      body: normalizedBody || cleanText(section.body),
+      source_kind: cleanText(section.source_kind) || "unknown",
+    };
   }
-  return null;
+  return bestMatch;
 }
 
 function extractLabeledSectionText(text: string | undefined, labels: string[]) {
@@ -971,14 +999,18 @@ export function deriveProductPdpModuleBodies(params: {
   const ingredientSection =
     detailsSections.find((section) => {
       const heading = cleanText(section?.heading);
-      return /\b(ingredients?|inci)\b/i.test(heading) && !/\b(?:active|key) ingredients?\b/i.test(heading);
+      return /\b(ingredients?|inci)\b/i.test(heading) && !/\b(?:active|key|hero) ingredients?\b/i.test(heading);
     }) ||
     firstMatchingSectionBody(detailsSections, [/\bwhat(?:'|’)s in it\??\b/i]) ||
     firstMatchingSectionBody(detailsSections, [/\bformula\b/i]);
-  const activeIngredientSection = firstMatchingSectionBody(detailsSections, [/\b(?:active|key) ingredients?\b/i]);
+  const activeIngredientSection = firstMatchingSectionBody(detailsSections, [/\b(?:active|key|hero) ingredients?\b/i]);
   const ingredientSectionBody = cleanText(ingredientSection?.body);
   const explicitIngredients = cleanText(params.ingredientsMarkdownText);
-  const activeIngredients = cleanText(params.activeIngredientsText) || cleanText(activeIngredientSection?.body);
+  const explicitActiveIngredients = cleanText(params.activeIngredientsText);
+  const sectionActiveIngredients = cleanText(activeIngredientSection?.body);
+  const activeIngredients =
+    (sectionActiveIngredients.length > explicitActiveIngredients.length ? sectionActiveIngredients : explicitActiveIngredients) ||
+    undefined;
   const ingredientsRaw =
     stripIngredientPackageDisclaimer(explicitIngredients) ||
     (looksLikeFullIngredientListText(ingredientSectionBody)
@@ -3104,7 +3136,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       return sections;
     })();
     const activeIngredientsText =
-      detailsSections.find((section) => /\b(?:active|key) ingredients?\b/i.test(section.heading))?.body || undefined;
+      firstMatchingSectionBody(detailsSections, [/\b(?:active|key|hero) ingredients?\b/i])?.body || undefined;
 
     return {
       title,

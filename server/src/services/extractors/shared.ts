@@ -1003,6 +1003,27 @@ export function isCookieActionLabel(label: string): boolean {
   return COOKIE_ACTION_LABEL_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
+export function looksLikeStorefrontPasswordPage(params: {
+  url: string;
+  title: string;
+  content: string;
+}): boolean {
+  const url = String(params.url || "");
+  const title = String(params.title || "").toLowerCase();
+  const content = String(params.content || "").toLowerCase();
+
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname === "/password") return true;
+  } catch {
+    // Ignore malformed URLs.
+  }
+
+  const hasOpeningSoon = content.includes("opening soon");
+  const hasPasswordTrigger = content.includes("enter using password") || content.includes('type="password"');
+  return title.includes("opening soon") || title.includes("password") || (hasOpeningSoon && hasPasswordTrigger);
+}
+
 export async function gotoPageOrThrow(page: Page, params: {
   url: string;
   baseUrl: string;

@@ -1366,6 +1366,7 @@ const SHOPIFY_FEED_NON_PRODUCT_HANDLE_RE =
   /(?:^|[-_/])(?:welcome-gift|surprise-gift|free-gift|gift-with-purchase|gwp|gift-card|e-gift-card|sample|samples|deluxe-sample|complimentary-sample|complimentary-deluxe-sample)(?:[-_/]|$)/i;
 const SHOPIFY_FEED_GIFT_TOKEN_RE = /(?:^|[-_/ ])gift(?:$|[-_/ ])/i;
 const SHOPIFY_FEED_PROMO_CONTEXT_RE = /\b(?:rewards store|gift with purchase|free gift|complimentary|welcome|surprise)\b/i;
+const SHOPIFY_FEED_ZERO_PRICE_TRAVEL_RE = /\b(?:travel|trial|mini)\b/i;
 
 const ZERO_DECIMAL_CURRENCIES = new Set(["JPY"]);
 
@@ -1449,6 +1450,9 @@ export function isNonProductShopifyFeedProduct(product: ShopifyProduct): boolean
     SHOPIFY_FEED_GIFT_TOKEN_RE.test(`${title} ${handle}`) &&
     (allVariantsAreZeroPriced || SHOPIFY_FEED_PROMO_CONTEXT_RE.test(`${title} ${handle} ${body}`))
   ) {
+    return true;
+  }
+  if (allVariantsAreZeroPriced && SHOPIFY_FEED_ZERO_PRICE_TRAVEL_RE.test(`${title} ${handle}`)) {
     return true;
   }
   if (

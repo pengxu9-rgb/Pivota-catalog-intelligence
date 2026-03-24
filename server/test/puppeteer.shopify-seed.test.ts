@@ -228,6 +228,22 @@ test("filterShopifyCatalogProducts removes obvious gift and sample feed rows whi
         },
       ],
     },
+    {
+      id: 5,
+      title: "Intensive Moisture Balance - Travel",
+      handle: "intensive-moisture-balance-travel",
+      body_html: "<p>Mini travel size.</p>",
+      variants: [
+        {
+          id: 502,
+          title: "Default Title",
+          option1: "Default Title",
+          price: 0,
+          available: true,
+          inventory_quantity: 12,
+        },
+      ],
+    },
   ] as any);
 
   assert.deepEqual(
@@ -246,13 +262,32 @@ test("filterShopifyCatalogProducts removes obvious gift and sample feed rows whi
   );
   assert.equal(
     isNonProductShopifyFeedProduct({
-      id: 5,
+      id: 6,
       title: "Pro-Collagen Banking Serum - Gift",
       handle: "pro-collagen-banking-serum-gift",
       body_html: "<p>Powerful serum gift.</p>",
       variants: [
         {
-          id: 501,
+          id: 601,
+          title: "Default Title",
+          option1: "Default Title",
+          price: 0,
+          available: true,
+          inventory_quantity: 10,
+        },
+      ],
+    } as any),
+    true,
+  );
+  assert.equal(
+    isNonProductShopifyFeedProduct({
+      id: 7,
+      title: "Intensive Moisture Balance - Travel",
+      handle: "intensive-moisture-balance-travel",
+      body_html: "<p>Mini travel size.</p>",
+      variants: [
+        {
+          id: 701,
           title: "Default Title",
           option1: "Default Title",
           price: 0,

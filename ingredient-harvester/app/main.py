@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -158,7 +159,25 @@ def _require_db() -> None:
     msg = _DB_ERROR or "Database not ready."
     raise HTTPException(status_code=503, detail=msg)
 
-app = FastAPI(title="Ingredient Source Harvester", version="1.0.0")
+
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI):
+    global _DB_READY  # noqa: PLW0603
+    global _DB_ERROR  # noqa: PLW0603
+    try:
+        _init_db()
+        _DB_READY = True
+        _DB_ERROR = None
+    except RetryError as exc:
+        _DB_READY = False
+        _DB_ERROR = f"DB init failed after retries: {exc.last_attempt.exception()!s}"[:500]
+    except Exception as exc:  # noqa: BLE001
+        _DB_READY = False
+        _DB_ERROR = f"DB init failed: {exc!s}"[:500]
+    yield
+
+
+app = FastAPI(title="Ingredient Source Harvester", version="1.0.0", lifespan=_app_lifespan)
 
 @app.middleware("http")
 async def _request_id_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -554,23 +573,6 @@ def health() -> dict[str, Any]:
         "parser_ready": parser_ready(),
         "parser_error": parser_error(),
     }
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    global _DB_READY  # noqa: PLW0603
-    global _DB_ERROR  # noqa: PLW0603
-    try:
-        _init_db()
-        _DB_READY = True
-        _DB_ERROR = None
-    except RetryError as exc:
-        _DB_READY = False
-        _DB_ERROR = f"DB init failed after retries: {exc.last_attempt.exception()!s}"[:500]
-    except Exception as exc:  # noqa: BLE001
-        _DB_READY = False
-        _DB_ERROR = f"DB init failed: {exc!s}"[:500]
-
 
 def _find_column(df: pd.DataFrame, *names: str) -> str:
     normalized = {str(column).strip().lower(): str(column) for column in df.columns}

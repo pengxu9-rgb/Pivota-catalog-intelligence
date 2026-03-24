@@ -3136,7 +3136,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       return sections;
     })();
     const activeIngredientsText =
-      firstMatchingSectionBody(detailsSections, [/\b(?:active|key|hero) ingredients?\b/i])?.body || undefined;
+      detailsSections.find((section) => /\b(?:active|key|hero) ingredients?\b/i.test(section.heading))?.body || undefined;
 
     return {
       title,

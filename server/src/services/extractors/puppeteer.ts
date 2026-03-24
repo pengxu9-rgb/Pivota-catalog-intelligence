@@ -1360,6 +1360,11 @@ type ShopifyImage = {
   variant_ids?: number[];
 };
 
+const SHOPIFY_FEED_NON_PRODUCT_TITLE_RE =
+  /\b(?:welcome gift|surprise gift|free gift|gift with purchase|gwp|gift card|e-?gift card|sample(?:s)?|deluxe sample|complimentary sample|complimentary deluxe sample)\b/i;
+const SHOPIFY_FEED_NON_PRODUCT_HANDLE_RE =
+  /(?:^|[-_/])(?:welcome-gift|surprise-gift|free-gift|gift-with-purchase|gwp|gift-card|e-gift-card|sample|samples|deluxe-sample|complimentary-sample|complimentary-deluxe-sample)(?:[-_/]|$)/i;
+
 const ZERO_DECIMAL_CURRENCIES = new Set(["JPY"]);
 
 function normalizeCurrencyCode(raw: unknown): ExtractedVariant["currency"] | null {
@@ -1424,6 +1429,27 @@ function normalizeShopifyPrice(raw: unknown, currency: ExtractedVariant["currenc
   }
 
   return "0.00";
+}
+
+export function isNonProductShopifyFeedProduct(product: ShopifyProduct): boolean {
+  const title = safeDecodeURIComponent(String(product.title || "").trim().toLowerCase());
+  const handle = safeDecodeURIComponent(String(product.handle || "").trim().toLowerCase());
+  const body = cleanText(product.body_html || "").toLowerCase();
+  if (SHOPIFY_FEED_NON_PRODUCT_TITLE_RE.test(title)) return true;
+  if (SHOPIFY_FEED_NON_PRODUCT_HANDLE_RE.test(handle)) return true;
+  if (
+    body &&
+    /\b(?:gift with purchase|free gift|complimentary sample|deluxe sample|while supplies last)\b/i.test(body) &&
+    /\b(?:gift|sample|samples)\b/i.test(`${title} ${handle}`)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function filterShopifyCatalogProducts(products: ShopifyProduct[]): ShopifyProduct[] {
+  const filtered = products.filter((product) => !isNonProductShopifyFeedProduct(product));
+  return filtered.length > 0 ? filtered : products;
 }
 
 function isDefaultShopifyVariant(variant: ShopifyVariant): boolean {
@@ -1510,7 +1536,12 @@ async function tryExtractShopify(params: {
     if (products.length < 250) break;
   }
 
-  const limitedProducts = allProducts.slice(0, params.maxProducts);
+  const filteredProducts = filterShopifyCatalogProducts(allProducts);
+  const removedCount = allProducts.length - filteredProducts.length;
+  if (removedCount > 0) {
+    log("warn", `Filtered ${removedCount} non-product Shopify feed rows before catalog response assembly.`);
+  }
+  const limitedProducts = filteredProducts.slice(0, params.maxProducts);
   log("data", `Loaded ${limitedProducts.length} products from Shopify feed.`);
 
   return buildShopifyResponse({

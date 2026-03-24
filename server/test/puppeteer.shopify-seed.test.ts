@@ -10,6 +10,8 @@ import {
   discoverProductUrls,
   enrichDirectShopifyPdpResponse,
   extractProductFromHtmlSnapshot,
+  filterShopifyCatalogProducts,
+  isNonProductShopifyFeedProduct,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
   resolveDirectPdpEnrichmentUrl,
@@ -182,6 +184,155 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
         "https://cdn.example.com/banana-1.jpg",
         "https://cdn.example.com/banana-2.jpg",
       ]);
+      assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
+    },
+  );
+});
+
+test("filterShopifyCatalogProducts removes obvious gift and sample feed rows while keeping regular products", () => {
+  const filtered = filterShopifyCatalogProducts([
+    {
+      id: 1,
+      title: "Welcome Gift - Gift",
+      handle: "welcome-gift-gift",
+      body_html: "<p>Complimentary gift with purchase.</p>",
+      variants: [],
+    },
+    {
+      id: 2,
+      title: "Smart Response Serum",
+      handle: "smart-response-serum",
+      body_html: "<p>Adaptive serum with peptides.</p>",
+      variants: [],
+    },
+    {
+      id: 3,
+      title: "Deluxe Sample",
+      handle: "deluxe-sample",
+      body_html: "<p>Complimentary sample while supplies last.</p>",
+      variants: [],
+    },
+  ] as any);
+
+  assert.deepEqual(
+    filtered.map((product) => product.handle),
+    ["smart-response-serum"],
+  );
+  assert.equal(
+    isNonProductShopifyFeedProduct({
+      id: 4,
+      title: "Gift Card",
+      handle: "gift-card",
+      body_html: "",
+      variants: [],
+    } as any),
+    true,
+  );
+});
+
+test("PuppeteerExtractor filters non-product Shopify feed rows before picking domain-root products", async () => {
+  const extractor = new PuppeteerExtractor();
+
+  await withMockFetch(
+    {
+      "https://www.dermalogica.com/products.json?limit=1": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          products: [
+            {
+              id: 1,
+              title: "Welcome Gift - Gift",
+              handle: "welcome-gift-gift",
+              body_html: "<p>Complimentary gift with purchase.</p>",
+              variants: [
+                {
+                  id: 101,
+                  sku: "",
+                  title: "Default Title",
+                  option1: "Default Title",
+                  price: 0,
+                  available: true,
+                  inventory_quantity: 999,
+                },
+              ],
+              options: [{ name: "Title" }],
+              images: [{ src: "https://cdn.example.com/welcome-gift.jpg" }],
+            },
+          ],
+        }),
+      },
+      "https://www.dermalogica.com": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+      "https://www.dermalogica.com/products.json?limit=250&page=1": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          products: [
+            {
+              id: 1,
+              title: "Welcome Gift - Gift",
+              handle: "welcome-gift-gift",
+              body_html: "<p>Complimentary gift with purchase.</p>",
+              variants: [
+                {
+                  id: 101,
+                  sku: "",
+                  title: "Default Title",
+                  option1: "Default Title",
+                  price: 0,
+                  available: true,
+                  inventory_quantity: 999,
+                },
+              ],
+              options: [{ name: "Title" }],
+              images: [{ src: "https://cdn.example.com/welcome-gift.jpg" }],
+            },
+            {
+              id: 2,
+              title: "Smart Response Serum",
+              handle: "smart-response-serum",
+              body_html:
+                "<p>Adaptive serum.</p><p>Ingredients: Aqua, Glycerin, Peptides.</p><p>How to Use: Apply after cleansing.</p>",
+              variants: [
+                {
+                  id: 202,
+                  sku: "DL-SRS-001",
+                  title: "Default Title",
+                  option1: "Default Title",
+                  price: 16500,
+                  available: true,
+                  inventory_quantity: 15,
+                },
+              ],
+              options: [{ name: "Title" }],
+              images: [{ src: "https://cdn.example.com/smart-response-serum.jpg" }],
+            },
+          ],
+        }),
+      },
+      "https://www.dermalogica.com/products.json?limit=250&page=2": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ products: [] }),
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Dermalogica",
+        domain: "https://www.dermalogica.com",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.platform, "Shopify");
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.title, "Smart Response Serum");
+      assert.equal(result.products[0]?.url, "https://www.dermalogica.com/products/smart-response-serum");
+      assert.match(result.products[0]?.ingredients_raw || "", /Peptides/i);
       assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
     },
   );

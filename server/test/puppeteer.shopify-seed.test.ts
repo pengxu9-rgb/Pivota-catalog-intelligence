@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   PuppeteerExtractor,
+  canReturnHtmlProductsWithoutBrowser,
   chooseDiscoveryBatchCandidates,
   choosePreferredProductOverview,
   discoverProductUrls,
@@ -1313,4 +1314,124 @@ test("PuppeteerExtractor returns a generic product from static HTML without laun
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
+});
+
+test("canReturnHtmlProductsWithoutBrowser rejects HTML-only products that still need PDP enrichment", () => {
+  const incompleteProduct = {
+    title: "Abeille Royale Youth Repair Eye Care",
+    url: "https://www.guerlain.com/us/en-us/p/abeille-royale-youth-repair-eye-care-P062209.html",
+    image_url: "https://cdn.example.com/guerlain-eye.jpg",
+    image_urls: ["https://cdn.example.com/guerlain-eye.jpg"],
+    variant_skus: ["GR-062209"],
+    variants: [
+      {
+        id: "1",
+        sku: "GR-062209",
+        url: "https://www.guerlain.com/us/en-us/p/abeille-royale-youth-repair-eye-care-P062209.html",
+        option_name: "Size",
+        option_value: "15 ml",
+        price: "145.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "",
+        image_url: "https://cdn.example.com/guerlain-eye.jpg",
+        image_urls: ["https://cdn.example.com/guerlain-eye.jpg"],
+        ad_copy: "",
+      },
+    ],
+    description_raw: "",
+    details_sections: [
+      {
+        heading: "Key Ingredients",
+        body: "Black Bee Honey: Helps support skin repair.",
+        source_kind: "guerlain_ingredients_carousel",
+      },
+    ],
+    active_ingredients_raw: "Black Bee Honey: Helps support skin repair.",
+    field_capture_status: {
+      description_raw: "missing",
+      details_sections: "present",
+      ingredients_raw: "missing",
+      active_ingredients_raw: "present",
+      how_to_use_raw: "missing",
+    },
+    field_sources: {
+      description_raw: [],
+      details_sections: ["guerlain_ingredients_carousel"],
+      ingredients_raw: [],
+      active_ingredients_raw: ["guerlain_ingredients_carousel"],
+      how_to_use_raw: [],
+    },
+  };
+
+  assert.equal(
+    canReturnHtmlProductsWithoutBrowser({
+      products: [incompleteProduct as any],
+      candidateCount: 1,
+    }),
+    false,
+  );
+});
+
+test("canReturnHtmlProductsWithoutBrowser accepts HTML-only products once PDP fields are complete", () => {
+  const completeProduct = {
+    title: "Abeille Royale Youth Watery Oil Serum",
+    url: "https://www.guerlain.com/us/en-us/p/abeille-royale-youth-watery-oil-serum-P062033.html",
+    image_url: "https://cdn.example.com/guerlain-serum.jpg",
+    image_urls: ["https://cdn.example.com/guerlain-serum.jpg"],
+    variant_skus: ["GR-062033"],
+    variants: [
+      {
+        id: "1",
+        sku: "GR-062033",
+        url: "https://www.guerlain.com/us/en-us/p/abeille-royale-youth-watery-oil-serum-P062033.html",
+        option_name: "Size",
+        option_value: "50 ml",
+        price: "165.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "",
+        image_url: "https://cdn.example.com/guerlain-serum.jpg",
+        image_urls: ["https://cdn.example.com/guerlain-serum.jpg"],
+        ad_copy: "",
+      },
+    ],
+    description_raw: "A replenishing serum powered by honey actives.",
+    details_sections: [
+      {
+        heading: "Ingredients",
+        body: "Aqua (Water), Glycerin, Squalane, Parfum (Fragrance).",
+        source_kind: "guerlain_ingredients_modal",
+      },
+      {
+        heading: "Key Ingredients",
+        body: "Black Bee Honey: Helps support skin repair.",
+        source_kind: "guerlain_ingredients_carousel",
+      },
+    ],
+    ingredients_raw: "Aqua (Water), Glycerin, Squalane, Parfum (Fragrance).",
+    active_ingredients_raw: "Black Bee Honey: Helps support skin repair.",
+    field_capture_status: {
+      description_raw: "present",
+      details_sections: "present",
+      ingredients_raw: "present",
+      active_ingredients_raw: "present",
+      how_to_use_raw: "missing",
+    },
+    field_sources: {
+      description_raw: ["page_product_details"],
+      details_sections: ["guerlain_ingredients_modal", "guerlain_ingredients_carousel"],
+      ingredients_raw: ["guerlain_ingredients_modal"],
+      active_ingredients_raw: ["guerlain_ingredients_carousel"],
+      how_to_use_raw: [],
+    },
+  };
+
+  assert.equal(
+    canReturnHtmlProductsWithoutBrowser({
+      products: [completeProduct as any],
+      candidateCount: 1,
+    }),
+    true,
+  );
 });

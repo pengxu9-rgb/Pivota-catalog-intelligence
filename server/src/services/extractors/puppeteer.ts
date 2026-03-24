@@ -194,7 +194,11 @@ export class PuppeteerExtractor implements Extractor {
         "Native HTML product scraping",
       );
       const htmlProducts = htmlPrefetched.filter((product): product is ExtractedProduct => Boolean(product));
-      if (htmlProducts.length === batchCandidates.length && htmlProducts.length > 0) {
+      const htmlProductsAreComplete = canReturnHtmlProductsWithoutBrowser({
+        products: htmlProducts,
+        candidateCount: batchCandidates.length,
+      });
+      if (htmlProductsAreComplete) {
         const products = htmlProducts.slice(0, batchLimit);
         const { variants, adCopyById } = flattenVariants({
           brand: input.brand,
@@ -1048,6 +1052,20 @@ function productHasMissingPdpFields(product: ExtractedProduct) {
     !cleanText(product?.active_ingredients_raw) &&
     !cleanText(product?.how_to_use_raw);
   return descriptionMissing || moduleMissing;
+}
+
+export function canReturnHtmlProductsWithoutBrowser(params: {
+  products: ExtractedProduct[];
+  candidateCount: number;
+}) {
+  const products = Array.isArray(params.products) ? params.products : [];
+  if (products.length === 0 || products.length !== params.candidateCount) return false;
+  return products.every(
+    (product) =>
+      product.image_urls.length > 0 &&
+      product.variants.every((variant) => variant.image_urls.length > 0) &&
+      !productHasMissingPdpFields(product),
+  );
 }
 
 export function resolveDirectPdpEnrichmentUrl(params: {
@@ -2585,6 +2603,33 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       return "";
     };
 
+    const readGuerlainIngredientModalDomText = () => {
+      const selectors = [
+        "#ingredientsModal .modal__content",
+        "#ingredientsModal .modal-content",
+        "#ingredientsModal .modal-body",
+        "[id*='ingredientsModal'] .modal__content",
+        "[id*='ingredientsModal'] .modal-content",
+        "[id*='ingredientsModal'] .modal-body",
+        ".modal.show .modal__content",
+        ".modal.show .modal-content",
+        ".modal.show .modal-body",
+        ".modal.in .modal__content",
+        ".modal.in .modal-content",
+        ".modal.in .modal-body",
+      ];
+
+      for (const selector of selectors) {
+        const nodes = Array.from(document.querySelectorAll(selector));
+        for (const node of nodes.slice(0, 8)) {
+          const text = normalizeSectionText((node as HTMLElement).innerText || node.textContent || "");
+          if (text && looksLikeIngredientModalText(text)) return text;
+        }
+      }
+
+      return "";
+    };
+
     const productDetailsText = (() => {
       const hiddenOverview = document.getElementById("overview-about-text");
       const hiddenRaw = hiddenOverview?.getAttribute("value")?.trim() || "";
@@ -2872,6 +2917,11 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
             "data-url-ingredient",
           ) || "";
         if (modalUrl.trim()) ingredientModalUrls.add(modalUrl.trim());
+      }
+
+      const modalDomText = normalizeSectionText(readGuerlainIngredientModalDomText());
+      if (modalDomText) {
+        pushSection("Ingredients", modalDomText, "guerlain_ingredients_modal_dom");
       }
 
       for (const modalUrl of ingredientModalUrls) {
@@ -3382,8 +3432,22 @@ async function scrapeProductPage(params: {
         if (expanded === "true") continue;
         control.click();
       }
+
+      const guerlainButtons = Array.from(
+        document.querySelectorAll("button[data-url-ingredient][data-target='#ingredientsModal'], button.btn-ingredient[data-url-ingredient]"),
+      ) as HTMLElement[];
+      for (const button of guerlainButtons.slice(0, 4)) {
+        button.click();
+      }
     });
     await new Promise((resolve) => setTimeout(resolve, 150));
+
+    await page
+      .waitForSelector(
+        "#ingredientsModal .modal__content, #ingredientsModal .modal-content, #ingredientsModal .modal-body, [id*='ingredientsModal'] .modal__content, [id*='ingredientsModal'] .modal-content, [id*='ingredientsModal'] .modal-body, .modal.show .modal__content, .modal.show .modal-content, .modal.show .modal-body, .modal.in .modal__content, .modal.in .modal-content, .modal.in .modal-body",
+        { timeout: 1_500 },
+      )
+      .catch(() => undefined);
   };
 
   try {

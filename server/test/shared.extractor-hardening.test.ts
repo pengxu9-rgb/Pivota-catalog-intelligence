@@ -202,6 +202,33 @@ test("deriveProductPdpModuleBodies extracts Tom Ford-style details summary accor
   assert.equal(bodies.activeIngredientsRaw, undefined);
 });
 
+test("deriveProductPdpModuleBodies keeps Guerlain key ingredients separate from full ingredients", () => {
+  const bodies = deriveProductPdpModuleBodies({
+    detailsSections: [
+      {
+        heading: "Key Ingredients",
+        body:
+          "Black Bee Honey: Helps support skin repair.\n\nExclusive Royal Jelly: Helps nourish and smooth the skin.",
+        source_kind: "guerlain_ingredients_carousel",
+      },
+      {
+        heading: "Ingredients",
+        body: "Aqua (Water), Glycerin, Squalane, Caprylic/Capric Triglyceride, Parfum (Fragrance).",
+        source_kind: "guerlain_ingredients_modal",
+      },
+    ],
+  });
+
+  assert.equal(
+    bodies.ingredientsRaw,
+    "Aqua (Water), Glycerin, Squalane, Caprylic/Capric Triglyceride, Parfum (Fragrance).",
+  );
+  assert.equal(
+    bodies.activeIngredientsRaw,
+    "Black Bee Honey: Helps support skin repair.\n\nExclusive Royal Jelly: Helps nourish and smooth the skin.",
+  );
+});
+
 test("resolveStorefrontFromHtml resolves selector roots to the requested market storefront", () => {
   const html = readFixture("caudalie-selector.html");
   const resolved = resolveStorefrontFromHtml(html, "https://caudalie.com", "US");

@@ -965,7 +965,10 @@ export function deriveProductPdpModuleBodies(params: {
 }) {
   const detailsSections = dedupeDetailSections(params.detailsSections || []);
   const ingredientSection =
-    firstMatchingSectionBody(detailsSections, [/\b(ingredients?|inci)\b/i]) ||
+    detailsSections.find((section) => {
+      const heading = cleanText(section?.heading);
+      return /\b(ingredients?|inci)\b/i.test(heading) && !/\b(?:active|key) ingredients?\b/i.test(heading);
+    }) ||
     firstMatchingSectionBody(detailsSections, [/\bwhat(?:'|’)s in it\??\b/i]) ||
     firstMatchingSectionBody(detailsSections, [/\bformula\b/i]);
   const activeIngredientSection = firstMatchingSectionBody(detailsSections, [/\b(?:active|key) ingredients?\b/i]);
@@ -2509,7 +2512,7 @@ async function fetchHtmlViaNativeRequest(
 }
 
 async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const documentBase = document.baseURI || location.href;
     const title =
       document.querySelector("h1")?.textContent?.trim() ||
@@ -2539,6 +2542,47 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       const container = document.createElement("div");
       container.innerHTML = raw;
       return container.textContent?.trim() || "";
+    };
+
+    const looksLikeIngredientModalText = (raw: string) =>
+      /\bingredients?\b/i.test(raw) || /[A-Za-z][^,\n]{1,40},\s*[A-Za-z][^,\n]{1,40},\s*[A-Za-z][^,\n]{1,40}/.test(raw);
+
+    const fetchGuerlainIngredientModalText = async (rawUrl: string) => {
+      const modalUrl = rawUrl.trim();
+      if (!modalUrl) return "";
+
+      try {
+        const response = await fetch(new URL(modalUrl, documentBase).toString(), {
+          credentials: "include",
+        });
+        if (!response.ok) return "";
+
+        const html = await response.text();
+        if (!html.trim()) return "";
+
+        const parsed = new DOMParser().parseFromString(html, "text/html");
+        const selectors = [
+          ".modal__content",
+          ".modal-content",
+          ".modal-body",
+          ".product-ingredients",
+          ".ingredients",
+          "[class*='ingredient']",
+          "body",
+        ];
+
+        for (const selector of selectors) {
+          const nodes = Array.from(parsed.querySelectorAll(selector));
+          for (const node of nodes.slice(0, 8)) {
+            const text = normalizeSectionText((node as HTMLElement).innerText || node.textContent || "");
+            if (text && looksLikeIngredientModalText(text)) return text;
+          }
+        }
+      } catch {
+        // ignore modal fetch failures
+      }
+
+      return "";
     };
 
     const productDetailsText = (() => {
@@ -2770,7 +2814,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
     const ingredientsMarkdownText = ingredientsContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
     const ingredientsDisclaimerText =
       ingredientsContent?.querySelector(".product-details-accordions-ingredients-disclaimer")?.textContent?.trim() || undefined;
-    const detailsSections = (() => {
+    const detailsSections = await (async () => {
       const sections: ExtractedProductDetailSection[] = [];
       const seen = new Set<string>();
       const looksRelevantHeading = (heading: string) =>
@@ -2802,6 +2846,39 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       }
       if (ingredientsDisclaimerText) {
         pushSection("Ingredients Disclaimer", ingredientsDisclaimerText, "accordion_ingredients_disclaimer");
+      }
+
+      const guerlainIngredientSections = Array.from(
+        document.querySelectorAll("[data-section='ingredientsCarousel'] section.section-ingredient, section#ingredientsCarousel.section-ingredient"),
+      ) as HTMLElement[];
+      const ingredientModalUrls = new Set<string>();
+      for (const section of guerlainIngredientSections.slice(0, 4)) {
+        const introText = normalizeSectionText(
+          section.querySelector(".section-header .section-description, .section-description")?.textContent || "",
+        );
+        const ingredientCards = Array.from(section.querySelectorAll(".GSA_ingredient")).map((item) => {
+          const title = normalizeSectionText(item.querySelector(".GSA_ingredient_title")?.textContent || "");
+          const body = normalizeSectionText(item.querySelector(".GSA_ingredient_description")?.textContent || "");
+          if (title && body) return `${title}: ${body}`;
+          return title || body;
+        });
+        const keyIngredientsBody = normalizeSectionText([introText, ...ingredientCards.filter(Boolean)].join("\n\n"));
+        if (keyIngredientsBody) {
+          pushSection("Key Ingredients", keyIngredientsBody, "guerlain_ingredients_carousel");
+        }
+
+        const modalUrl =
+          section.querySelector("button[data-url-ingredient], [data-target='#ingredientsModal'][data-url-ingredient]")?.getAttribute(
+            "data-url-ingredient",
+          ) || "";
+        if (modalUrl.trim()) ingredientModalUrls.add(modalUrl.trim());
+      }
+
+      for (const modalUrl of ingredientModalUrls) {
+        const modalText = normalizeSectionText(await fetchGuerlainIngredientModalText(modalUrl));
+        if (modalText) {
+          pushSection("Ingredients", modalText, "guerlain_ingredients_modal");
+        }
       }
 
       const productAccordions = Array.from(document.querySelectorAll(".product-accordion")) as HTMLElement[];

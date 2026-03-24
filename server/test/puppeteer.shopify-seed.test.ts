@@ -212,6 +212,22 @@ test("filterShopifyCatalogProducts removes obvious gift and sample feed rows whi
       body_html: "<p>Complimentary sample while supplies last.</p>",
       variants: [],
     },
+    {
+      id: 4,
+      title: "Pro-Collagen Banking Serum - Gift",
+      handle: "pro-collagen-banking-serum-gift",
+      body_html: "<p>Powerful serum gift.</p>",
+      variants: [
+        {
+          id: 401,
+          title: "Default Title",
+          option1: "Default Title",
+          price: 0,
+          available: true,
+          inventory_quantity: 12,
+        },
+      ],
+    },
   ] as any);
 
   assert.deepEqual(
@@ -225,6 +241,25 @@ test("filterShopifyCatalogProducts removes obvious gift and sample feed rows whi
       handle: "gift-card",
       body_html: "",
       variants: [],
+    } as any),
+    true,
+  );
+  assert.equal(
+    isNonProductShopifyFeedProduct({
+      id: 5,
+      title: "Pro-Collagen Banking Serum - Gift",
+      handle: "pro-collagen-banking-serum-gift",
+      body_html: "<p>Powerful serum gift.</p>",
+      variants: [
+        {
+          id: 501,
+          title: "Default Title",
+          option1: "Default Title",
+          price: 0,
+          available: true,
+          inventory_quantity: 10,
+        },
+      ],
     } as any),
     true,
   );

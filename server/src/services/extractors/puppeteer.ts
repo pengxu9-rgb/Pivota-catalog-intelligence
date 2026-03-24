@@ -1364,6 +1364,8 @@ const SHOPIFY_FEED_NON_PRODUCT_TITLE_RE =
   /\b(?:welcome gift|surprise gift|free gift|gift with purchase|gwp|gift card|e-?gift card|sample(?:s)?|deluxe sample|complimentary sample|complimentary deluxe sample)\b/i;
 const SHOPIFY_FEED_NON_PRODUCT_HANDLE_RE =
   /(?:^|[-_/])(?:welcome-gift|surprise-gift|free-gift|gift-with-purchase|gwp|gift-card|e-gift-card|sample|samples|deluxe-sample|complimentary-sample|complimentary-deluxe-sample)(?:[-_/]|$)/i;
+const SHOPIFY_FEED_GIFT_TOKEN_RE = /(?:^|[-_/ ])gift(?:$|[-_/ ])/i;
+const SHOPIFY_FEED_PROMO_CONTEXT_RE = /\b(?:rewards store|gift with purchase|free gift|complimentary|welcome|surprise)\b/i;
 
 const ZERO_DECIMAL_CURRENCIES = new Set(["JPY"]);
 
@@ -1435,8 +1437,20 @@ export function isNonProductShopifyFeedProduct(product: ShopifyProduct): boolean
   const title = safeDecodeURIComponent(String(product.title || "").trim().toLowerCase());
   const handle = safeDecodeURIComponent(String(product.handle || "").trim().toLowerCase());
   const body = cleanText(product.body_html || "").toLowerCase();
+  const variantPrices = Array.isArray(product.variants)
+    ? product.variants
+        .map((variant) => Number.parseFloat(normalizeShopifyPrice(variant.price, "USD")))
+        .filter((value) => Number.isFinite(value))
+    : [];
+  const allVariantsAreZeroPriced = variantPrices.length > 0 && variantPrices.every((value) => value === 0);
   if (SHOPIFY_FEED_NON_PRODUCT_TITLE_RE.test(title)) return true;
   if (SHOPIFY_FEED_NON_PRODUCT_HANDLE_RE.test(handle)) return true;
+  if (
+    SHOPIFY_FEED_GIFT_TOKEN_RE.test(`${title} ${handle}`) &&
+    (allVariantsAreZeroPriced || SHOPIFY_FEED_PROMO_CONTEXT_RE.test(`${title} ${handle} ${body}`))
+  ) {
+    return true;
+  }
   if (
     body &&
     /\b(?:gift with purchase|free gift|complimentary sample|deluxe sample|while supplies last)\b/i.test(body) &&

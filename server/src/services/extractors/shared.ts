@@ -816,6 +816,17 @@ function remoteBrowserEndpoint(): string | null {
   return endpoint || null;
 }
 
+function localBrowserLaunchArgs(): string[] {
+  return [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-breakpad",
+    "--disable-crash-reporter",
+    "--no-zygote",
+  ];
+}
+
 async function openBrowser(mode: BrowserRuntimeMode): Promise<Browser> {
   if (mode === "managed") {
     const endpoint = remoteBrowserEndpoint();
@@ -828,7 +839,7 @@ async function openBrowser(mode: BrowserRuntimeMode): Promise<Browser> {
   return puppeteer.launch({
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    args: localBrowserLaunchArgs(),
   });
 }
 

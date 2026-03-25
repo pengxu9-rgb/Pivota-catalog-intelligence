@@ -561,3 +561,45 @@ test("runBrowserTaskWithFallback retries once with a managed browser after a bot
     }
   }
 });
+
+test("runBrowserTaskWithFallback launches local Chrome with hardened Railway-safe flags", async () => {
+  const diagnostics = createDiagnostics("pixibeauty.com", "https://pixibeauty.com");
+  const originalLaunch = puppeteer.launch;
+  const captured: { args?: string[] } = {};
+  const calls: string[] = [];
+
+  const localBrowser = {
+    close: async () => {
+      calls.push("local-close");
+    },
+  };
+
+  (puppeteer as typeof puppeteer & { launch: typeof puppeteer.launch }).launch = async (options?: Parameters<typeof puppeteer.launch>[0]) => {
+    captured.args = options?.args ? [...options.args] : [];
+    calls.push("launch");
+    return localBrowser as never;
+  };
+
+  try {
+    const result = await runBrowserTaskWithFallback(
+      async (browser, mode) => {
+        assert.equal(mode, "local");
+        assert.equal(browser, localBrowser);
+        return "ok";
+      },
+      { diagnostics },
+    );
+
+    assert.equal(result.mode, "local");
+    assert.equal(result.result, "ok");
+    assert.deepEqual(calls, ["launch", "local-close"]);
+    assert.ok(captured.args?.includes("--no-sandbox"));
+    assert.ok(captured.args?.includes("--disable-setuid-sandbox"));
+    assert.ok(captured.args?.includes("--disable-dev-shm-usage"));
+    assert.ok(captured.args?.includes("--disable-breakpad"));
+    assert.ok(captured.args?.includes("--disable-crash-reporter"));
+    assert.ok(captured.args?.includes("--no-zygote"));
+  } finally {
+    puppeteer.launch = originalLaunch;
+  }
+});

@@ -566,6 +566,118 @@ export function deriveProductPdpModuleBodies(params: {
   };
 }
 
+function matchHtmlSnippet(html: string, pattern: RegExp) {
+  const match = html.match(pattern);
+  return cleanText(match?.[1]);
+}
+
+function matchMetaContent(html: string, attribute: string, value: string) {
+  const escapedAttribute = attribute.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedValue = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return cleanText(
+    html.match(
+      new RegExp(
+        `<meta[^>]+${escapedAttribute}=["']${escapedValue}["'][^>]+content=["']([^"']+)["'][^>]*>`,
+        "i",
+      ),
+    )?.[1],
+  );
+}
+
+export function extractStaticHtmlPdpFallbackProduct(params: {
+  brand: string;
+  url: string;
+  html: string;
+}): ExtractedProduct | null {
+  const title =
+    matchMetaContent(params.html, "property", "og:title") ||
+    matchMetaContent(params.html, "name", "twitter:title") ||
+    matchHtmlSnippet(params.html, /<title[^>]*>([\s\S]*?)<\/title>/i);
+  const metaDescription =
+    matchMetaContent(params.html, "name", "description") ||
+    matchMetaContent(params.html, "property", "og:description");
+  const heroImage =
+    matchMetaContent(params.html, "property", "og:image") ||
+    matchMetaContent(params.html, "name", "twitter:image");
+  const detailsBody =
+    matchHtmlSnippet(
+      params.html,
+      /<div[^>]+class=["'][^"']*product__content[^"']*["'][^>]*>([\s\S]*?)<modal\b/i,
+    ) ||
+    matchHtmlSnippet(
+      params.html,
+      /<div[^>]+class=["'][^"']*product__content[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<\/section>/i,
+    );
+  const ingredientsBody =
+    matchHtmlSnippet(
+      params.html,
+      /<modal[^>]+handle=["']productIngredients["'][\s\S]*?<div[^>]+class=["'][^"']*product-ingredients-modal__content[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+    ) ||
+    matchHtmlSnippet(
+      params.html,
+      /<modal[^>]+handle=["']productIngredients["'][\s\S]*?<div[^>]+class=["'][^"']*modal__content[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+    );
+
+  const detailsSections = dedupeDetailSections(
+    [
+      detailsBody
+        ? {
+            heading: "Details",
+            body: detailsBody,
+            source_kind: "html_snapshot_product_content",
+          }
+        : null,
+      ingredientsBody
+        ? {
+            heading: "Full Ingredients",
+            body: ingredientsBody,
+            source_kind: "html_snapshot_product_ingredients_modal",
+          }
+        : null,
+    ].filter((section): section is ExtractedProductDetailSection => Boolean(section)),
+  );
+
+  const derivedBodies = deriveProductPdpModuleBodies({
+    detailsSections,
+  });
+  const pdpFields = buildProductPdpFields({
+    descriptionRaw: detailsBody || metaDescription,
+    detailsSections,
+    ingredientsRaw: derivedBodies.ingredientsRaw,
+    activeIngredientsRaw: derivedBodies.activeIngredientsRaw,
+    howToUseRaw: derivedBodies.howToUseRaw,
+    fieldSources: {
+      description_raw: [detailsBody ? "html_snapshot_product_content" : metaDescription ? "meta_description" : ""],
+      details_sections: detailsSections.map((section) => section.source_kind),
+      ingredients_raw: [derivedBodies.ingredientsRaw ? "html_snapshot_product_ingredients_modal" : ""],
+      active_ingredients_raw: [derivedBodies.activeIngredientsRaw ? "html_snapshot_product_ingredients_modal" : ""],
+      how_to_use_raw: [derivedBodies.howToUseRaw ? "html_snapshot_product_content" : ""],
+    },
+  });
+
+  if (
+    !title &&
+    !heroImage &&
+    !pdpFields.description_raw &&
+    !pdpFields.ingredients_raw &&
+    !pdpFields.active_ingredients_raw &&
+    !pdpFields.how_to_use_raw &&
+    (pdpFields.details_sections?.length || 0) === 0
+  ) {
+    return null;
+  }
+
+  return {
+    title: title || params.brand,
+    url: params.url,
+    image_url: heroImage || "",
+    image_urls: heroImage ? [heroImage] : [],
+    variant_skus: [],
+    variants: [],
+    ...pdpFields,
+  };
+}
+
 export function buildProductPdpFields(params: {
   descriptionRaw?: string;
   detailsSections?: ExtractedProductDetailSection[];
@@ -1046,6 +1158,38 @@ export async function enrichDirectShopifyPdpResponse(params: {
     `Shopify direct PDP returned incomplete image/PDP fields. Attempting browser enrichment: ${params.seedUrl}`,
   );
 
+  let responseWithHtmlFallback = params.response;
+  try {
+    const htmlSnapshot = await fetchTextTracked(params.seedUrl, {}, params.diagnostics);
+    const htmlFallbackProduct =
+      htmlSnapshot.ok && htmlSnapshot.body
+        ? extractStaticHtmlPdpFallbackProduct({
+            brand: params.brand,
+            url: params.seedUrl,
+            html: htmlSnapshot.body,
+          })
+        : null;
+    if (htmlFallbackProduct) {
+      responseWithHtmlFallback = mergeShopifyDirectPdpFallback(params.brand, responseWithHtmlFallback, htmlFallbackProduct);
+      const mergedProduct = responseWithHtmlFallback.products[0];
+      const recoveredFields =
+        Number(Boolean(mergedProduct?.description_raw)) +
+        Number(Boolean(mergedProduct?.ingredients_raw || mergedProduct?.active_ingredients_raw)) +
+        Number(Boolean(mergedProduct?.how_to_use_raw)) +
+        Number(((mergedProduct?.details_sections || []).length > 0));
+      if (recoveredFields > 0) {
+        params.log(
+          "info",
+          `Recovered Shopify PDP fields from native HTML snapshot before browser enrichment: ${params.seedUrl}`,
+        );
+      }
+      if (mergedProduct && !productHasMissingPdpFields(mergedProduct)) return responseWithHtmlFallback;
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error || "unknown_error");
+    params.log("warn", `Native HTML snapshot enrichment failed for Shopify PDP: ${msg}`);
+  }
+
   const navigationTimeoutMs = clampIntShared(
     process.env.PUPPETEER_DIRECT_PDP_ENRICH_NAV_TIMEOUT_MS,
     Math.max(DEFAULT_NAV_TIMEOUT_MS, 15_000),
@@ -1077,16 +1221,16 @@ export async function enrichDirectShopifyPdpResponse(params: {
     );
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error || "unknown_error");
-    params.log("warn", `Browser enrichment failed for Shopify PDP; returning direct feed response: ${msg}`);
-    return params.response;
+    params.log("warn", `Browser enrichment failed for Shopify PDP; returning best available response: ${msg}`);
+    return responseWithHtmlFallback;
   }
 
   if (!browserRun.result) {
     params.log("warn", `Browser enrichment did not recover images for Shopify PDP: ${params.seedUrl}`);
-    return params.response;
+    return responseWithHtmlFallback;
   }
 
-  const merged = mergeShopifyDirectPdpFallback(params.brand, params.response, browserRun.result);
+  const merged = mergeShopifyDirectPdpFallback(params.brand, responseWithHtmlFallback, browserRun.result);
   if ((merged.products[0]?.image_urls.length || 0) > (product.image_urls.length || 0)) {
     params.log(
       "success",
@@ -2668,6 +2812,7 @@ async function scrapeProductPage(params: {
   log: Logger;
 }): Promise<ExtractedProduct | null> {
   const page = await params.browser.newPage();
+  let prefetchedProduct: ExtractedProduct | null = null;
 
   const expandRelevantPdpModules = async () => {
     await page.evaluate(() => {
@@ -2724,7 +2869,7 @@ async function scrapeProductPage(params: {
             prefetchedExtracted.detailsSections.length > 0 ||
             prefetchedExtracted.imageCandidates.length > 0
           ));
-      const prefetchedProduct = buildProductFromPageSignals({
+      prefetchedProduct = buildProductFromPageSignals({
         extracted: prefetchedExtracted,
         pageLooksLikeProduct: prefetchedLooksLikeProduct,
         sourceUrl: params.url,
@@ -2768,6 +2913,10 @@ async function scrapeProductPage(params: {
       throw err;
     }
     const message = err instanceof Error ? err.message : String(err);
+    if (prefetchedProduct) {
+      params.log("warn", `Returning native HTML snapshot fallback for ${params.url} after scrape failure: ${message}`);
+      return prefetchedProduct;
+    }
     params.log("warn", `Failed to scrape ${params.url}: ${message}`);
     return null;
   } finally {

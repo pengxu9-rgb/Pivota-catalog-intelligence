@@ -6,6 +6,7 @@ import {
   buildProductPdpFields,
   choosePreferredProductOverview,
   enrichDirectShopifyPdpResponse,
+  extractStaticHtmlPdpFallbackProduct,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
 } from "../src/services/extractors/puppeteer";
@@ -346,25 +347,39 @@ test("enrichDirectShopifyPdpResponse merges Pixi-style direct PDP fallback modul
     }),
   };
 
-  const result = await enrichDirectShopifyPdpResponse({
-    brand: "Pixi",
-    baseUrl: "https://pixibeauty.com",
-    seedUrl: "https://pixibeauty.com/products/glow-tonic-250ml",
-    response,
-    diagnostics: response.diagnostics,
-    log: (type, msg) => logs.push({ type, msg }),
-    browserRunner: async () => ({
-      result: fallbackProduct,
-      mode: "local",
-    }),
-  });
+  let result:
+    | Awaited<ReturnType<typeof enrichDirectShopifyPdpResponse>>
+    | undefined;
+  await withMockFetch(
+    {
+      "https://pixibeauty.com/products/glow-tonic-250ml": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: "<html><head><title>Glow Tonic</title></head><body></body></html>",
+      },
+    },
+    async () => {
+      result = await enrichDirectShopifyPdpResponse({
+        brand: "Pixi",
+        baseUrl: "https://pixibeauty.com",
+        seedUrl: "https://pixibeauty.com/products/glow-tonic-250ml",
+        response,
+        diagnostics: response.diagnostics,
+        log: (type, msg) => logs.push({ type, msg }),
+        browserRunner: async () => ({
+          result: fallbackProduct,
+          mode: "local",
+        }),
+      });
+    },
+  );
 
-  assert.equal(result.products[0]?.description_raw?.includes("bestselling toner"), true);
-  assert.equal(result.products[0]?.details_sections?.length, 2);
-  assert.equal(result.products[0]?.ingredients_raw?.includes("Glycolic Acid"), true);
-  assert.equal(result.products[0]?.how_to_use_raw?.includes("cotton pad"), true);
-  assert.equal(result.products[0]?.field_capture_status?.ingredients_raw, "present");
-  assert.equal(result.products[0]?.field_capture_status?.how_to_use_raw, "present");
+  assert.equal(result?.products[0]?.description_raw?.includes("bestselling toner"), true);
+  assert.equal(result?.products[0]?.details_sections?.length, 2);
+  assert.equal(result?.products[0]?.ingredients_raw?.includes("Glycolic Acid"), true);
+  assert.equal(result?.products[0]?.how_to_use_raw?.includes("cotton pad"), true);
+  assert.equal(result?.products[0]?.field_capture_status?.ingredients_raw, "present");
+  assert.equal(result?.products[0]?.field_capture_status?.how_to_use_raw, "present");
   assert.match(logs.map((entry) => `${entry.type}:${entry.msg}`).join("\n"), /Attempting browser enrichment/);
 });
 
@@ -456,6 +471,42 @@ test("mergeShopifyDirectPdpFallback preserves Fenty-style description and active
   assert.equal(merged.products[0]?.details_sections?.length, 2);
   assert.equal(merged.products[0]?.active_ingredients_raw, "Barbados Cherry Extract, Coconut Oil.");
   assert.equal(merged.products[0]?.field_capture_status?.active_ingredients_raw, "present");
+});
+
+test("extractStaticHtmlPdpFallbackProduct captures Fenty-style snapshot content and ingredients modal", () => {
+  const fallback = extractStaticHtmlPdpFallbackProduct({
+    brand: "Fenty Beauty",
+    url: "https://fentybeauty.com/products/hydra-vizor",
+    html: `
+      <html>
+        <head>
+          <meta property="og:title" content="Hydra Vizor Invisible Moisturizer Broad Spectrum SPF 30 Sunscreen with Niacinamide + Kalahari Melon" />
+          <meta name="description" content="Hydrating SPF moisturizer for daily wear." />
+          <meta property="og:image" content="https://cdn.example.com/hydra-vizor.jpg" />
+        </head>
+        <body>
+          <div class="product__content">
+            <p>Instantly hydrates and improves the look of fine lines.</p>
+            <p><strong>Fill Weight:</strong> 50 ml / 1.7 fl. oz.</p>
+            <modal handle="productIngredients" title="Full ingredients" role="dialog">
+              <div class="product-ingredients-modal__content OneLinkNoTx">
+                <p><strong>ACTIVE INGREDIENTS:</strong> AVOBENZONE 3%, HOMOSALATE 9%</p>
+                <p><strong>INACTIVE INGREDIENTS:</strong> WATER, GLYCERIN, NIACINAMIDE.</p>
+              </div>
+            </modal>
+          </div>
+        </body>
+      </html>
+    `,
+  });
+
+  assert.ok(fallback);
+  assert.equal(fallback?.title.includes("Hydra Vizor"), true);
+  assert.equal(fallback?.description_raw?.includes("Instantly hydrates"), true);
+  assert.equal(fallback?.details_sections?.length, 2);
+  assert.equal(fallback?.active_ingredients_raw?.includes("AVOBENZONE"), true);
+  assert.equal(fallback?.ingredients_raw?.includes("WATER, GLYCERIN"), true);
+  assert.deepEqual(fallback?.image_urls, ["https://cdn.example.com/hydra-vizor.jpg"]);
 });
 
 test("PuppeteerExtractor honors locale-prefixed Shopify direct PDP seed URLs", async () => {

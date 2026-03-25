@@ -2610,7 +2610,7 @@ async function fetchHtmlViaNativeRequest(
   });
 }
 
-async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
+export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
   return page.evaluate(async () => {
     const documentBase = document.baseURI || location.href;
     const title =
@@ -2936,10 +2936,39 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       }
     }
 
-    const howToUseText = howToUseContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
-    const ingredientsMarkdownText = ingredientsContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
-    const ingredientsDisclaimerText =
+    let howToUseText = howToUseContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
+    let ingredientsMarkdownText = ingredientsContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
+    let ingredientsDisclaimerText =
       ingredientsContent?.querySelector(".product-details-accordions-ingredients-disclaimer")?.textContent?.trim() || undefined;
+
+    if (!howToUseText || !ingredientsMarkdownText || !ingredientsDisclaimerText) {
+      const productFormAccordions = Array.from(document.querySelectorAll(".product-form__accordion")) as HTMLElement[];
+      for (const accordion of productFormAccordions) {
+        const button = accordion.querySelector("button") as HTMLButtonElement | null;
+        const headingText = normalizeSectionText(
+          button?.getAttribute("aria-label") || button?.getAttribute("title") || button?.textContent || "",
+        ).toLowerCase();
+        if (!headingText) continue;
+
+        const content =
+          accordion.querySelector(".accordion__content, .accordion__content.rte, .product-form__accordion-details") ||
+          button?.parentElement?.nextElementSibling ||
+          button?.nextElementSibling;
+        const bodyText = normalizeSectionText((content as HTMLElement | null)?.innerText || content?.textContent || "");
+        if (!bodyText) continue;
+
+        if (!howToUseText && /^how to(?: use)?$/i.test(headingText)) {
+          howToUseText = bodyText;
+        } else if (!ingredientsMarkdownText && /^ingredients(?: and safety| & safety)?$/i.test(headingText)) {
+          ingredientsMarkdownText = bodyText;
+        } else if (
+          !ingredientsDisclaimerText &&
+          /^ingredients disclaimer$/i.test(headingText)
+        ) {
+          ingredientsDisclaimerText = bodyText;
+        }
+      }
+    }
     const detailsSections = await (async () => {
       const sections: ExtractedProductDetailSection[] = [];
       const seen = new Set<string>();
@@ -2948,7 +2977,8 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
           heading,
         );
       const pushSection = (headingRaw: string, bodyRaw: string, sourceKind: string) => {
-        const heading = normalizeSectionText(headingRaw);
+        let heading = normalizeSectionText(headingRaw);
+        if (/^how to$/i.test(heading)) heading = "How to Use";
         const body = normalizeSectionText(bodyRaw);
         if (!heading || !body || !looksRelevantHeading(heading)) return;
         const key = `${heading.toLowerCase()}|${body.toLowerCase()}|${sourceKind.toLowerCase()}`;

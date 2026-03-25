@@ -404,6 +404,7 @@ type ScrapedPageSignals = {
   ingredientsDisclaimerText?: string;
   activeIngredientsText?: string;
   detailsSections: ExtractedProductDetailSection[];
+  appDataRaw?: string;
 };
 
 function clampInt(value: string | undefined, fallback: number, min: number, max: number) {
@@ -878,6 +879,126 @@ export function extractProductFromHtmlSnapshot(params: {
     verbose: Boolean(params.verbose),
     log: params.log || (() => undefined),
   });
+}
+
+function renderPaulasChoiceRichText(value: unknown, joiner = "\n\n"): string {
+  if (typeof value === "string") return value;
+  if (!value) return "";
+
+  if (Array.isArray(value)) {
+    return cleanText(value.map((item) => renderPaulasChoiceRichText(item, "")).filter(Boolean).join(joiner));
+  }
+
+  if (typeof value !== "object") return "";
+
+  const record = value as Record<string, unknown>;
+
+  if (record.break) return "\n";
+
+  if (Array.isArray(record.items)) {
+    const items = record.items
+      .map((item) => cleanText(renderPaulasChoiceRichText(item, "")))
+      .filter(Boolean);
+    return items.join("\n");
+  }
+
+  if ("text" in record) {
+    return renderPaulasChoiceRichText(record.text, "");
+  }
+
+  return "";
+}
+
+export function extractPaulasChoiceAppDataPdpFields(appDataRaw?: string) {
+  const normalizedRaw = typeof appDataRaw === "string" ? appDataRaw.trim() : "";
+  if (!normalizedRaw) return null;
+
+  try {
+    const parsed = JSON.parse(normalizedRaw) as Record<string, unknown>;
+    const common = (parsed.common && typeof parsed.common === "object") ? (parsed.common as Record<string, unknown>) : {};
+    const commonStrings =
+      common.strings && typeof common.strings === "object" ? (common.strings as Record<string, unknown>) : {};
+    const page = (parsed.page && typeof parsed.page === "object") ? (parsed.page as Record<string, unknown>) : {};
+    const pageStrings =
+      page.strings && typeof page.strings === "object" ? (page.strings as Record<string, unknown>) : {};
+    const strings = {
+      ...commonStrings,
+      ...pageStrings,
+    };
+    const product = page.product && typeof page.product === "object" ? (page.product as Record<string, unknown>) : {};
+
+    const sectionHeading = (key: string, fallback: string) =>
+      cleanText(typeof strings[key] === "string" ? (strings[key] as string) : undefined) || fallback;
+
+    const whatIsItText =
+      cleanText(typeof product.whyIsItDifferent === "string" ? (product.whyIsItDifferent as string) : undefined) ||
+      renderPaulasChoiceRichText(page.whatIsIt);
+    const benefitsText = cleanText(typeof product.whatDoesItDo === "string" ? (product.whatDoesItDo as string) : undefined);
+    const howToUseText =
+      cleanText(typeof product.howToUse === "string" ? (product.howToUse as string) : undefined) ||
+      renderPaulasChoiceRichText(page.howToUseContent);
+    const keyIngredientsText = cleanText(
+      typeof product.keyIngredients === "string" ? (product.keyIngredients as string) : undefined,
+    );
+    const researchText = renderPaulasChoiceRichText(page.research);
+
+    const ingredientsData = Array.isArray(page.ingredientsData) ? page.ingredientsData : [];
+    const allIngredientsText = cleanText(
+      ingredientsData
+        .map((entry) => {
+          if (!entry || typeof entry !== "object") return "";
+          const record = entry as Record<string, unknown>;
+          return typeof record.name === "string" ? record.name : "";
+        })
+        .filter(Boolean)
+        .join(", "),
+    );
+
+    const detailsSections = dedupeDetailSections([
+      {
+        heading: sectionHeading("whyIsItDifferent", "What is it"),
+        body: whatIsItText,
+        source_kind: "paulaschoice_appdata_what_is_it",
+      },
+      {
+        heading: sectionHeading("whatDoesItDo", "Benefits"),
+        body: benefitsText,
+        source_kind: "paulaschoice_appdata_benefits",
+      },
+      {
+        heading: sectionHeading("keyIngredients", "Key Ingredients"),
+        body: keyIngredientsText,
+        source_kind: "paulaschoice_appdata_key_ingredients",
+      },
+      {
+        heading: sectionHeading("allIngredients", "All Ingredients"),
+        body: allIngredientsText,
+        source_kind: "paulaschoice_appdata_all_ingredients",
+      },
+      {
+        heading: sectionHeading("howToUse", "How to use"),
+        body: howToUseText,
+        source_kind: "paulaschoice_appdata_how_to_use",
+      },
+      {
+        heading: sectionHeading("research", "Research"),
+        body: researchText,
+        source_kind: "paulaschoice_appdata_research",
+      },
+    ]);
+
+    const descriptionRaw = cleanText([whatIsItText, benefitsText].filter(Boolean).join("\n\n")) || undefined;
+
+    return {
+      descriptionRaw,
+      detailsSections,
+      ingredientsRaw: allIngredientsText || undefined,
+      activeIngredientsRaw: keyIngredientsText || undefined,
+      howToUseRaw: howToUseText || undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
@@ -3168,6 +3289,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
     })();
     const activeIngredientsText =
       detailsSections.find((section) => /\b(?:active|key|hero) ingredients?\b/i.test(section.heading))?.body || undefined;
+    const appDataRaw = (document.getElementById("appData") as HTMLElement | null)?.getAttribute("data")?.trim() || undefined;
 
     return {
       title,
@@ -3183,6 +3305,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       ingredientsDisclaimerText,
       activeIngredientsText,
       detailsSections,
+      appDataRaw,
     };
   });
 }
@@ -3196,6 +3319,7 @@ function buildProductFromPageSignals(params: {
   log: Logger;
 }): ExtractedProduct | null {
   const { extracted } = params;
+  const paulasChoiceAppData = extractPaulasChoiceAppDataPdpFields(extracted.appDataRaw);
   const objects: Record<string, unknown>[] = [];
   for (const raw of extracted.scripts) {
     try {
@@ -3260,11 +3384,15 @@ function buildProductFromPageSignals(params: {
   ]);
   const imageUrl = productImageUrls[0] || "";
 
+  const structuredOverview =
+    (typeof primaryProductObj?.description === "string" ? primaryProductObj.description : undefined) ||
+    (typeof productGroupObj?.description === "string" ? productGroupObj.description : undefined);
+  const mergedDetailedOverview =
+    cleanText([extracted.productDetailsText, paulasChoiceAppData?.descriptionRaw].filter(Boolean).join("\n\n")) || undefined;
+
   const officialText = choosePreferredProductOverview({
-    structured:
-      (typeof primaryProductObj?.description === "string" ? primaryProductObj.description : undefined) ||
-      (typeof productGroupObj?.description === "string" ? productGroupObj.description : undefined),
-    detailed: typeof extracted.productDetailsText === "string" ? extracted.productDetailsText : undefined,
+    structured: structuredOverview,
+    detailed: mergedDetailedOverview,
     meta: extracted.metaDescription,
   });
 
@@ -3277,46 +3405,77 @@ function buildProductFromPageSignals(params: {
     domMetaBySku.set(meta.sku, meta);
   }
 
-  const howToUseText = typeof extracted.howToUseText === "string" ? extracted.howToUseText.trim() : undefined;
+  const mergedDetailsSections = dedupeDetailSections([
+    ...extracted.detailsSections,
+    ...(paulasChoiceAppData?.detailsSections || []),
+  ]);
+  const howToUseText =
+    (typeof extracted.howToUseText === "string" ? extracted.howToUseText.trim() : undefined) ||
+    paulasChoiceAppData?.howToUseRaw;
   const ingredientsMarkdownText =
-    typeof extracted.ingredientsMarkdownText === "string" ? extracted.ingredientsMarkdownText.trim() : undefined;
+    (typeof extracted.ingredientsMarkdownText === "string" ? extracted.ingredientsMarkdownText.trim() : undefined) ||
+    paulasChoiceAppData?.ingredientsRaw;
   const ingredientsDisclaimerText =
     typeof extracted.ingredientsDisclaimerText === "string" ? extracted.ingredientsDisclaimerText.trim() : undefined;
   const activeIngredientsText =
-    typeof extracted.activeIngredientsText === "string" ? extracted.activeIngredientsText.trim() : undefined;
+    (typeof extracted.activeIngredientsText === "string" ? extracted.activeIngredientsText.trim() : undefined) ||
+    paulasChoiceAppData?.activeIngredientsRaw;
   const derivedPdpBodies = deriveProductPdpModuleBodies({
     ingredientsMarkdownText,
     activeIngredientsText,
     howToUseText,
-    detailsSections: extracted.detailsSections,
+    detailsSections: mergedDetailsSections,
   });
   const productPdpFields = buildProductPdpFields({
-    descriptionRaw: officialText || extracted.productDetailsText || extracted.metaDescription,
-    detailsSections: extracted.detailsSections,
+    descriptionRaw: officialText || mergedDetailedOverview || extracted.metaDescription,
+    detailsSections: mergedDetailsSections,
     ingredientsRaw: derivedPdpBodies.ingredientsRaw,
     activeIngredientsRaw: derivedPdpBodies.activeIngredientsRaw,
     howToUseRaw: derivedPdpBodies.howToUseRaw,
     fieldSources: {
       description_raw: [
-        officialText ? "structured_overview" : "",
-        !officialText && extracted.productDetailsText ? "page_product_details" : "",
-        !officialText && !extracted.productDetailsText && extracted.metaDescription ? "meta_description" : "",
+        officialText && cleanText(officialText) === cleanText(structuredOverview) ? "structured_overview" : "",
+        officialText &&
+        cleanText(officialText) === cleanText(mergedDetailedOverview) &&
+        Boolean(paulasChoiceAppData?.descriptionRaw)
+          ? "paulaschoice_appdata_overview"
+          : "",
+        officialText &&
+        cleanText(officialText) === cleanText(mergedDetailedOverview) &&
+        !paulasChoiceAppData?.descriptionRaw &&
+        extracted.productDetailsText
+          ? "page_product_details"
+          : "",
+        !officialText && mergedDetailedOverview ? "page_product_details" : "",
+        !officialText && !mergedDetailedOverview && extracted.metaDescription ? "meta_description" : "",
       ],
-      details_sections: extracted.detailsSections.map((section) => section.source_kind),
+      details_sections: mergedDetailsSections.map((section) => section.source_kind),
       ingredients_raw: [
-        ingredientsMarkdownText && looksLikeFullIngredientListText(ingredientsMarkdownText) ? "page_ingredients_section" : "",
+        ingredientsMarkdownText && looksLikeFullIngredientListText(ingredientsMarkdownText)
+          ? cleanText(ingredientsMarkdownText) === cleanText(paulasChoiceAppData?.ingredientsRaw)
+            ? "paulaschoice_appdata_all_ingredients"
+            : "page_ingredients_section"
+          : "",
         !ingredientsMarkdownText && derivedPdpBodies.ingredientsRaw
           ? "details_section_ingredients"
           : "",
       ],
       active_ingredients_raw: [
-        activeIngredientsText ? "page_active_ingredients_section" : "",
+        activeIngredientsText
+          ? cleanText(activeIngredientsText) === cleanText(paulasChoiceAppData?.activeIngredientsRaw)
+            ? "paulaschoice_appdata_key_ingredients"
+            : "page_active_ingredients_section"
+          : "",
         !activeIngredientsText && derivedPdpBodies.activeIngredientsRaw
           ? "details_section_active_ingredients"
           : "",
       ],
       how_to_use_raw: [
-        howToUseText ? "page_how_to_use_section" : "",
+        howToUseText
+          ? cleanText(howToUseText) === cleanText(paulasChoiceAppData?.howToUseRaw)
+            ? "paulaschoice_appdata_how_to_use"
+            : "page_how_to_use_section"
+          : "",
         !howToUseText && derivedPdpBodies.howToUseRaw
           ? "details_section_how_to_use"
           : "",

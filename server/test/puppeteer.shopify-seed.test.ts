@@ -10,6 +10,7 @@ import {
   discoverProductUrls,
   enrichDirectShopifyPdpResponse,
   extractProductFromHtmlSnapshot,
+  extractPaulasChoiceAppDataPdpFields,
   filterShopifyCatalogProducts,
   isNonProductShopifyFeedProduct,
   mergeShopifyDirectPdpFallback,
@@ -1702,5 +1703,51 @@ test("canReturnHtmlProductsWithoutBrowser accepts HTML-only products once PDP fi
       candidateCount: 1,
     }),
     true,
+  );
+});
+
+test("extractPaulasChoiceAppDataPdpFields recovers product modules from appData payloads", () => {
+  const fields = extractPaulasChoiceAppDataPdpFields(
+    JSON.stringify({
+      common: {
+        strings: {
+          whatDoesItDo: "Benefits",
+          whyIsItDifferent: "What is it",
+          howToUse: "How to use",
+          research: "Research",
+          keyIngredients: "Key Ingredients",
+          allIngredients: "All Ingredients",
+        },
+      },
+      page: {
+        product: {
+          whyIsItDifferent: "<p>BHA works within pores to clear congestion.</p>",
+          whatDoesItDo: "Skin looks brighter and smoother.",
+          keyIngredients: "Salicylic Acid, Green Tea",
+          howToUse: "<p>Apply after cleansing and do not rinse.</p>",
+        },
+        ingredientsData: [
+          { name: "Water" },
+          { name: "Methylpropanediol" },
+          { name: "Salicylic Acid" },
+        ],
+        research: [
+          {
+            paragraph: 1,
+            text: ["Journal A", { break: 1 }, "Journal B"],
+          },
+        ],
+      },
+    }),
+  );
+
+  assert.ok(fields);
+  assert.equal(fields?.descriptionRaw, "BHA works within pores to clear congestion.\n\nSkin looks brighter and smoother.");
+  assert.equal(fields?.ingredientsRaw, "Water, Methylpropanediol, Salicylic Acid");
+  assert.equal(fields?.activeIngredientsRaw, "Salicylic Acid, Green Tea");
+  assert.equal(fields?.howToUseRaw, "Apply after cleansing and do not rinse.");
+  assert.deepEqual(
+    fields?.detailsSections.map((section) => section.heading),
+    ["What is it", "Benefits", "Key Ingredients", "All Ingredients", "How to use", "Research"],
   );
 });

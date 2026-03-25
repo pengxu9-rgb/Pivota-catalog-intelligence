@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   PuppeteerExtractor,
+  buildProductPdpFields,
   choosePreferredProductOverview,
   enrichDirectShopifyPdpResponse,
   mergeShopifyDirectPdpFallback,
@@ -240,6 +241,221 @@ test("enrichDirectShopifyPdpResponse preserves direct feed response when browser
   assert.equal(result.products.length, 1);
   assert.equal(result.products[0]?.title, "Fucking Fabulous Parfum");
   assert.match(logs.map((entry) => `${entry.type}:${entry.msg}`).join("\n"), /Browser enrichment failed for Shopify PDP/);
+});
+
+test("enrichDirectShopifyPdpResponse merges Pixi-style direct PDP fallback modules", async () => {
+  const logs: Array<{ type: string; msg: string }> = [];
+  const response = {
+    brand: "Pixi",
+    domain: "https://pixibeauty.com/products/glow-tonic-250ml",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Glow Tonic Original Size",
+        url: "https://pixibeauty.com/products/glow-tonic-250ml",
+        image_url: "https://cdn.example.com/glow-tonic-1.jpg",
+        image_urls: ["https://cdn.example.com/glow-tonic-1.jpg"],
+        variant_skus: ["PIXI-GLOW-250"],
+        variants: [
+          {
+            id: "v1",
+            sku: "PIXI-GLOW-250",
+            url: "https://pixibeauty.com/products/glow-tonic-250ml",
+            option_name: "Size",
+            option_value: "250 ml",
+            price: "15.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "https://cdn.example.com/glow-tonic-1.jpg",
+            image_urls: ["https://cdn.example.com/glow-tonic-1.jpg"],
+            ad_copy: "",
+          },
+        ],
+        ...buildProductPdpFields({}),
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 15, max: 15, avg: 15 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "pixibeauty.com",
+      resolved_base_url: "https://pixibeauty.com",
+      discovery_strategy: "shopify_json",
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  const fallbackProduct = {
+    title: "Glow Tonic Original Size",
+    url: "https://pixibeauty.com/products/glow-tonic-250ml",
+    image_url: "https://cdn.example.com/glow-tonic-hero.jpg",
+    image_urls: [
+      "https://cdn.example.com/glow-tonic-hero.jpg",
+      "https://cdn.example.com/glow-tonic-2.jpg",
+    ],
+    variant_skus: ["PIXI-GLOW-250"],
+    variants: [
+      {
+        id: "v1",
+        sku: "PIXI-GLOW-250",
+        url: "https://pixibeauty.com/products/glow-tonic-250ml",
+        option_name: "Size",
+        option_value: "250 ml",
+        price: "15.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "",
+        image_url: "https://cdn.example.com/glow-tonic-hero.jpg",
+        image_urls: ["https://cdn.example.com/glow-tonic-hero.jpg"],
+        ad_copy: "",
+      },
+    ],
+    ...buildProductPdpFields({
+      descriptionRaw: "Our bestselling toner gently exfoliates to reveal brighter-looking skin.",
+      detailsSections: [
+        {
+          heading: "How To Apply",
+          body: "Use AM or PM after cleansing. Saturate a cotton pad and sweep across face.",
+          source_kind: "accordion_button",
+        },
+        {
+          heading: "Ingredients",
+          body: "Aqua/Water/Eau, Aloe Barbadensis Leaf Juice, Glycolic Acid, Glycerin.",
+          source_kind: "accordion_button",
+        },
+      ],
+      ingredientsRaw: "Aqua/Water/Eau, Aloe Barbadensis Leaf Juice, Glycolic Acid, Glycerin.",
+      howToUseRaw: "Use AM or PM after cleansing. Saturate a cotton pad and sweep across face.",
+      fieldSources: {
+        description_raw: ["structured_overview"],
+        details_sections: ["accordion_button"],
+        ingredients_raw: ["details_section_ingredients"],
+        how_to_use_raw: ["details_section_how_to_use"],
+      },
+    }),
+  };
+
+  const result = await enrichDirectShopifyPdpResponse({
+    brand: "Pixi",
+    baseUrl: "https://pixibeauty.com",
+    seedUrl: "https://pixibeauty.com/products/glow-tonic-250ml",
+    response,
+    diagnostics: response.diagnostics,
+    log: (type, msg) => logs.push({ type, msg }),
+    browserRunner: async () => ({
+      result: fallbackProduct,
+      mode: "local",
+    }),
+  });
+
+  assert.equal(result.products[0]?.description_raw?.includes("bestselling toner"), true);
+  assert.equal(result.products[0]?.details_sections?.length, 2);
+  assert.equal(result.products[0]?.ingredients_raw?.includes("Glycolic Acid"), true);
+  assert.equal(result.products[0]?.how_to_use_raw?.includes("cotton pad"), true);
+  assert.equal(result.products[0]?.field_capture_status?.ingredients_raw, "present");
+  assert.equal(result.products[0]?.field_capture_status?.how_to_use_raw, "present");
+  assert.match(logs.map((entry) => `${entry.type}:${entry.msg}`).join("\n"), /Attempting browser enrichment/);
+});
+
+test("mergeShopifyDirectPdpFallback preserves Fenty-style description and active ingredient sections", () => {
+  const response = {
+    brand: "Fenty Beauty",
+    domain: "https://fentybeauty.com/products/butta-drop-hydrating-body-milk-vanilla-dream",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Butta Drop Hydrating Body Milk — Vanilla Dream",
+        url: "https://fentybeauty.com/products/butta-drop-hydrating-body-milk-vanilla-dream",
+        image_url: "https://cdn.example.com/butta-1.jpg",
+        image_urls: ["https://cdn.example.com/butta-1.jpg"],
+        variant_skus: ["FB-BUTTA-001"],
+        variants: [
+          {
+            id: "v1",
+            sku: "FB-BUTTA-001",
+            url: "https://fentybeauty.com/products/butta-drop-hydrating-body-milk-vanilla-dream",
+            option_name: "Size",
+            option_value: "200 ml",
+            price: "34.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "https://cdn.example.com/butta-1.jpg",
+            image_urls: ["https://cdn.example.com/butta-1.jpg"],
+            ad_copy: "",
+          },
+        ],
+        ...buildProductPdpFields({}),
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 34, max: 34, avg: 34 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "fentybeauty.com",
+      resolved_base_url: "https://fentybeauty.com",
+      discovery_strategy: "shopify_json",
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  const fallbackProduct = {
+    title: "Butta Drop Hydrating Body Milk — Vanilla Dream",
+    url: "https://fentybeauty.com/products/butta-drop-hydrating-body-milk-vanilla-dream",
+    image_url: "https://cdn.example.com/butta-hero.jpg",
+    image_urls: ["https://cdn.example.com/butta-hero.jpg"],
+    variant_skus: ["FB-BUTTA-001"],
+    variants: [],
+    ...buildProductPdpFields({
+      descriptionRaw: "A rich body moisturizer that softens and replenishes dry skin.",
+      detailsSections: [
+        {
+          heading: "Benefits",
+          body: "Hydrating, moisturizing, and leaves skin looking healthy.",
+          source_kind: "heading_sibling",
+        },
+        {
+          heading: "Active Ingredients",
+          body: "Barbados Cherry Extract, Coconut Oil.",
+          source_kind: "heading_sibling",
+        },
+      ],
+      activeIngredientsRaw: "Barbados Cherry Extract, Coconut Oil.",
+      fieldSources: {
+        description_raw: ["structured_overview"],
+        details_sections: ["heading_sibling"],
+        active_ingredients_raw: ["details_section_active_ingredients"],
+      },
+    }),
+  };
+
+  const merged = mergeShopifyDirectPdpFallback("Fenty Beauty", response, fallbackProduct);
+
+  assert.equal(merged.products[0]?.description_raw?.includes("rich body moisturizer"), true);
+  assert.equal(merged.products[0]?.details_sections?.length, 2);
+  assert.equal(merged.products[0]?.active_ingredients_raw, "Barbados Cherry Extract, Coconut Oil.");
+  assert.equal(merged.products[0]?.field_capture_status?.active_ingredients_raw, "present");
 });
 
 test("PuppeteerExtractor honors locale-prefixed Shopify direct PDP seed URLs", async () => {

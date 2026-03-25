@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import test from "node:test";
 
 import {
@@ -7,6 +8,7 @@ import {
   choosePreferredProductOverview,
   enrichDirectShopifyPdpResponse,
   extractStaticHtmlPdpFallbackProduct,
+  fetchHtmlViaNativeRequest,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
 } from "../src/services/extractors/puppeteer";
@@ -600,6 +602,65 @@ test("extractStaticHtmlPdpFallbackProduct captures Fenty-style snapshot content 
   assert.equal(fallback?.active_ingredients_raw?.includes("AVOBENZONE"), true);
   assert.equal(fallback?.ingredients_raw?.includes("WATER, GLYCERIN"), true);
   assert.deepEqual(fallback?.image_urls, ["https://cdn.example.com/hydra-vizor.jpg"]);
+});
+
+test("fetchHtmlViaNativeRequest follows direct PDP redirects and preserves final URL", async () => {
+  const server = http.createServer((req, res) => {
+    if (req.url === "/products/fragrance-free-seed") {
+      res.statusCode = 301;
+      res.setHeader("Location", "/products/hydra-vizor-invisible-moisturizer-us");
+      res.end();
+      return;
+    }
+
+    if (req.url === "/products/hydra-vizor-invisible-moisturizer-us") {
+      const port = (server.address() as any).port;
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.end(`<!DOCTYPE html>
+        <html lang="en">
+          <head>
+            <link rel="canonical" href="http://127.0.0.1:${port}/products/hydra-vizor-invisible-moisturizer-us" />
+            <title>Hydra Vizor Invisible Moisturizer</title>
+          </head>
+          <body>
+            <h1>Hydra Vizor Invisible Moisturizer</h1>
+          </body>
+        </html>`);
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end("not found");
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  try {
+    const diagnostics = {
+      requested_domain: "127.0.0.1",
+      resolved_base_url: `http://127.0.0.1:${port}`,
+      discovery_strategy: null,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [] as Array<{ url: string; status: number | null }>,
+    };
+    const result = await fetchHtmlViaNativeRequest(
+      `http://127.0.0.1:${port}/products/fragrance-free-seed`,
+      diagnostics as any,
+    );
+
+    assert.equal(result.status, 200);
+    assert.equal(
+      result.finalUrl,
+      `http://127.0.0.1:${port}/products/hydra-vizor-invisible-moisturizer-us`,
+    );
+    assert.match(result.body || "", /Hydra Vizor Invisible Moisturizer/);
+    assert.deepEqual(diagnostics.http_trace.map((entry) => entry.status), [301, 200]);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
 });
 
 test("PuppeteerExtractor honors locale-prefixed Shopify direct PDP seed URLs", async () => {

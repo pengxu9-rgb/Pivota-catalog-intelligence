@@ -2032,13 +2032,16 @@ function injectBaseHref(html: string, pageUrl: string): string {
   return `<head>${baseTag}</head>${html}`;
 }
 
-async function fetchHtmlViaNativeRequest(
+type NativeHtmlFetchResult = { status: number | null; body: string | null; finalUrl: string };
+
+export async function fetchHtmlViaNativeRequest(
   url: string,
   diagnostics: ExtractResponse["diagnostics"],
-): Promise<{ status: number | null; body: string | null; finalUrl: string }> {
+  redirectCount = 0,
+): Promise<NativeHtmlFetchResult> {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (result: { status: number | null; body: string | null; finalUrl: string }) => {
+    const finish = (result: NativeHtmlFetchResult) => {
       if (settled) return;
       settled = true;
       resolve(result);
@@ -2058,6 +2061,20 @@ async function fetchHtmlViaNativeRequest(
         (response) => {
           const status = response.statusCode ?? null;
           diagnostics?.http_trace.push({ url, status });
+
+          if (
+            status &&
+            [301, 302, 303, 307, 308].includes(status) &&
+            redirectCount < 5
+          ) {
+            const location = response.headers.location;
+            if (location) {
+              const nextUrl = new URL(location, url).toString();
+              response.resume();
+              void fetchHtmlViaNativeRequest(nextUrl, diagnostics, redirectCount + 1).then(finish);
+              return;
+            }
+          }
 
           let body = "";
           response.setEncoding("utf8");
@@ -2866,12 +2883,13 @@ async function scrapeProductPage(params: {
       navigationTimeoutMs: params.navigationTimeoutMs,
     });
     const prefetched = await fetchHtmlViaNativeRequest(params.url, params.diagnostics!);
+    const prefetchedSourceUrl = prefetched.finalUrl || params.url;
     if (prefetched.body) {
-      await page.setContent(injectBaseHref(prefetched.body, params.url), { waitUntil: "domcontentloaded" });
+      await page.setContent(injectBaseHref(prefetched.body, prefetchedSourceUrl), { waitUntil: "domcontentloaded" });
       const prefetchedExtracted = await extractPageSignals(page);
       const prefetchedLooksLikeProduct =
         looksLikeProductPageHtml(prefetched.body) ||
-        (isLikelyProductUrlShared(params.url, params.baseUrl) &&
+        (isLikelyProductUrlShared(prefetchedSourceUrl, params.baseUrl) &&
           Boolean(cleanText(prefetchedExtracted.title)) &&
           (
             prefetchedExtracted.priceTexts.length > 0 ||
@@ -2881,7 +2899,7 @@ async function scrapeProductPage(params: {
       prefetchedProduct = buildProductFromPageSignals({
         extracted: prefetchedExtracted,
         pageLooksLikeProduct: prefetchedLooksLikeProduct,
-        sourceUrl: params.url,
+        sourceUrl: prefetchedSourceUrl,
         baseUrl: params.baseUrl,
         verbose: params.verbose,
         log: params.log,

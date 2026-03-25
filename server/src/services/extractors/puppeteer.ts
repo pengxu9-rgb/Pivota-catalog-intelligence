@@ -1361,6 +1361,17 @@ function productHasMissingPdpFields(product: ExtractedProduct) {
   return descriptionMissing || moduleMissing;
 }
 
+function countRecoveredPdpFields(product: ExtractedProduct | null | undefined) {
+  if (!product) return 0;
+
+  return (
+    Number(Boolean(cleanText(product.description_raw))) +
+    Number(Boolean(cleanText(product.ingredients_raw) || cleanText(product.active_ingredients_raw))) +
+    Number(Boolean(cleanText(product.how_to_use_raw))) +
+    Number((product.details_sections || []).length > 0)
+  );
+}
+
 export function canReturnHtmlProductsWithoutBrowser(params: {
   products: ExtractedProduct[];
   candidateCount: number;
@@ -3976,7 +3987,7 @@ async function scrapeProductPage(params: {
           extracted.imageCandidates.length > 0
         ));
 
-    return buildProductFromPageSignals({
+    const liveProduct = buildProductFromPageSignals({
       extracted,
       pageLooksLikeProduct: liveLooksLikeProduct,
       sourceUrl: params.url,
@@ -3984,6 +3995,27 @@ async function scrapeProductPage(params: {
       verbose: params.verbose,
       log: params.log,
     });
+
+    const renderedHtml = await page.content().catch(() => "");
+    const renderedHtmlProduct = renderedHtml
+      ? extractProductFromHtmlSnapshot({
+          html: renderedHtml,
+          url: params.url,
+          baseUrl: params.baseUrl,
+          verbose: params.verbose,
+          log: params.log,
+        })
+      : null;
+    if (renderedHtmlProduct) {
+      const liveRecoveredFields = countRecoveredPdpFields(liveProduct);
+      const renderedRecoveredFields = countRecoveredPdpFields(renderedHtmlProduct);
+      if (!liveProduct || renderedRecoveredFields > liveRecoveredFields) {
+        params.log("info", `Recovered richer PDP fields from rendered browser HTML snapshot: ${params.url}`);
+        return renderedHtmlProduct;
+      }
+    }
+
+    return liveProduct;
   } catch (err) {
     if (err instanceof BotChallengeError) {
       throw err;

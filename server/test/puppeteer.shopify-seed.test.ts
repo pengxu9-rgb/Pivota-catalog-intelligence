@@ -2243,3 +2243,68 @@ test("extractPaulasChoiceAppDataPdpFields recovers product modules from appData 
     ["What is it", "Benefits", "Key Ingredients", "All Ingredients", "How to use", "Research"],
   );
 });
+
+test("extractProductFromHtmlSnapshot parses Estee Lauder ProductGroup accordions", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>Advanced Night Repair Serum Synchronized Multi-Recovery Complex | Estée Lauder</title>
+          <link rel="canonical" href="https://www.esteelauder.com/product/689/77491/product-catalog/skincare/repair-serum/advanced-night-repair-serum/synchronized-multi-recovery-complex" />
+          <script type="application/ld+json">
+            {
+              "@context": "http://schema.org/",
+              "@type": "ProductGroup",
+              "name": "Advanced Night Repair Serum Synchronized Multi-Recovery Complex",
+              "description": "Wake up radiant. Visibly reduce signs of aging.",
+              "image": "https://www.esteelauder.com/media/export/cms/products/640x640/el_sku_PG5001_640x640_0.jpg",
+              "url": "https://www.esteelauder.com/product/689/77491/product-catalog/skincare/repair-serum/advanced-night-repair-serum/synchronized-multi-recovery-complex",
+              "brand": { "@type": "Brand", "name": "Estée Lauder" },
+              "hasVariant": [
+                {
+                  "@type": "Product",
+                  "sku": "PG5001",
+                  "name": "Advanced Night Repair Serum Synchronized Multi-Recovery Complex 1.0 oz.",
+                  "offers": {
+                    "@type": "Offer",
+                    "priceCurrency": "USD",
+                    "price": "50.00",
+                    "availability": "http://schema.org/InStock",
+                    "url": "https://www.esteelauder.com/product/689/77491/product-catalog/skincare/repair-serum/advanced-night-repair-serum/synchronized-multi-recovery-complex"
+                  }
+                }
+              ]
+            }
+          </script>
+        </head>
+        <body>
+          <h1>Advanced Night Repair Serum Synchronized Multi-Recovery Complex</h1>
+          <div>$50.00</div>
+          <details open>
+            <summary>Product Details</summary>
+            <div>The super serum for deep nightly renewal and unfiltered morning radiance.</div>
+          </details>
+          <details open>
+            <summary>How To Use</summary>
+            <div>Apply on clean skin before your moisturizer, AM and PM.</div>
+          </details>
+          <details open>
+            <summary>Ingredients</summary>
+            <div>Water, Bifida Ferment Lysate, Sodium Hyaluronate.</div>
+          </details>
+        </body>
+      </html>
+    `,
+    url: "https://www.esteelauder.com/product/689/77491/product-catalog/skincare/repair-serum/advanced-night-repair-serum/synchronized-multi-recovery-complex",
+    baseUrl: "https://www.esteelauder.com",
+  });
+
+  assert.ok(product);
+  assert.equal(product?.title, "Advanced Night Repair Serum Synchronized Multi-Recovery Complex");
+  assert.equal(product?.variants.length, 1);
+  assert.equal(product?.variant_skus[0], "PG5001");
+  assert.match(product?.description_raw || "", /wake up radiant/i);
+  assert.match(product?.ingredients_raw || "", /Bifida Ferment Lysate/i);
+  assert.match(product?.how_to_use_raw || "", /before your moisturizer/i);
+  assert.equal(product?.details_sections.length, 3);
+});

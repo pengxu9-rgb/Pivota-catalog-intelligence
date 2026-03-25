@@ -569,6 +569,22 @@ test("detectBlockProvider does not classify normal Cloudflare-served pages from 
   assert.equal(provider, null);
 });
 
+test("detectBlockProvider classifies Akamai access denied pages from response headers", () => {
+  const provider = detectBlockProvider({
+    status: 403,
+    headers: {
+      warning: "299 Akamai",
+      "akamai-grn": "0.59ce2d17.1774455343.cef8a5a9",
+      "x-akamai-devicedetected": "Desktop",
+    },
+    body: `You don't have permission to access this page on this server.\nReference #18.59ce2d17.1774455343.cef8a5a9`,
+    title: "Access Denied",
+    url: "https://www.esteelauder.com/product/689/77491/product-catalog/skincare/repair-serum/advanced-night-repair-serum/synchronized-multi-recovery-complex",
+  });
+
+  assert.equal(provider, "akamai");
+});
+
 test("looksLikeStorefrontPasswordPage detects Shopify password gates", () => {
   assert.equal(
     looksLikeStorefrontPasswordPage({

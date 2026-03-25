@@ -599,10 +599,12 @@ export function detectBlockProvider(params: {
   const status = params.status ?? 0;
   const blockedStatus = status === 401 || status === 403 || status === 429 || status === 503;
   const server = (headers["server"] || "").toLowerCase();
+  const warning = (headers["warning"] || "").toLowerCase();
   const cloudflareChallengeText =
     /just a moment|performing security verification|attention required|verify you are human|ray id|challenge-platform|please enable javascript and cookies/i;
   const akamaiChallengeText = /access denied|reference #|bot manager|_abck|bm_sz|ak_bmsc|akamai/i;
   const perimeterxChallengeText = /_px|perimeterx|press & hold|human verification|px-captcha/i;
+  const hasAkamaiHeaders = Boolean(headers["akamai-grn"] || headers["x-akamai-devicedetected"] || headers["x-akamai-session-info"]) || /akamai/.test(warning);
 
   if (
     headers["cf-mitigated"] ||
@@ -615,7 +617,7 @@ export function detectBlockProvider(params: {
 
   if (
     /_abck|bm_sz|ak_bmsc/.test(joined) ||
-    (blockedStatus && server.includes("akamai") && akamaiChallengeText.test(joined))
+    (blockedStatus && (server.includes("akamai") || hasAkamaiHeaders) && akamaiChallengeText.test(joined))
   ) {
     return "akamai";
   }

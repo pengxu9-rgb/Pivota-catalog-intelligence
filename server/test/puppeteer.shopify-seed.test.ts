@@ -473,6 +473,99 @@ test("mergeShopifyDirectPdpFallback preserves Fenty-style description and active
   assert.equal(merged.products[0]?.field_capture_status?.active_ingredients_raw, "present");
 });
 
+test("mergeShopifyDirectPdpFallback tolerates raw percent signs in Fenty titles", () => {
+  const response = {
+    brand: "Fenty Beauty",
+    domain: "https://fentybeauty.com/products/mini-killawatt-freestyle-highlighter-wattab",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Mini Killawatt Freestyle Highlighter — Wattab!*%#",
+        url: "https://fentybeauty.com/products/mini-killawatt-freestyle-highlighter-wattab",
+        image_url: "",
+        image_urls: [],
+        variant_skus: ["FB-KILLA-001"],
+        variants: [
+          {
+            id: "v1",
+            sku: "FB-KILLA-001",
+            url: "https://fentybeauty.com/products/mini-killawatt-freestyle-highlighter-wattab",
+            option_name: "Shade",
+            option_value: "Wattab!*%#",
+            price: "25.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "",
+            image_urls: [],
+            ad_copy: "",
+          },
+        ],
+        ...buildProductPdpFields({}),
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 25, max: 25, avg: 25 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "fentybeauty.com",
+      resolved_base_url: "https://fentybeauty.com",
+      discovery_strategy: "shopify_json",
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  const fallbackProduct = {
+    title: "Mini Killawatt Freestyle Highlighter — Wattab!*%#",
+    url: "https://fentybeauty.com/products/mini-killawatt-freestyle-highlighter-wattab",
+    image_url: "https://cdn.example.com/fenty-wattab-hero.jpg?v=1",
+    image_urls: ["https://cdn.example.com/fenty-wattab-hero.jpg?v=1"],
+    variant_skus: ["FB-KILLA-001"],
+    variants: [
+      {
+        id: "fv1",
+        sku: "FB-KILLA-001",
+        url: "https://fentybeauty.com/products/mini-killawatt-freestyle-highlighter-wattab",
+        option_name: "Shade",
+        option_value: "Wattab!*%#",
+        price: "25.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "",
+        image_url: "https://cdn.example.com/fenty-wattab-hero.jpg?v=1",
+        image_urls: ["https://cdn.example.com/fenty-wattab-hero.jpg?v=1"],
+        ad_copy: "",
+      },
+    ],
+    ...buildProductPdpFields({
+      descriptionRaw: "Travel-size shimmer highlighter.",
+      detailsSections: [
+        {
+          heading: "Benefits",
+          body: "Smooths and illuminates skin.",
+          source_kind: "heading_sibling",
+        },
+      ],
+    }),
+  };
+
+  const merged = mergeShopifyDirectPdpFallback("Fenty Beauty", response, fallbackProduct);
+
+  assert.equal(merged.products[0]?.description_raw, "Travel-size shimmer highlighter.");
+  assert.deepEqual(merged.products[0]?.image_urls, ["https://cdn.example.com/fenty-wattab-hero.jpg?v=1"]);
+  assert.deepEqual(merged.products[0]?.variants[0]?.image_urls, ["https://cdn.example.com/fenty-wattab-hero.jpg?v=1"]);
+});
+
 test("extractStaticHtmlPdpFallbackProduct captures Fenty-style snapshot content and ingredients modal", () => {
   const fallback = extractStaticHtmlPdpFallbackProduct({
     brand: "Fenty Beauty",

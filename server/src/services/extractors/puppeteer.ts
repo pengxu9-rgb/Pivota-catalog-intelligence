@@ -786,6 +786,15 @@ function dedupeStringList(values: Array<string | undefined | null>) {
   return out;
 }
 
+function safeDecodeURIComponent(value: string | undefined | null) {
+  const next = String(value || "");
+  try {
+    return decodeURIComponent(next);
+  } catch {
+    return next;
+  }
+}
+
 const IMAGE_HINT_STOPWORDS = new Set([
   "with",
   "from",
@@ -811,7 +820,7 @@ const IMAGE_HINT_STOPWORDS = new Set([
 function tokenizeImageHints(values: Array<string | undefined | null>) {
   const tokens = new Set<string>();
   for (const value of values) {
-    const decoded = decodeURIComponent(String(value || "").toLowerCase());
+    const decoded = safeDecodeURIComponent(String(value || "").toLowerCase());
     const matches = decoded.match(/[\p{L}\p{N}]+/gu) || [];
     for (const match of matches) {
       if (match.length < 4) continue;
@@ -824,7 +833,7 @@ function tokenizeImageHints(values: Array<string | undefined | null>) {
 }
 
 function imageUrlMatchScore(url: string, tokens: string[]) {
-  const haystack = decodeURIComponent(url.toLowerCase());
+  const haystack = safeDecodeURIComponent(url.toLowerCase());
   let score = 0;
   for (const token of tokens) {
     if (haystack.includes(token)) score += token.length >= 8 ? 3 : 2;
@@ -1245,7 +1254,7 @@ function extractShopifyProductHandle(seedUrl: string | undefined, baseUrl: strin
   try {
     const parsed = new URL(seedUrl, baseUrl);
     const match = parsed.pathname.match(/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?products?\/([^/?#]+)/i);
-    return match?.[1] ? decodeURIComponent(match[1]) : null;
+    return match?.[1] ? safeDecodeURIComponent(match[1]) : null;
   } catch {
     return null;
   }

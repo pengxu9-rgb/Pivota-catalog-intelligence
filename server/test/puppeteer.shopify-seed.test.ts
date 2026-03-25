@@ -5,26 +5,42 @@ import test from "node:test";
 import {
   PuppeteerExtractor,
   buildProductPdpFields,
+  canReturnHtmlProductsWithoutBrowser,
+  chooseDiscoveryBatchCandidates,
   choosePreferredProductOverview,
   deriveProductPdpModuleBodies,
+  discoverProductUrls,
   enrichDirectShopifyPdpResponse,
+  extractProductFromHtmlSnapshot,
+  extractPaulasChoiceAppDataPdpFields,
   extractStaticHtmlPdpFallbackProduct,
   fetchHtmlViaNativeRequest,
+  filterShopifyCatalogProducts,
+  isNonProductShopifyFeedProduct,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
+  resolveDirectPdpEnrichmentUrl,
 } from "../src/services/extractors/puppeteer";
 
 type MockRoute = {
   status?: number;
   headers?: Record<string, string>;
   body?: string;
+  responseUrl?: string;
 };
 
 function createMockResponse(route: MockRoute): Response {
-  return new Response(route.body ?? "", {
+  const response = new Response(route.body ?? "", {
     status: route.status ?? 200,
     headers: route.headers,
   });
+  if (route.responseUrl) {
+    Object.defineProperty(response, "url", {
+      value: route.responseUrl,
+      configurable: true,
+    });
+  }
+  return response;
 }
 
 async function withMockFetch(routes: Record<string, MockRoute>, fn: () => Promise<void>): Promise<void> {
@@ -124,7 +140,8 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
     id: 101,
     title: "Banana Bright 15% Vitamin C Dark Spot Serum",
     handle: "banana-bright-vitamin-c-serum",
-    body_html: "<p>Brightening serum</p>",
+    body_html:
+      "<p>Brightening serum</p><p>Ingredients: Aqua/Water, Vitamin C, Hyaluronic Acid.</p><p>How to Use: Apply evenly to face and neck daily.</p>",
     variants: [
       {
         id: 1001,
@@ -172,6 +189,225 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
         "https://cdn.example.com/banana-1.jpg",
         "https://cdn.example.com/banana-2.jpg",
       ]);
+      assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
+    },
+  );
+});
+
+test("filterShopifyCatalogProducts removes obvious gift and sample feed rows while keeping regular products", () => {
+  const filtered = filterShopifyCatalogProducts([
+    {
+      id: 1,
+      title: "Welcome Gift - Gift",
+      handle: "welcome-gift-gift",
+      body_html: "<p>Complimentary gift with purchase.</p>",
+      variants: [],
+    },
+    {
+      id: 2,
+      title: "Smart Response Serum",
+      handle: "smart-response-serum",
+      body_html: "<p>Adaptive serum with peptides.</p>",
+      variants: [],
+    },
+    {
+      id: 3,
+      title: "Deluxe Sample",
+      handle: "deluxe-sample",
+      body_html: "<p>Complimentary sample while supplies last.</p>",
+      variants: [],
+    },
+    {
+      id: 4,
+      title: "Pro-Collagen Banking Serum - Gift",
+      handle: "pro-collagen-banking-serum-gift",
+      body_html: "<p>Powerful serum gift.</p>",
+      variants: [
+        {
+          id: 401,
+          title: "Default Title",
+          option1: "Default Title",
+          price: 0,
+          available: true,
+          inventory_quantity: 12,
+        },
+      ],
+    },
+    {
+      id: 5,
+      title: "Intensive Moisture Balance - Travel",
+      handle: "intensive-moisture-balance-travel",
+      body_html: "<p>Mini travel size.</p>",
+      variants: [
+        {
+          id: 502,
+          title: "Default Title",
+          option1: "Default Title",
+          price: 0,
+          available: true,
+          inventory_quantity: 12,
+        },
+      ],
+    },
+  ] as any);
+
+  assert.deepEqual(
+    filtered.map((product) => product.handle),
+    ["smart-response-serum"],
+  );
+  assert.equal(
+    isNonProductShopifyFeedProduct({
+      id: 4,
+      title: "Gift Card",
+      handle: "gift-card",
+      body_html: "",
+      variants: [],
+    } as any),
+    true,
+  );
+  assert.equal(
+    isNonProductShopifyFeedProduct({
+      id: 6,
+      title: "Pro-Collagen Banking Serum - Gift",
+      handle: "pro-collagen-banking-serum-gift",
+      body_html: "<p>Powerful serum gift.</p>",
+      variants: [
+        {
+          id: 601,
+          title: "Default Title",
+          option1: "Default Title",
+          price: 0,
+          available: true,
+          inventory_quantity: 10,
+        },
+      ],
+    } as any),
+    true,
+  );
+  assert.equal(
+    isNonProductShopifyFeedProduct({
+      id: 7,
+      title: "Intensive Moisture Balance - Travel",
+      handle: "intensive-moisture-balance-travel",
+      body_html: "<p>Mini travel size.</p>",
+      variants: [
+        {
+          id: 701,
+          title: "Default Title",
+          option1: "Default Title",
+          price: 0,
+          available: true,
+          inventory_quantity: 10,
+        },
+      ],
+    } as any),
+    true,
+  );
+});
+
+test("PuppeteerExtractor filters non-product Shopify feed rows before picking domain-root products", async () => {
+  const extractor = new PuppeteerExtractor();
+
+  await withMockFetch(
+    {
+      "https://www.dermalogica.com/products.json?limit=1": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          products: [
+            {
+              id: 1,
+              title: "Welcome Gift - Gift",
+              handle: "welcome-gift-gift",
+              body_html: "<p>Complimentary gift with purchase.</p>",
+              variants: [
+                {
+                  id: 101,
+                  sku: "",
+                  title: "Default Title",
+                  option1: "Default Title",
+                  price: 0,
+                  available: true,
+                  inventory_quantity: 999,
+                },
+              ],
+              options: [{ name: "Title" }],
+              images: [{ src: "https://cdn.example.com/welcome-gift.jpg" }],
+            },
+          ],
+        }),
+      },
+      "https://www.dermalogica.com": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+      "https://www.dermalogica.com/products.json?limit=250&page=1": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          products: [
+            {
+              id: 1,
+              title: "Welcome Gift - Gift",
+              handle: "welcome-gift-gift",
+              body_html: "<p>Complimentary gift with purchase.</p>",
+              variants: [
+                {
+                  id: 101,
+                  sku: "",
+                  title: "Default Title",
+                  option1: "Default Title",
+                  price: 0,
+                  available: true,
+                  inventory_quantity: 999,
+                },
+              ],
+              options: [{ name: "Title" }],
+              images: [{ src: "https://cdn.example.com/welcome-gift.jpg" }],
+            },
+            {
+              id: 2,
+              title: "Smart Response Serum",
+              handle: "smart-response-serum",
+              body_html:
+                "<p>Adaptive serum.</p><p>Ingredients: Aqua, Glycerin, Peptides.</p><p>How to Use: Apply after cleansing.</p>",
+              variants: [
+                {
+                  id: 202,
+                  sku: "DL-SRS-001",
+                  title: "Default Title",
+                  option1: "Default Title",
+                  price: 16500,
+                  available: true,
+                  inventory_quantity: 15,
+                },
+              ],
+              options: [{ name: "Title" }],
+              images: [{ src: "https://cdn.example.com/smart-response-serum.jpg" }],
+            },
+          ],
+        }),
+      },
+      "https://www.dermalogica.com/products.json?limit=250&page=2": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ products: [] }),
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Dermalogica",
+        domain: "https://www.dermalogica.com",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.platform, "Shopify");
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.title, "Smart Response Serum");
+      assert.equal(result.products[0]?.url, "https://www.dermalogica.com/products/smart-response-serum");
+      assert.match(result.products[0]?.ingredients_raw || "", /Peptides/i);
       assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
     },
   );
@@ -245,6 +481,161 @@ test("enrichDirectShopifyPdpResponse preserves direct feed response when browser
   assert.equal(result.products.length, 1);
   assert.equal(result.products[0]?.title, "Fucking Fabulous Parfum");
   assert.match(logs.map((entry) => `${entry.type}:${entry.msg}`).join("\n"), /Browser enrichment failed for Shopify PDP/);
+});
+
+test("resolveDirectPdpEnrichmentUrl prefers canonical /products PDPs over stale singular /product seeds", () => {
+  const resolved = resolveDirectPdpEnrichmentUrl({
+    seedUrl: "https://www.tomfordbeauty.com/product/oud-wood-parfum?size=50_ml",
+    productUrl: "https://www.tomfordbeauty.com/products/oud-wood-parfum",
+    baseUrl: "https://www.tomfordbeauty.com",
+  });
+
+  assert.equal(resolved, "https://www.tomfordbeauty.com/products/oud-wood-parfum");
+});
+
+test("chooseDiscoveryBatchCandidates caps direct seed rediscovery windows to the top seed-affine candidates", () => {
+  const selected = chooseDiscoveryBatchCandidates({
+    productUrls: [
+      "https://www.tomfordbeauty.com/products/architecture-radiance-hydrating-foundation-broad-spectrum-spf-50",
+      "https://www.tomfordbeauty.com/products/shade-and-illuminate-concealer",
+      "https://www.tomfordbeauty.com/products/shade-and-illuminate-contour-duo",
+      "https://www.tomfordbeauty.com/products/architecture-soft-matte-blurring-foundation",
+      "https://www.tomfordbeauty.com/products/brow-sculptor",
+      "https://www.tomfordbeauty.com/products/ombre-leather-eau-de-parfum",
+    ],
+    offset: 0,
+    limit: 10,
+    reserve: 4,
+    seedUrl: "https://www.tomfordbeauty.com/product/shade-and-illuminate-soft-radiance-foundation-spf-50?shade=11.0_Dusk",
+    baseUrl: "https://www.tomfordbeauty.com",
+  });
+
+  assert.deepEqual(selected, [
+    "https://www.tomfordbeauty.com/products/architecture-radiance-hydrating-foundation-broad-spectrum-spf-50",
+    "https://www.tomfordbeauty.com/products/shade-and-illuminate-concealer",
+    "https://www.tomfordbeauty.com/products/shade-and-illuminate-contour-duo",
+    "https://www.tomfordbeauty.com/products/architecture-soft-matte-blurring-foundation",
+  ]);
+});
+
+test("enrichDirectShopifyPdpResponse recovers PDP modules from native HTML before browser enrichment", async () => {
+  const response = {
+    brand: "NUXE",
+    domain: "https://us.nuxe.com/products/face-cleansing-and-make-up-removing-gel",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Face Cleansing and Make-Up Removing Gel",
+        url: "https://us.nuxe.com/products/face-cleansing-and-make-up-removing-gel",
+        image_url: "https://cdn.example.com/nuxe-gel.jpg",
+        image_urls: ["https://cdn.example.com/nuxe-gel.jpg"],
+        variant_skus: ["NX9702910"],
+        variants: [
+          {
+            id: "v1",
+            sku: "NX9702910",
+            url: "https://us.nuxe.com/products/face-cleansing-and-make-up-removing-gel",
+            option_name: "Title",
+            option_value: "Default Title",
+            price: "21.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "https://cdn.example.com/nuxe-gel.jpg",
+            image_urls: ["https://cdn.example.com/nuxe-gel.jpg"],
+            ad_copy: "copy",
+          },
+        ],
+        field_capture_status: {
+          description_raw: "missing" as const,
+          details_sections: "missing" as const,
+          ingredients_raw: "missing" as const,
+          active_ingredients_raw: "missing" as const,
+          how_to_use_raw: "missing" as const,
+        },
+        field_sources: {
+          description_raw: [],
+          details_sections: [],
+          ingredients_raw: [],
+          active_ingredients_raw: [],
+          how_to_use_raw: [],
+        },
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 21, max: 21, avg: 21 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "us.nuxe.com",
+      resolved_base_url: "https://us.nuxe.com",
+      discovery_strategy: "shopify_json",
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  let browserCalled = false;
+  const merged = await enrichDirectShopifyPdpResponse({
+    brand: "NUXE",
+    baseUrl: "https://us.nuxe.com",
+    seedUrl: "https://us.nuxe.com/products/face-cleansing-and-make-up-removing-gel",
+    response,
+    diagnostics: response.diagnostics,
+    log: () => undefined,
+    htmlFetcher: async () => ({
+      status: 200,
+      finalUrl: "https://us.nuxe.com/products/face-cleansing-and-make-up-removing-gel",
+      body: `
+        <html>
+          <head>
+            <meta name="description" content="Gentle cleansing gel for dry and sensitive skin.">
+          </head>
+          <body>
+            <h1>Face Cleansing and Make-Up Removing Gel</h1>
+            <details>
+              <summary>Description</summary>
+              <div class="accordion__content">
+                <p>Gentle cleansing gel for dry and sensitive skin.</p>
+              </div>
+            </details>
+            <details>
+              <summary>Beauty tips</summary>
+              <div class="accordion__content">
+                <p>Apply to damp face, massage, then rinse.</p>
+              </div>
+            </details>
+            <details>
+              <summary>Formula</summary>
+              <div class="accordion__content">
+                <p>Ingredients: Aqua/Water, Glycerin, Honey Extract, Sunflower Seed Oil.</p>
+              </div>
+            </details>
+          </body>
+        </html>
+      `,
+    }),
+    browserRunner: async () => {
+      browserCalled = true;
+      throw new Error("browser should not be called");
+    },
+  });
+
+  assert.equal(browserCalled, false);
+  assert.equal(merged.products[0]?.field_capture_status?.description_raw, "present");
+  assert.equal(merged.products[0]?.field_capture_status?.details_sections, "present");
+  assert.equal(merged.products[0]?.field_capture_status?.ingredients_raw, "present");
+  assert.equal(merged.products[0]?.field_capture_status?.how_to_use_raw, "present");
+  assert.match(merged.products[0]?.ingredients_raw || "", /Honey Extract/i);
+  assert.match(merged.products[0]?.how_to_use_raw || "", /Apply to damp face/i);
 });
 
 test("enrichDirectShopifyPdpResponse merges Pixi-style direct PDP fallback modules", async () => {
@@ -842,6 +1233,46 @@ test("PuppeteerExtractor honors singular /product Shopify direct PDP seed URLs",
   );
 });
 
+test("discoverProductUrls re-discovers Tom Ford foundation PDPs when stale /product seeds redirect to makeup collections", async () => {
+  await withMockFetch(
+    {
+      "https://www.tomfordbeauty.com/products/shade-and-illuminate-soft-radiance-foundation-spf-50.js": {
+        status: 404,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: "{}",
+      },
+      "https://www.tomfordbeauty.com/product/shade-and-illuminate-soft-radiance-foundation-spf-50?shade=12.5_Walnut": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        responseUrl: "https://www.tomfordbeauty.com/collections/makeup",
+        body: `
+          <html>
+            <head><title>Makeup</title></head>
+            <body>
+              <h1>Makeup</h1>
+              <a href="/products/ombre-leather-parfum">Ombre Leather Parfum</a>
+              <a href="/products/shade-and-illuminate-soft-radiance-foundation-spf-50">Soft Radiance Foundation SPF 50</a>
+            </body>
+          </html>
+        `,
+      },
+    },
+    async () => {
+      const result = await discoverProductUrls({
+        baseUrl: "https://www.tomfordbeauty.com",
+        seedUrl: "https://www.tomfordbeauty.com/product/shade-and-illuminate-soft-radiance-foundation-spf-50?shade=12.5_Walnut",
+        maxProducts: 5,
+        log: () => undefined,
+      });
+
+      assert.deepEqual(result.productUrls.slice(0, 2), [
+        "https://www.tomfordbeauty.com/products/shade-and-illuminate-soft-radiance-foundation-spf-50",
+        "https://www.tomfordbeauty.com/products/ombre-leather-parfum",
+      ]);
+    },
+  );
+});
+
 test("pickBestJsonLdObjectForPage prefers the Product object that matches the current locale page", () => {
   const selected = pickBestJsonLdObjectForPage({
     candidates: [
@@ -1397,5 +1828,418 @@ test("choosePreferredProductOverview prefers expanded product details over short
   assert.equal(
     overview,
     "The Acne Set offers a targeted skincare regimen featuring Salicylic Acid 2% Solution for treating acne.\n\nThis set includes...\n\nGlucoside Foaming Cleanser removes dirt and environmental impurities.\nSalicylic Acid 2% Solution exfoliates and helps clear pores.",
+  );
+});
+
+test("extractProductFromHtmlSnapshot parses The Ordinary ingredients and usage without a browser", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>Niacinamide 10% + Zinc 1% Serum</title>
+          <meta property="og:price:amount" content="6.50">
+          <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "Product",
+              "name": "Niacinamide 10% + Zinc 1% Serum",
+              "url": "https://theordinary.com/en-us/niacinamide-10-zinc-1-serum-100436.html",
+              "description": "A universal serum for blemish-prone skin that smooths, brightens, and supports.",
+              "image": ["https://theordinary.com/images/niacinamide.jpg"],
+              "offers": {
+                "@type": "Offer",
+                "price": "6.50",
+                "priceCurrency": "USD",
+                "availability": "https://schema.org/InStock"
+              }
+            }
+          </script>
+        </head>
+        <body>
+          <h1>Niacinamide 10% + Zinc 1% Serum</h1>
+          <div class="active-ingredient-flyout-root">
+            <aside class="active-ingredient-flyout">
+              <div class="title">Ingredients</div>
+              <p class="ingredients-flyout-content">Aqua (Water), Niacinamide, Pentylene Glycol, Zinc PCA.</p>
+            </aside>
+          </div>
+          <div class="directions-overview-flyout-container-root">
+            <div class="product-flyout-content">
+              <p class="title">How to Use</p>
+              <div class="product-flyout-directions-list">
+                <ul><li>Apply a few drops to the face in the morning and evening.</li></ul>
+              </div>
+            </div>
+          </div>
+          <div class="product-info-description">
+            <div class="description">A universal serum for blemish-prone skin that smooths, brightens, and supports.</div>
+          </div>
+        </body>
+      </html>
+    `,
+    url: "https://theordinary.com/en-us/niacinamide-10-zinc-1-serum-100436.html",
+    baseUrl: "https://theordinary.com",
+  });
+
+  assert.ok(product);
+  assert.equal(product?.title, "Niacinamide 10% + Zinc 1% Serum");
+  assert.match(product?.ingredients_raw || "", /Niacinamide/i);
+  assert.match(product?.how_to_use_raw || "", /Apply a few drops/i);
+  assert.equal(product?.field_capture_status?.description_raw, "present");
+  assert.equal(product?.field_capture_status?.details_sections, "present");
+});
+
+test("extractProductFromHtmlSnapshot parses Jurlique ingredient accordions and key ingredients", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>Radiant Skin Foaming Cleanser</title>
+          <meta property="og:price:amount" content="34.00">
+          <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "Product",
+              "name": "Radiant Skin Foaming Cleanser",
+              "url": "https://www.jurlique.com/products/radiant-skin-foam-cleanser",
+              "description": "This foaming cleanser delivers a powerful clean without drying."
+            }
+          </script>
+        </head>
+        <body>
+          <h1>Radiant Skin Foaming Cleanser</h1>
+          <div class="product-accordion ingredients_list">
+            <div class="product-accordion-header"><h2>ingredients List</h2></div>
+            <div class="accordion-panel">
+              <p>Aqua (Water), Glycerin, Decyl Glucoside, Rosa canina Fruit Oil, Calendula officinalis Flower Extract.</p>
+            </div>
+          </div>
+          <div class="description-container">
+            <h2 class="description-header">How to Use</h2>
+            <div class="description-body">
+              Gently lather a small amount between damp hands and massage over face.
+            </div>
+          </div>
+          <div class="product-ingredient-section">
+            <div class="product-key-ingredients" id="key-ingredients">
+              <div class="child-ingredient">
+                <div class="name">Calendula</div>
+                <div class="description">Calendula extracts provide soothing, environmental protection and moisturisation to the skin.</div>
+              </div>
+              <div class="child-ingredient">
+                <div class="name">Lemon Balm</div>
+                <div class="description">Lemon Balm has a refreshing effect on the skin.</div>
+              </div>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+    url: "https://www.jurlique.com/products/radiant-skin-foam-cleanser",
+    baseUrl: "https://www.jurlique.com",
+  });
+
+  assert.ok(product);
+  assert.match(product?.ingredients_raw || "", /Aqua \(Water\)/i);
+  assert.match(product?.active_ingredients_raw || "", /Calendula/i);
+  assert.match(product?.how_to_use_raw || "", /Gently lather/i);
+  assert.equal(product?.field_capture_status?.ingredients_raw, "present");
+  assert.equal(product?.field_capture_status?.active_ingredients_raw, "present");
+  assert.equal(product?.field_capture_status?.how_to_use_raw, "present");
+});
+
+test("extractProductFromHtmlSnapshot normalizes HOW TO accordions from Shopify HTML snapshots", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>BeamCream Smoothing Body Moisturizer</title>
+          <meta property="og:price:amount" content="38.00">
+          <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "Product",
+              "name": "BeamCream Smoothing Body Moisturizer",
+              "url": "https://olehenriksen.com/products/beamcream-smoothing-body-moisturizer",
+              "description": "Finally, a face-worthy body cream."
+            }
+          </script>
+        </head>
+        <body>
+          <h1>BeamCream Smoothing Body Moisturizer</h1>
+          <div class="product-form__accordion" data-accordion-item>
+            <h2><button aria-label="HOW TO">HOW TO</button></h2>
+            <div class="accordion__content rte p4">
+              <p>Once a day, apply generously to body after cleansing &amp; massage into skin.</p>
+            </div>
+          </div>
+          <div class="product-form__accordion" data-accordion-item>
+            <h2><button aria-label="INGREDIENTS">INGREDIENTS</button></h2>
+            <div class="accordion__content rte p4">
+              <p><strong>Full Ingredients List:</strong> AQUA/WATER/EAU, GLYCERIN.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+    url: "https://olehenriksen.com/products/beamcream-smoothing-body-moisturizer",
+    baseUrl: "https://olehenriksen.com",
+  });
+
+  assert.ok(product);
+  assert.match(product?.ingredients_raw || "", /AQUA\/WATER\/EAU/i);
+  assert.match(product?.how_to_use_raw || "", /apply generously to body/i);
+  assert.ok(
+    (product?.details_sections || []).some(
+      (section) => section.heading === "How to Use" && /apply generously/i.test(section.body),
+    ),
+  );
+});
+
+test("PuppeteerExtractor returns a generic product from static HTML without launching a browser", async () => {
+  const server = http.createServer((req, res) => {
+    const url = req.url || "/";
+
+    if (url === "/products.json?limit=1") {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not_found" }));
+      return;
+    }
+
+    if (url === "/niacinamide-10-zinc-1-serum-100436.html") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`
+        <html>
+          <head>
+            <title>Niacinamide 10% + Zinc 1% Serum</title>
+            <meta property="og:price:amount" content="6.50">
+            <meta property="og:image" content="http://127.0.0.1/static/niacinamide.jpg">
+            <script type="application/ld+json">
+              {
+                "@context": "https://schema.org",
+                "@type": "Product",
+                "name": "Niacinamide 10% + Zinc 1% Serum",
+                "url": "http://127.0.0.1:${(server.address() as any)?.port || 0}/niacinamide-10-zinc-1-serum-100436.html",
+                "description": "A universal serum for blemish-prone skin that smooths, brightens, and supports.",
+                "image": ["http://127.0.0.1/static/niacinamide.jpg"],
+                "offers": {
+                  "@type": "Offer",
+                  "price": "6.50",
+                  "priceCurrency": "USD",
+                  "availability": "https://schema.org/InStock"
+                }
+              }
+            </script>
+          </head>
+          <body>
+            <h1>Niacinamide 10% + Zinc 1% Serum</h1>
+            <div class="title">Ingredients</div>
+            <p class="ingredients-flyout-content">Aqua (Water), Niacinamide, Pentylene Glycol, Zinc PCA.</p>
+            <div class="product-flyout-content">
+              <p class="title">How to Use</p>
+              <div class="product-flyout-directions-list">
+                <ul><li>Apply a few drops to the face in the morning and evening.</li></ul>
+              </div>
+            </div>
+            <div class="product-info-description">
+              <div class="description">A universal serum for blemish-prone skin that smooths, brightens, and supports.</div>
+            </div>
+          </body>
+        </html>
+      `);
+      return;
+    }
+
+    res.writeHead(404, { "content-type": "text/plain" });
+    res.end("not found");
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const port = address.port;
+
+  try {
+    const extractor = new PuppeteerExtractor();
+    const result = await extractor.extract({
+      brand: "The Ordinary",
+      domain: `http://127.0.0.1:${port}/niacinamide-10-zinc-1-serum-100436.html`,
+      market: "US",
+      limit: 5,
+    });
+
+    assert.equal(result.platform, "Generic Website");
+    assert.equal(result.products.length, 1);
+    assert.match(result.products[0]?.ingredients_raw || "", /Niacinamide/i);
+    assert.match(result.products[0]?.how_to_use_raw || "", /Apply a few drops/i);
+    assert.equal(result.products[0]?.field_capture_status?.description_raw, "present");
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test("canReturnHtmlProductsWithoutBrowser rejects HTML-only products that still need PDP enrichment", () => {
+  const incompleteProduct = {
+    title: "Abeille Royale Youth Repair Eye Care",
+    url: "https://www.guerlain.com/us/en-us/p/abeille-royale-youth-repair-eye-care-P062209.html",
+    image_url: "https://cdn.example.com/guerlain-eye.jpg",
+    image_urls: ["https://cdn.example.com/guerlain-eye.jpg"],
+    variant_skus: ["GR-062209"],
+    variants: [
+      {
+        id: "1",
+        sku: "GR-062209",
+        url: "https://www.guerlain.com/us/en-us/p/abeille-royale-youth-repair-eye-care-P062209.html",
+        option_name: "Size",
+        option_value: "15 ml",
+        price: "145.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "",
+        image_url: "https://cdn.example.com/guerlain-eye.jpg",
+        image_urls: ["https://cdn.example.com/guerlain-eye.jpg"],
+        ad_copy: "",
+      },
+    ],
+    description_raw: "",
+    details_sections: [
+      {
+        heading: "Key Ingredients",
+        body: "Black Bee Honey: Helps support skin repair.",
+        source_kind: "guerlain_ingredients_carousel",
+      },
+    ],
+    active_ingredients_raw: "Black Bee Honey: Helps support skin repair.",
+    field_capture_status: {
+      description_raw: "missing",
+      details_sections: "present",
+      ingredients_raw: "missing",
+      active_ingredients_raw: "present",
+      how_to_use_raw: "missing",
+    },
+    field_sources: {
+      description_raw: [],
+      details_sections: ["guerlain_ingredients_carousel"],
+      ingredients_raw: [],
+      active_ingredients_raw: ["guerlain_ingredients_carousel"],
+      how_to_use_raw: [],
+    },
+  };
+
+  assert.equal(
+    canReturnHtmlProductsWithoutBrowser({
+      products: [incompleteProduct as any],
+      candidateCount: 1,
+    }),
+    false,
+  );
+});
+
+test("canReturnHtmlProductsWithoutBrowser accepts HTML-only products once PDP fields are complete", () => {
+  const completeProduct = {
+    title: "Abeille Royale Youth Watery Oil Serum",
+    url: "https://www.guerlain.com/us/en-us/p/abeille-royale-youth-watery-oil-serum-P062033.html",
+    image_url: "https://cdn.example.com/guerlain-serum.jpg",
+    image_urls: ["https://cdn.example.com/guerlain-serum.jpg"],
+    variant_skus: ["GR-062033"],
+    variants: [
+      {
+        id: "1",
+        sku: "GR-062033",
+        url: "https://www.guerlain.com/us/en-us/p/abeille-royale-youth-watery-oil-serum-P062033.html",
+        option_name: "Size",
+        option_value: "50 ml",
+        price: "165.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "",
+        image_url: "https://cdn.example.com/guerlain-serum.jpg",
+        image_urls: ["https://cdn.example.com/guerlain-serum.jpg"],
+        ad_copy: "",
+      },
+    ],
+    description_raw: "A replenishing serum powered by honey actives.",
+    details_sections: [
+      {
+        heading: "Ingredients",
+        body: "Aqua (Water), Glycerin, Squalane, Parfum (Fragrance).",
+        source_kind: "guerlain_ingredients_modal",
+      },
+      {
+        heading: "Key Ingredients",
+        body: "Black Bee Honey: Helps support skin repair.",
+        source_kind: "guerlain_ingredients_carousel",
+      },
+    ],
+    ingredients_raw: "Aqua (Water), Glycerin, Squalane, Parfum (Fragrance).",
+    active_ingredients_raw: "Black Bee Honey: Helps support skin repair.",
+    field_capture_status: {
+      description_raw: "present",
+      details_sections: "present",
+      ingredients_raw: "present",
+      active_ingredients_raw: "present",
+      how_to_use_raw: "missing",
+    },
+    field_sources: {
+      description_raw: ["page_product_details"],
+      details_sections: ["guerlain_ingredients_modal", "guerlain_ingredients_carousel"],
+      ingredients_raw: ["guerlain_ingredients_modal"],
+      active_ingredients_raw: ["guerlain_ingredients_carousel"],
+      how_to_use_raw: [],
+    },
+  };
+
+  assert.equal(
+    canReturnHtmlProductsWithoutBrowser({
+      products: [completeProduct as any],
+      candidateCount: 1,
+    }),
+    true,
+  );
+});
+
+test("extractPaulasChoiceAppDataPdpFields recovers product modules from appData payloads", () => {
+  const fields = extractPaulasChoiceAppDataPdpFields(
+    JSON.stringify({
+      common: {
+        strings: {
+          whatDoesItDo: "Benefits",
+          whyIsItDifferent: "What is it",
+          howToUse: "How to use",
+          research: "Research",
+          keyIngredients: "Key Ingredients",
+          allIngredients: "All Ingredients",
+        },
+      },
+      page: {
+        product: {
+          whyIsItDifferent: "<p>BHA works within pores to clear congestion.</p>",
+          whatDoesItDo: "Skin looks brighter and smoother.",
+          keyIngredients: "Salicylic Acid, Green Tea",
+          howToUse: "<p>Apply after cleansing and do not rinse.</p>",
+        },
+        ingredientsData: [
+          { name: "Water" },
+          { name: "Methylpropanediol" },
+          { name: "Salicylic Acid" },
+        ],
+        research: [
+          {
+            paragraph: 1,
+            text: ["Journal A", { break: 1 }, "Journal B"],
+          },
+        ],
+      },
+    }),
+  );
+
+  assert.ok(fields);
+  assert.equal(fields?.descriptionRaw, "BHA works within pores to clear congestion.\n\nSkin looks brighter and smoother.");
+  assert.equal(fields?.ingredientsRaw, "Water, Methylpropanediol, Salicylic Acid");
+  assert.equal(fields?.activeIngredientsRaw, "Salicylic Acid, Green Tea");
+  assert.equal(fields?.howToUseRaw, "Apply after cleansing and do not rinse.");
+  assert.deepEqual(
+    fields?.detailsSections.map((section) => section.heading),
+    ["What is it", "Benefits", "Key Ingredients", "All Ingredients", "How to use", "Research"],
   );
 });

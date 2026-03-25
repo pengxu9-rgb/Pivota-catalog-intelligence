@@ -5,6 +5,7 @@ dist/
 .DS_Store
 *.log
 .venv/
+.venv-readiness/
 __pycache__/
 *.pyc
 *.sqlite3

@@ -828,7 +828,28 @@ export function extractProductFromHtmlSnapshot(params: {
     extractMetaTagContent(html, { name: "description" }) ||
     extractMetaTagContent(html, { property: "og:description" });
 
-  const detailsSections = extractHtmlDetailSections(html);
+  const muradIngredientsBody = matchHtmlSnippet(html, /<p[^>]+id=["']ingredients-content["'][^>]*>([\s\S]*?)<\/p>/i);
+  const muradIngredientsRaw = extractMuradIngredientListText(muradIngredientsBody);
+  const muradHowToRaw = extractMuradHowToSectionText(html);
+  const detailsSections = dedupeDetailSections(
+    [
+      ...extractHtmlDetailSections(html),
+      muradIngredientsRaw
+        ? {
+            heading: "Full List of Ingredients",
+            body: muradIngredientsRaw,
+            source_kind: "html_snapshot_murad_ingredients_content",
+          }
+        : null,
+      muradHowToRaw
+        ? {
+            heading: "How-To",
+            body: muradHowToRaw,
+            source_kind: "html_snapshot_murad_how_to_section",
+          }
+        : null,
+    ].filter((section): section is ExtractedProductDetailSection => Boolean(section)),
+  );
   const ingredientsSection =
     detailsSections.find((section) => {
       const heading = cleanText(section?.heading);
@@ -836,7 +857,7 @@ export function extractProductFromHtmlSnapshot(params: {
     }) ||
     firstMatchingSectionBody(detailsSections, [/\bwhat(?:'|’)s in it\??\b/i]);
   const howToUseSection =
-    firstMatchingSectionBody(detailsSections, [/\bhow to (?:use|apply)\b/i]) ||
+    firstMatchingSectionBody(detailsSections, [/\bhow(?:\s*|-)?to(?:\s+(?:use|apply))?\b/i]) ||
     firstMatchingSectionBody(detailsSections, [/\b(usage(?: details)?|suggested usage|directions?|beauty tips)\b/i]);
   const activeIngredientsSection = firstMatchingSectionBody(detailsSections, [/\b(?:active|key|hero) ingredients?\b/i]);
   const descriptionSection =
@@ -1152,7 +1173,7 @@ export function deriveProductPdpModuleBodies(params: {
     undefined;
   const howToUseRaw =
     cleanText(params.howToUseText) ||
-    firstMatchingSectionBody(detailsSections, [/\bhow to (?:use|apply)\b/i, /\busage instructions?\b/i])?.body ||
+    firstMatchingSectionBody(detailsSections, [/\bhow(?:\s*|-)?to(?:\s+(?:use|apply))?\b/i, /\busage instructions?\b/i])?.body ||
     undefined;
 
   return {
@@ -3365,7 +3386,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       const sections: ExtractedProductDetailSection[] = [];
       const seen = new Set<string>();
       const looksRelevantHeading = (heading: string) =>
-        /\b(details?|benefits?|how to (?:use|apply)|usage instructions?|ingredients?|active ingredients?|key ingredients?|inci|composition|about|what(?:'|’)s in it\??)\b/i.test(
+        /\b(details?|benefits?|how(?:\s*|-)?to(?:\s+(?:use|apply))?|usage instructions?|ingredients?|active ingredients?|key ingredients?|inci|composition|about|what(?:'|’)s in it\??)\b/i.test(
           heading,
         );
       const pushSection = (headingRaw: string, bodyRaw: string, sourceKind: string) => {
@@ -3946,7 +3967,7 @@ async function scrapeProductPage(params: {
   const expandRelevantPdpModules = async () => {
     await page.evaluate(() => {
       const relevantHeadingRe =
-        /\b(product details|details?|benefits?|how to (?:use|apply)|usage instructions?|ingredients?(?:\s*&\s*|\s+and\s+)safety|ingredients?|active ingredients?|inci|composition|what(?:'|’)s in it\??)\b/i;
+        /\b(product details|details?|benefits?|how(?:\s*|-)?to(?:\s+(?:use|apply))?|usage instructions?|ingredients?(?:\s*&\s*|\s+and\s+)safety|ingredients?|active ingredients?|inci|composition|what(?:'|’)s in it\??)\b/i;
 
       const summaries = Array.from(document.querySelectorAll("details > summary")) as HTMLElement[];
       for (const summary of summaries.filter((node) => relevantHeadingRe.test(node.textContent || "")).slice(0, 24)) {

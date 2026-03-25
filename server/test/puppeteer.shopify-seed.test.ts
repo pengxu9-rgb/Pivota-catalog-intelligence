@@ -1971,6 +1971,42 @@ test("choosePreferredProductOverview prefers expanded product details over short
   );
 });
 
+test("extractProductFromHtmlSnapshot parses Murad ingredient and how-to sections without Shopify JSON", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>Retinol Youth Renewal Serum</title>
+          <meta property="og:price:amount" content="92.00" />
+        </head>
+        <body>
+          <h1>Retinol Youth Renewal Serum</h1>
+          <p id="ingredients-content">
+            Water/Aqua/Eau, Dimethicone, Retinol, Sodium Hyaluronate
+            <br /><br />
+            <span>Formulated Without:</span>
+            Parabens, Sulfates
+          </p>
+          <section class="shopify-section how-to">
+            <span>How-To</span>
+            <h2>To Use: PM</h2>
+            <div class="metafield-rich_text_field">
+              <p>At night, apply a thin layer of Retinol Youth Renewal Serum to face.</p>
+            </div>
+          </section>
+        </body>
+      </html>
+    `,
+    url: "https://www.murad.com/products/retinol-youth-renewal-serum",
+    baseUrl: "https://www.murad.com",
+  });
+
+  assert.ok(product);
+  assert.match(product?.ingredients_raw || "", /Water\/Aqua\/Eau/i);
+  assert.match(product?.how_to_use_raw || "", /At night, apply a thin layer/i);
+  assert.equal((product?.details_sections || []).length, 2);
+});
+
 test("extractProductFromHtmlSnapshot parses The Ordinary ingredients and usage without a browser", () => {
   const product = extractProductFromHtmlSnapshot({
     html: `

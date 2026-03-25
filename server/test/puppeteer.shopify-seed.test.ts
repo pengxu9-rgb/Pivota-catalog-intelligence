@@ -1455,6 +1455,54 @@ test("extractProductFromHtmlSnapshot parses Jurlique ingredient accordions and k
   assert.equal(product?.field_capture_status?.how_to_use_raw, "present");
 });
 
+test("extractProductFromHtmlSnapshot normalizes HOW TO accordions from Shopify HTML snapshots", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>BeamCream Smoothing Body Moisturizer</title>
+          <meta property="og:price:amount" content="38.00">
+          <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "Product",
+              "name": "BeamCream Smoothing Body Moisturizer",
+              "url": "https://olehenriksen.com/products/beamcream-smoothing-body-moisturizer",
+              "description": "Finally, a face-worthy body cream."
+            }
+          </script>
+        </head>
+        <body>
+          <h1>BeamCream Smoothing Body Moisturizer</h1>
+          <div class="product-form__accordion" data-accordion-item>
+            <h2><button aria-label="HOW TO">HOW TO</button></h2>
+            <div class="accordion__content rte p4">
+              <p>Once a day, apply generously to body after cleansing &amp; massage into skin.</p>
+            </div>
+          </div>
+          <div class="product-form__accordion" data-accordion-item>
+            <h2><button aria-label="INGREDIENTS">INGREDIENTS</button></h2>
+            <div class="accordion__content rte p4">
+              <p><strong>Full Ingredients List:</strong> AQUA/WATER/EAU, GLYCERIN.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+    url: "https://olehenriksen.com/products/beamcream-smoothing-body-moisturizer",
+    baseUrl: "https://olehenriksen.com",
+  });
+
+  assert.ok(product);
+  assert.match(product?.ingredients_raw || "", /AQUA\/WATER\/EAU/i);
+  assert.match(product?.how_to_use_raw || "", /apply generously to body/i);
+  assert.ok(
+    (product?.details_sections || []).some(
+      (section) => section.heading === "How to Use" && /apply generously/i.test(section.body),
+    ),
+  );
+});
+
 test("PuppeteerExtractor returns a generic product from static HTML without launching a browser", async () => {
   const server = http.createServer((req, res) => {
     const url = req.url || "/";

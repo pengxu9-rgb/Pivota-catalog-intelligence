@@ -650,7 +650,8 @@ function pushRelevantHtmlSection(
   bodyRaw: string,
   sourceKind: string,
 ) {
-  const heading = cleanHtmlText(headingRaw);
+  let heading = cleanHtmlText(headingRaw);
+  if (/^how to$/i.test(heading)) heading = "How to Use";
   const body = cleanHtmlText(bodyRaw);
   if (!heading || !body) return;
   if (

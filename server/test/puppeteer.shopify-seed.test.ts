@@ -6,6 +6,7 @@ import {
   PuppeteerExtractor,
   buildProductPdpFields,
   choosePreferredProductOverview,
+  deriveProductPdpModuleBodies,
   enrichDirectShopifyPdpResponse,
   extractStaticHtmlPdpFallbackProduct,
   fetchHtmlViaNativeRequest,
@@ -602,6 +603,77 @@ test("extractStaticHtmlPdpFallbackProduct captures Fenty-style snapshot content 
   assert.equal(fallback?.active_ingredients_raw?.includes("AVOBENZONE"), true);
   assert.equal(fallback?.ingredients_raw?.includes("WATER, GLYCERIN"), true);
   assert.deepEqual(fallback?.image_urls, ["https://cdn.example.com/hydra-vizor.jpg"]);
+});
+
+test("deriveProductPdpModuleBodies recognizes Bioderma-style Usage instructions and Composition headings", () => {
+  const derived = deriveProductPdpModuleBodies({
+    detailsSections: [
+      {
+        heading: "Usage instructions",
+        body: "Morning and/or evening - 7 days a week. Soak a cotton pad with Sensibio H2O. No rinsing required.",
+        source_kind: "accordion_button",
+      },
+      {
+        heading: "Composition",
+        body:
+          "AQUA/WATER/EAU - PEG-6 CAPRYLIC/CAPRIC GLYCERIDES - FRUCTOOLIGOSACCHARIDES - MANNITOL - XYLITOL. The ingredients listed here are those contained in the most recent formulation of this product.",
+        source_kind: "accordion_button",
+      },
+    ],
+  });
+
+  assert.match(derived.howToUseRaw || "", /Morning and\/or evening/i);
+  assert.match(derived.ingredientsRaw || "", /AQUA\/WATER\/EAU/i);
+});
+
+test("extractStaticHtmlPdpFallbackProduct captures Bioderma-style accordions", () => {
+  const fallback = extractStaticHtmlPdpFallbackProduct({
+    brand: "Bioderma",
+    url: "https://www.bioderma.us/en/p/sensibio-h2o-micellar-water.html",
+    html: `
+      <html>
+        <head>
+          <meta property="og:title" content="Sensibio H2O Micellar Water" />
+          <meta name="description" content="Micellar water for sensitive skin." />
+        </head>
+        <body>
+          <div class="product-infos__accordion__category accordion">
+            <h2>
+              <button class="product-infos__accordion__category__title accordion-trigger">
+                Usage instructions
+              </button>
+            </h2>
+            <div class="collapse d-flex flex-column gap--16 body--m">
+              <div class="bold"><p>Morning and/or evening - 7 days a week</p></div>
+              <ol>
+                <li>Soak a cotton pad with Sensibio H2O.</li>
+                <li>No rinsing required.</li>
+              </ol>
+            </div>
+          </div>
+          <div class="product-infos__accordion__category accordion">
+            <h2>
+              <button class="product-infos__accordion__category__title accordion-trigger">
+                Composition
+              </button>
+            </h2>
+            <div class="collapse d-flex flex-column gap--16">
+              <p>AQUA/WATER/EAU - PEG-6 CAPRYLIC/CAPRIC GLYCERIDES - FRUCTOOLIGOSACCHARIDES - MANNITOL - XYLITOL</p>
+              <p>The ingredients listed here are those contained in the most recent formulation of this product.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+  });
+
+  assert.ok(fallback);
+  assert.equal(fallback?.field_capture_status.how_to_use_raw, "present");
+  assert.equal(fallback?.field_capture_status.ingredients_raw, "present");
+  assert.match(fallback?.how_to_use_raw || "", /Soak a cotton pad/i);
+  assert.match(fallback?.ingredients_raw || "", /AQUA\/WATER\/EAU/i);
+  assert.ok((fallback?.details_sections || []).some((section) => /Usage instructions/i.test(section.heading)));
+  assert.ok((fallback?.details_sections || []).some((section) => /Composition/i.test(section.heading)));
 });
 
 test("fetchHtmlViaNativeRequest follows direct PDP redirects and preserves final URL", async () => {

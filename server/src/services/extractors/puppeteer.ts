@@ -507,11 +507,13 @@ export function looksLikeFullIngredientListText(text: string | undefined) {
   const normalized = cleanText(text);
   if (!normalized) return false;
   const commaCount = (normalized.match(/,/g) || []).length;
+  const dashSeparatedCount = (normalized.match(/\s-\s/g) || []).length;
   return (
-    /\b(active ingredients?|inactive ingredients?|full ingredients?|ingredient list|inci)\b/i.test(normalized) ||
-    /\bwater\/aqua\b/i.test(normalized) ||
+    /\b(active ingredients?|inactive ingredients?|full ingredients?|ingredient list|inci|composition)\b/i.test(normalized) ||
+    /\b(?:water\/aqua|aqua\/water|aqua\/water\/eau)\b/i.test(normalized) ||
     /\bci\s*\d{5}\b/i.test(normalized) ||
-    commaCount >= 4
+    commaCount >= 4 ||
+    dashSeparatedCount >= 4
   );
 }
 
@@ -534,7 +536,7 @@ export function deriveProductPdpModuleBodies(params: {
 }) {
   const detailsSections = dedupeDetailSections(params.detailsSections || []);
   const ingredientSection =
-    firstMatchingSectionBody(detailsSections, [/\b(ingredients?|inci)\b/i]) ||
+    firstMatchingSectionBody(detailsSections, [/\b(ingredients?|inci|composition)\b/i]) ||
     firstMatchingSectionBody(detailsSections, [/\bwhat(?:'|’)s in it\??\b/i]);
   const ingredientSectionBody = cleanText(ingredientSection?.body);
   const explicitIngredients = cleanText(params.ingredientsMarkdownText);
@@ -556,7 +558,7 @@ export function deriveProductPdpModuleBodies(params: {
     undefined;
   const howToUseRaw =
     cleanText(params.howToUseText) ||
-    firstMatchingSectionBody(detailsSections, [/\bhow to (?:use|apply)\b/i])?.body ||
+    firstMatchingSectionBody(detailsSections, [/\bhow to (?:use|apply)\b/i, /\busage instructions?\b/i])?.body ||
     undefined;
 
   return {
@@ -582,6 +584,36 @@ function matchMetaContent(html: string, attribute: string, value: string) {
       ),
     )?.[1],
   );
+}
+
+function extractHtmlAccordionSections(params: {
+  html: string;
+  startPattern: RegExp;
+  headingPattern: RegExp;
+  bodyPattern: RegExp;
+  sourceKind: string;
+}) {
+  const starts = Array.from(params.html.matchAll(params.startPattern))
+    .map((match) => match.index ?? -1)
+    .filter((index) => index >= 0);
+  if (starts.length === 0) return [] as ExtractedProductDetailSection[];
+
+  const sections: ExtractedProductDetailSection[] = [];
+  for (let i = 0; i < starts.length; i += 1) {
+    const start = starts[i]!;
+    const end = i + 1 < starts.length ? starts[i + 1]! : params.html.length;
+    const block = params.html.slice(start, end);
+    const heading = matchHtmlSnippet(block, params.headingPattern);
+    const body = matchHtmlSnippet(block, params.bodyPattern);
+    if (!heading || !body) continue;
+    sections.push({
+      heading,
+      body,
+      source_kind: params.sourceKind,
+    });
+  }
+
+  return sections;
 }
 
 export function extractStaticHtmlPdpFallbackProduct(params: {
@@ -617,6 +649,14 @@ export function extractStaticHtmlPdpFallbackProduct(params: {
       params.html,
       /<modal[^>]+handle=["']productIngredients["'][\s\S]*?<div[^>]+class=["'][^"']*modal__content[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
     );
+  const accordionSections = extractHtmlAccordionSections({
+    html: params.html,
+    startPattern: /<div[^>]+class=["'][^"']*product-infos__accordion__category\b[^"']*["'][^>]*>/gi,
+    headingPattern:
+      /<button[^>]+class=["'][^"']*product-infos__accordion__category__title[^"']*["'][^>]*>([\s\S]*?)<\/button>/i,
+    bodyPattern: /<div[^>]+class=["'][^"']*collapse\b[^"']*["'][^>]*>([\s\S]*)$/i,
+    sourceKind: "html_snapshot_product_infos_accordion",
+  });
 
   const detailsSections = dedupeDetailSections(
     [
@@ -634,6 +674,7 @@ export function extractStaticHtmlPdpFallbackProduct(params: {
             source_kind: "html_snapshot_product_ingredients_modal",
           }
         : null,
+      ...accordionSections,
     ].filter((section): section is ExtractedProductDetailSection => Boolean(section)),
   );
 
@@ -2366,7 +2407,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       const sections: ExtractedProductDetailSection[] = [];
       const seen = new Set<string>();
       const looksRelevantHeading = (heading: string) =>
-        /\b(details?|benefits?|how to (?:use|apply)|ingredients?|active ingredients?|inci|about|what(?:'|’)s in it\??)\b/i.test(
+        /\b(details?|benefits?|how to (?:use|apply)|usage instructions?|ingredients?|active ingredients?|inci|composition|about|what(?:'|’)s in it\??)\b/i.test(
           heading,
         );
       const pushSection = (headingRaw: string, bodyRaw: string, sourceKind: string) => {
@@ -2843,7 +2884,7 @@ async function scrapeProductPage(params: {
   const expandRelevantPdpModules = async () => {
     await page.evaluate(() => {
       const relevantHeadingRe =
-        /\b(product details|details?|benefits?|how to (?:use|apply)|ingredients?(?:\s*&\s*|\s+and\s+)safety|ingredients?|active ingredients?|inci|what(?:'|’)s in it\??)\b/i;
+        /\b(product details|details?|benefits?|how to (?:use|apply)|usage instructions?|ingredients?(?:\s*&\s*|\s+and\s+)safety|ingredients?|active ingredients?|inci|composition|what(?:'|’)s in it\??)\b/i;
 
       const summaries = Array.from(document.querySelectorAll("details > summary")) as HTMLElement[];
       for (const summary of summaries.filter((node) => relevantHeadingRe.test(node.textContent || "")).slice(0, 24)) {

@@ -522,6 +522,48 @@ test("discoverProductUrls re-discovers a target PDP when a stale direct seed red
   );
 });
 
+test("discoverProductUrls classifies blocked direct seed PDPs as bot challenges", async () => {
+  const diagnostics = createDiagnostics("www.esteelauder.com", "https://www.esteelauder.com");
+
+  await withMockFetch(
+    {
+      "https://www.esteelauder.com/product/689/77491/product-catalog/skincare/repair-serum/advanced-night-repair-serum/synchronized-multi-recovery-complex": {
+        status: 403,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          warning: "299 Akamai",
+          "akamai-grn": "0.59ce2d17.1774455343.cef8a5a9",
+          "x-akamai-devicedetected": "Desktop",
+        },
+        body: `
+          <html>
+            <head><title>Access Denied</title></head>
+            <body>
+              <h1>Access Denied</h1>
+              You don't have permission to access this page on this server.
+              Reference #18.59ce2d17.1774455343.cef8a5a9
+            </body>
+          </html>
+        `,
+      },
+    },
+    async () => {
+      const discovered = await discoverProductUrls({
+        baseUrl: "https://www.esteelauder.com",
+        seedUrl: "https://www.esteelauder.com/product/689/77491/product-catalog/skincare/repair-serum/advanced-night-repair-serum/synchronized-multi-recovery-complex",
+        maxProducts: 5,
+        context: {},
+        diagnostics,
+      });
+
+      assert.equal(diagnostics.discovery_strategy, "seed_page");
+      assert.equal(diagnostics.block_provider, "akamai");
+      assert.equal(diagnostics.failure_category, "bot_challenge");
+      assert.deepEqual(discovered.productUrls, []);
+    },
+  );
+});
+
 test("looksLikeProductPageHtml distinguishes PDPs from price-only non-product pages", () => {
   assert.equal(looksLikeProductPageHtml(readFixture("direct-product-page.html")), true);
   assert.equal(

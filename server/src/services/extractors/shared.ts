@@ -1175,6 +1175,19 @@ export async function discoverProductUrls(params: {
     const seed = await fetchTextTracked(seedDiscoveryUrl, params.context, params.diagnostics);
     if (seed.blockedBy) challengeDetected = true;
 
+    if (directSeedCandidate && seed.blockedBy && !seed.body) {
+      setDiscoveryStrategy(params.diagnostics, "seed_page");
+      if (!params.diagnostics.failure_category) {
+        setFailureCategory(params.diagnostics, "bot_challenge");
+      }
+      return {
+        sitemapUrl: undefined,
+        productUrls: [],
+        deadSitemapDetected,
+        challengeDetected,
+      };
+    }
+
     if (seed.body) {
       const requestedSeedUrl = canonicalizeUrl(seedDiscoveryUrl, params.baseUrl);
       const resolvedSeedUrl = canonicalizeUrl(seed.finalUrl || seedDiscoveryUrl, params.baseUrl);
@@ -1212,7 +1225,7 @@ export async function discoverProductUrls(params: {
       if (directSeedCandidate) {
         setDiscoveryStrategy(params.diagnostics, "seed_page");
         if (!params.diagnostics.failure_category) {
-          setFailureCategory(params.diagnostics, seed.ok ? "product_schema_missing" : "no_product_urls");
+          setFailureCategory(params.diagnostics, seed.blockedBy ? "bot_challenge" : seed.ok ? "product_schema_missing" : "no_product_urls");
         }
         return {
           sitemapUrl: undefined,

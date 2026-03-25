@@ -1210,6 +1210,31 @@ function extractHtmlAccordionSections(params: {
   return sections;
 }
 
+function extractMuradIngredientListText(text: string | undefined) {
+  const normalized = cleanText(text);
+  if (!normalized) return "";
+  const truncated = normalized.match(
+    /^([\s\S]*?)(?=\bFormulated Without:|\bWhile Murad(?:®)? strives to keep ingredient lists on this website as accurate as possible\b|$)/i,
+  )?.[1];
+  return cleanText(truncated || normalized);
+}
+
+function extractMuradHowToSectionText(html: string) {
+  const sectionHtml = html.match(
+    /<section[^>]+class=["'][^"']*shopify-section how-to[^"']*["'][^>]*>([\s\S]*?)<\/section>/i,
+  )?.[1];
+  if (!sectionHtml) return "";
+
+  const sectionTitle = matchHtmlSnippet(sectionHtml, /<h2[^>]*>([\s\S]*?)<\/h2>/i);
+  const stepBodies = dedupeStringList(
+    Array.from(
+      sectionHtml.matchAll(/<div[^>]+class=["'][^"']*metafield-rich_text_field[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi),
+    ).map((match) => cleanHtmlText(match[1])),
+  );
+
+  return cleanText([sectionTitle, ...stepBodies].filter(Boolean).join("\n"));
+}
+
 export function extractStaticHtmlPdpFallbackProduct(params: {
   brand: string;
   url: string;
@@ -1243,6 +1268,12 @@ export function extractStaticHtmlPdpFallbackProduct(params: {
       params.html,
       /<modal[^>]+handle=["']productIngredients["'][\s\S]*?<div[^>]+class=["'][^"']*modal__content[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
     );
+  const muradIngredientsBody = matchHtmlSnippet(
+    params.html,
+    /<p[^>]+id=["']ingredients-content["'][^>]*>([\s\S]*?)<\/p>/i,
+  );
+  const muradIngredientsRaw = extractMuradIngredientListText(muradIngredientsBody);
+  const muradHowToRaw = extractMuradHowToSectionText(params.html);
   const accordionSections = extractHtmlAccordionSections({
     html: params.html,
     startPattern: /<div[^>]+class=["'][^"']*product-infos__accordion__category\b[^"']*["'][^>]*>/gi,
@@ -1268,6 +1299,20 @@ export function extractStaticHtmlPdpFallbackProduct(params: {
             source_kind: "html_snapshot_product_ingredients_modal",
           }
         : null,
+      muradIngredientsBody
+        ? {
+            heading: "Full List of Ingredients",
+            body: muradIngredientsBody,
+            source_kind: "html_snapshot_murad_ingredients_content",
+          }
+        : null,
+      muradHowToRaw
+        ? {
+            heading: "How-To",
+            body: muradHowToRaw,
+            source_kind: "html_snapshot_murad_how_to_section",
+          }
+        : null,
       ...accordionSections,
     ].filter((section): section is ExtractedProductDetailSection => Boolean(section)),
   );
@@ -1278,15 +1323,27 @@ export function extractStaticHtmlPdpFallbackProduct(params: {
   const pdpFields = buildProductPdpFields({
     descriptionRaw: detailsBody || metaDescription,
     detailsSections,
-    ingredientsRaw: derivedBodies.ingredientsRaw,
+    ingredientsRaw: muradIngredientsRaw || derivedBodies.ingredientsRaw,
     activeIngredientsRaw: derivedBodies.activeIngredientsRaw,
-    howToUseRaw: derivedBodies.howToUseRaw,
+    howToUseRaw: muradHowToRaw || derivedBodies.howToUseRaw,
     fieldSources: {
       description_raw: [detailsBody ? "html_snapshot_product_content" : metaDescription ? "meta_description" : ""],
       details_sections: detailsSections.map((section) => section.source_kind),
-      ingredients_raw: [derivedBodies.ingredientsRaw ? "html_snapshot_product_ingredients_modal" : ""],
+      ingredients_raw: [
+        muradIngredientsRaw
+          ? "html_snapshot_murad_ingredients_content"
+          : derivedBodies.ingredientsRaw
+            ? "html_snapshot_product_ingredients_modal"
+            : "",
+      ],
       active_ingredients_raw: [derivedBodies.activeIngredientsRaw ? "html_snapshot_product_ingredients_modal" : ""],
-      how_to_use_raw: [derivedBodies.howToUseRaw ? "html_snapshot_product_content" : ""],
+      how_to_use_raw: [
+        muradHowToRaw
+          ? "html_snapshot_murad_how_to_section"
+          : derivedBodies.howToUseRaw
+            ? "html_snapshot_product_content"
+            : "",
+      ],
     },
   });
 
@@ -2276,10 +2333,10 @@ export function mergeShopifyDirectPdpFallback(
       mergedProduct,
       buildProductPdpFields({
         descriptionRaw: product.description_raw || fallbackProduct.description_raw,
-        detailsSections:
-          (Array.isArray(product.details_sections) && product.details_sections.length > 0)
-            ? product.details_sections
-            : fallbackProduct.details_sections,
+        detailsSections: dedupeDetailSections([
+          ...(Array.isArray(product.details_sections) ? product.details_sections : []),
+          ...(Array.isArray(fallbackProduct.details_sections) ? fallbackProduct.details_sections : []),
+        ]),
         ingredientsRaw: product.ingredients_raw || fallbackProduct.ingredients_raw,
         activeIngredientsRaw: product.active_ingredients_raw || fallbackProduct.active_ingredients_raw,
         howToUseRaw: product.how_to_use_raw || fallbackProduct.how_to_use_raw,

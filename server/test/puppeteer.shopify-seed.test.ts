@@ -1067,6 +1067,54 @@ test("extractStaticHtmlPdpFallbackProduct captures Bioderma-style accordions", (
   assert.ok((fallback?.details_sections || []).some((section) => /Composition/i.test(section.heading)));
 });
 
+test("extractStaticHtmlPdpFallbackProduct captures Murad-style ingredients content and how-to steps", () => {
+  const fallback = extractStaticHtmlPdpFallbackProduct({
+    brand: "Murad",
+    url: "https://www.murad.com/products/retinol-youth-renewal-serum",
+    html: `
+      <html>
+        <head>
+          <meta property="og:title" content="Retinol Youth Renewal Serum" />
+          <meta name="description" content="Retinol serum for smoother-looking skin." />
+        </head>
+        <body>
+          <p id="ingredients-content">
+            Water/Aqua/Eau, Dimethicone, Retinol, Sodium Hyaluronate
+            <br /><br />
+            <span>Formulated Without:</span>
+            Parabens, Sulfates
+            <br /><br />
+            While Murad® strives to keep ingredient lists on this website as accurate as possible, we cannot guarantee that these lists are complete.
+          </p>
+
+          <section class="shopify-section how-to">
+            <span>How-To</span>
+            <h2>To Use: PM</h2>
+            <div class="metafield-rich_text_field">
+              <p>At night, apply a thin layer of Retinol Youth Renewal Serum to face.</p>
+            </div>
+            <div class="metafield-rich_text_field">
+              <p>Reduce frequency if sensitivity occurs.</p>
+            </div>
+            <div class="metafield-rich_text_field">
+              <p>At night, apply a thin layer of Retinol Youth Renewal Serum to face.</p>
+            </div>
+          </section>
+        </body>
+      </html>
+    `,
+  });
+
+  assert.ok(fallback);
+  assert.equal(fallback?.field_capture_status.ingredients_raw, "present");
+  assert.equal(fallback?.field_capture_status.how_to_use_raw, "present");
+  assert.match(fallback?.ingredients_raw || "", /Water\/Aqua\/Eau/i);
+  assert.doesNotMatch(fallback?.ingredients_raw || "", /Formulated Without/i);
+  assert.match(fallback?.how_to_use_raw || "", /To Use: PM/i);
+  assert.match(fallback?.how_to_use_raw || "", /Reduce frequency if sensitivity occurs/i);
+  assert.equal((fallback?.details_sections || []).length, 2);
+});
+
 test("fetchHtmlViaNativeRequest follows direct PDP redirects and preserves final URL", async () => {
   const server = http.createServer((req, res) => {
     if (req.url === "/products/fragrance-free-seed") {
@@ -1815,6 +1863,98 @@ test("mergeShopifyDirectPdpFallback preserves fallback PDP fields even when no n
   assert.equal(merged.products[0]?.how_to_use_raw, "Smooth into skin as needed.");
   assert.equal(merged.products[0]?.details_sections?.length, 2);
   assert.equal(merged.products[0]?.image_url, "https://cdn.example.com/tomford-neroli-1.jpg");
+});
+
+test("mergeShopifyDirectPdpFallback appends Murad fallback detail sections onto existing PDP details", () => {
+  const response = {
+    brand: "Murad",
+    domain: "https://www.murad.com/products/retinol-youth-renewal-serum",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Retinol Youth Renewal Serum",
+        url: "https://www.murad.com/products/retinol-youth-renewal-serum",
+        image_url: "https://cdn.example.com/murad-hero.jpg",
+        image_urls: ["https://cdn.example.com/murad-hero.jpg"],
+        variant_skus: ["60361"],
+        variants: [
+          {
+            id: "v1",
+            sku: "60361",
+            url: "https://www.murad.com/products/retinol-youth-renewal-serum",
+            option_name: "Title",
+            option_value: "Default Title",
+            price: "92.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "https://cdn.example.com/murad-hero.jpg",
+            image_urls: ["https://cdn.example.com/murad-hero.jpg"],
+            ad_copy: "",
+          },
+        ],
+        ...buildProductPdpFields({
+          descriptionRaw: "Retinol serum for smoother-looking skin.",
+          detailsSections: [
+            {
+              heading: "Clinical Note",
+              body: "Helps minimize wrinkles and loss of firmness.",
+              source_kind: "shopify_body_html",
+            },
+          ],
+        }),
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 92, max: 92, avg: 92 },
+    ad_copy: { by_variant_id: {} },
+    pagination: { offset: 0, limit: 1, next_offset: null, has_more: false, discovered_urls: 1 },
+    diagnostics: {
+      requested_domain: "www.murad.com",
+      resolved_base_url: "https://www.murad.com",
+      discovery_strategy: "shopify_json",
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  const fallbackProduct = {
+    title: "Retinol Youth Renewal Serum",
+    url: "https://www.murad.com/products/retinol-youth-renewal-serum",
+    image_url: "https://cdn.example.com/murad-hero.jpg",
+    image_urls: ["https://cdn.example.com/murad-hero.jpg"],
+    variant_skus: ["60361"],
+    variants: [],
+    ...buildProductPdpFields({
+      detailsSections: [
+        {
+          heading: "Full List of Ingredients",
+          body: "Water/Aqua/Eau, Dimethicone, Retinol, Sodium Hyaluronate",
+          source_kind: "html_snapshot_murad_ingredients_content",
+        },
+        {
+          heading: "How-To",
+          body: "To Use: PM\nAt night, apply a thin layer of Retinol Youth Renewal Serum to face.",
+          source_kind: "html_snapshot_murad_how_to_section",
+        },
+      ],
+      ingredientsRaw: "Water/Aqua/Eau, Dimethicone, Retinol, Sodium Hyaluronate",
+      howToUseRaw: "To Use: PM\nAt night, apply a thin layer of Retinol Youth Renewal Serum to face.",
+      fieldSources: {
+        details_sections: ["html_snapshot_murad_ingredients_content", "html_snapshot_murad_how_to_section"],
+        ingredients_raw: ["html_snapshot_murad_ingredients_content"],
+        how_to_use_raw: ["html_snapshot_murad_how_to_section"],
+      },
+    }),
+  };
+
+  const merged = mergeShopifyDirectPdpFallback("Murad", response, fallbackProduct);
+
+  assert.equal(merged.products[0]?.details_sections?.length, 3);
+  assert.match(merged.products[0]?.ingredients_raw || "", /Water\/Aqua\/Eau/i);
+  assert.match(merged.products[0]?.how_to_use_raw || "", /At night, apply a thin layer/i);
 });
 
 test("choosePreferredProductOverview prefers expanded product details over short structured blurbs", () => {

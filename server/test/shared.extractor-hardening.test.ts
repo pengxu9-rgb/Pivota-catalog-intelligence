@@ -253,6 +253,28 @@ test("deriveProductPdpModuleBodies prefers the richer duplicate hero-ingredients
   assert.equal(bodies.ingredientsRaw, undefined);
 });
 
+test("deriveProductPdpModuleBodies extracts The Ordinary-style ingredient flyout blocks", () => {
+  const bodies = deriveProductPdpModuleBodies({
+    detailsSections: [
+      {
+        heading: "Ingredients",
+        body:
+          "Active ingredients:\nAvobenzone 3.0% (UV Filter)\nHomosalate 7.0% (UV Filter)\nOctisalate 4.5% (UV Filter)\nOctocrylene 10.0% (UV Filter)\n\nInactive ingredients:\nWater, Glycerin, Ceramide NP.",
+        source_kind: "ingredients_flyout",
+      },
+      {
+        heading: "Key Ingredients",
+        body: "Homosalate, Octisalate, Octocrylene, Avobenzone, Ceramides",
+        source_kind: "page_key_ingredients",
+      },
+    ],
+  });
+
+  assert.match(bodies.ingredientsRaw || "", /Avobenzone 3\.0%/);
+  assert.match(bodies.ingredientsRaw || "", /Inactive ingredients:/i);
+  assert.match(bodies.activeIngredientsRaw || "", /Homosalate 7\.0%/);
+});
+
 test("resolveStorefrontFromHtml resolves selector roots to the requested market storefront", () => {
   const html = readFixture("caudalie-selector.html");
   const resolved = resolveStorefrontFromHtml(html, "https://caudalie.com", "US");
@@ -563,7 +585,6 @@ test("discoverProductUrls classifies blocked direct seed PDPs as bot challenges"
     },
   );
 });
-
 test("looksLikeProductPageHtml distinguishes PDPs from price-only non-product pages", () => {
   assert.equal(looksLikeProductPageHtml(readFixture("direct-product-page.html")), true);
   assert.equal(

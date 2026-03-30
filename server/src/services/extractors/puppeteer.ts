@@ -702,6 +702,20 @@ function extractHtmlDetailSections(html: string) {
   }
 
   for (const match of html.matchAll(
+    /<(?:p|div)\b[^>]*class=["'][^"']*ingredients-flyout-content[^"']*["'][^>]*>/gi,
+  )) {
+    const attrText = cleanHtmlText(decodeHtmlEntities(extractHtmlAttribute(match[0] || "", "data-original-ingredients")));
+    if (!attrText) continue;
+    pushRelevantHtmlSection(sections, "Ingredients", attrText, "title_flyout_ingredients_attr");
+  }
+
+  for (const match of html.matchAll(
+    /<(?:div|span|p)\b[^>]*class=["'][^"']*\btitle\b[^"']*["'][^>]*>\s*Key ingredients\s*<\/(?:div|span|p)>[\s\S]{0,4000}?<(?:div|p)\b[^>]*class=["'][^"']*\blist\b[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|p)>/gi,
+  )) {
+    pushRelevantHtmlSection(sections, "Key Ingredients", match[1] || "", "page_key_ingredients_html");
+  }
+
+  for (const match of html.matchAll(
     /<div\b[^>]*class=["'][^"']*product-accordion[^"']*["'][^>]*>[\s\S]*?<div\b[^>]*class=["'][^"']*product-accordion-header[^"']*["'][^>]*>[\s\S]*?<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]>[\s\S]*?<\/div>[\s\S]*?<div\b[^>]*class=["'][^"']*accordion-panel[^"']*["'][^>]*>([\s\S]*?)<\/div>[\s\S]*?<\/div>/gi,
   )) {
     pushRelevantHtmlSection(sections, match[1] || "", match[2] || "", "product_accordion_html");
@@ -1156,6 +1170,12 @@ export function deriveProductPdpModuleBodies(params: {
   const activeIngredients =
     (sectionActiveIngredients.length > explicitActiveIngredients.length ? sectionActiveIngredients : explicitActiveIngredients) ||
     undefined;
+  const labeledActiveIngredients =
+    extractDelimitedLabeledSectionText(
+      explicitIngredients || ingredientSectionBody,
+      ["Active Ingredients", "Active Ingredient"],
+      ["Inactive Ingredients", "Ingredient List", "Ingredients"],
+    ) || undefined;
   const ingredientsRaw =
     stripIngredientPackageDisclaimer(explicitIngredients) ||
     (looksLikeFullIngredientListText(ingredientSectionBody)
@@ -1163,12 +1183,10 @@ export function deriveProductPdpModuleBodies(params: {
       : "") ||
     undefined;
   const activeIngredientsRaw =
-    activeIngredients ||
-    extractDelimitedLabeledSectionText(
-      ingredientsRaw || ingredientSectionBody,
-      ["Active Ingredients", "Active Ingredient"],
-      ["Inactive Ingredients", "Ingredient List", "Ingredients"],
-    ) ||
+    ((labeledActiveIngredients && labeledActiveIngredients.length >= (activeIngredients || "").length
+      ? labeledActiveIngredients
+      : activeIngredients) ||
+      labeledActiveIngredients) ||
     (!ingredientsRaw && ingredientSectionBody ? ingredientSectionBody : "") ||
     undefined;
   const howToUseRaw =
@@ -3382,6 +3400,37 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         }
       }
     }
+    const ingredientFlyoutText = (() => {
+      const nodes = Array.from(
+        document.querySelectorAll(".ingredients-flyout-content, [data-original-ingredients]"),
+      ) as HTMLElement[];
+      for (const node of nodes.slice(0, 8)) {
+        const attrRaw = node.getAttribute("data-original-ingredients") || "";
+        const attrText = attrRaw ? normalizeSectionText(decodeHtmlText(attrRaw)) : "";
+        const visibleText = normalizeSectionText(node.innerText || node.textContent || "");
+        const combined = normalizeSectionText([attrText, visibleText].filter(Boolean).join("\n\n"));
+        if (!combined) continue;
+        if (/\bactive ingredients?\b/i.test(combined) || /\binactive ingredients?\b/i.test(combined)) {
+          return combined;
+        }
+      }
+      return undefined;
+    })();
+    const keyIngredientsText = (() => {
+      const titleNodes = Array.from(document.querySelectorAll(".title, h2, h3, h4, h5, span, div")) as HTMLElement[];
+      for (const node of titleNodes.slice(0, 80)) {
+        const heading = normalizeSectionText(node.textContent || "");
+        if (!/^key ingredients$/i.test(heading)) continue;
+        const wrapper = node.closest(".content") || node.parentElement || node.closest("section") || node.closest("div");
+        const listNode =
+          wrapper?.querySelector?.(".list") ||
+          node.nextElementSibling ||
+          wrapper?.querySelector?.("[class*='list']");
+        const body = normalizeSectionText((listNode as HTMLElement | null)?.innerText || listNode?.textContent || "");
+        if (body) return body;
+      }
+      return undefined;
+    })();
     const detailsSections = await (async () => {
       const sections: ExtractedProductDetailSection[] = [];
       const seen = new Set<string>();
@@ -3413,8 +3462,14 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       if (ingredientsMarkdownText) {
         pushSection("Ingredients", ingredientsMarkdownText, "accordion_ingredients");
       }
+      if (!ingredientsMarkdownText && ingredientFlyoutText) {
+        pushSection("Ingredients", ingredientFlyoutText, "ingredients_flyout");
+      }
       if (ingredientsDisclaimerText) {
         pushSection("Ingredients Disclaimer", ingredientsDisclaimerText, "accordion_ingredients_disclaimer");
+      }
+      if (keyIngredientsText) {
+        pushSection("Key Ingredients", keyIngredientsText, "page_key_ingredients");
       }
 
       const guerlainIngredientSections = Array.from(

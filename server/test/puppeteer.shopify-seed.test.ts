@@ -2065,6 +2065,39 @@ test("extractProductFromHtmlSnapshot parses The Ordinary ingredients and usage w
   assert.equal(product?.field_capture_status?.details_sections, "present");
 });
 
+test("extractProductFromHtmlSnapshot captures The Ordinary ingredient flyout attributes and key ingredients list", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>UV Filters SPF 45 Serum</title>
+          <meta property="og:price:amount" content="19.00">
+        </head>
+        <body>
+          <h1>UV Filters SPF 45 Serum</h1>
+          <aside class="active-ingredient-flyout">
+            <div class="title">Ingredients</div>
+            <p class="ingredients-flyout-content" data-original-ingredients="&lt;p&gt;&lt;b&gt;Active ingredients:&lt;/b&gt;&lt;br /&gt;Avobenzone 3.0% (UV Filter)&lt;br /&gt;Homosalate 7.0% (UV Filter)&lt;br /&gt;Octisalate 4.5% (UV Filter)&lt;br /&gt;Octocrylene 10.0% (UV Filter)&lt;br /&gt;&lt;br /&gt;&lt;b&gt;Inactive ingredients:&lt;/b&gt;&lt;br /&gt;Water, Glycerin, Ceramide NP.&lt;/p&gt;"></p>
+          </aside>
+          <div class="active-Ingredient">
+            <span class="title">Key ingredients</span>
+            <div class="list">Homosalate, Octisalate, Octocrylene, Avobenzone, Ceramides</div>
+          </div>
+        </body>
+      </html>
+    `,
+    url: "https://theordinary.com/en-us/uv-filters-spf-45-serum-100720.html",
+    baseUrl: "https://theordinary.com",
+  });
+
+  assert.ok(product);
+  assert.match(product?.ingredients_raw || "", /Avobenzone 3\.0%/);
+  assert.match(product?.ingredients_raw || "", /Inactive ingredients:/i);
+  assert.match(product?.active_ingredients_raw || "", /Homosalate 7\.0%/);
+  assert.equal(product?.field_capture_status?.ingredients_raw, "present");
+  assert.equal(product?.field_capture_status?.active_ingredients_raw, "present");
+});
+
 test("extractProductFromHtmlSnapshot parses Jurlique ingredient accordions and key ingredients", () => {
   const product = extractProductFromHtmlSnapshot({
     html: `

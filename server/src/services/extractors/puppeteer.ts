@@ -397,6 +397,7 @@ type ScrapedPageSignals = {
   metaDescription: string;
   priceTexts: string[];
   imageCandidates: string[];
+  contentImageCandidates: string[];
   scripts: string[];
   domVariants: DomVariantMeta[];
   productDetailsText: string;
@@ -992,6 +993,7 @@ function extractHtmlImageCandidates(html: string, baseUrl: string) {
   const seen = new Set<string>();
   const push = (raw: string | undefined) => {
     const trimmed = typeof raw === "string" ? raw.trim() : "";
+    if (out.length >= 24) return;
     if (!trimmed) return;
     const candidates = trimmed
       .split(",")
@@ -1029,6 +1031,58 @@ function extractHtmlImageCandidates(html: string, baseUrl: string) {
     push(extractHtmlAttribute(tag, "srcset"));
     push(extractHtmlAttribute(tag, "src"));
     if (out.length >= 12) break;
+  }
+
+  return out;
+}
+
+function extractHtmlContentImageCandidates(html: string, baseUrl: string) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string | undefined) => {
+    const trimmed = typeof raw === "string" ? raw.trim() : "";
+    if (!trimmed) return;
+    const candidates = trimmed
+      .split(",")
+      .map((part) => part.trim().split(/\s+/)[0] || "")
+      .filter(Boolean);
+    for (const candidate of candidates) {
+      const normalized = normalizeImageUrlCandidate(baseUrl, decodeHtmlEntities(candidate));
+      const dedupeKey = normalized ? imageDedupeKey(normalized) : "";
+      if (!normalized || seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      out.push(normalized);
+      if (out.length >= 24) return;
+    }
+  };
+
+  const pushTagImageSources = (tag: string) => {
+    push(extractHtmlAttribute(tag, "data-src"));
+    push(extractHtmlAttribute(tag, "data-srcset"));
+    push(extractHtmlAttribute(tag, "data-zoom-src"));
+    push(extractHtmlAttribute(tag, "data-zoom-image"));
+    push(extractHtmlAttribute(tag, "data-large-image"));
+    push(extractHtmlAttribute(tag, "srcset"));
+    push(extractHtmlAttribute(tag, "src"));
+  };
+
+  const pushCssImageSources = (block: string) => {
+    for (const match of block.matchAll(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi)) {
+      push(match[2] || "");
+      if (out.length >= 24) return;
+    }
+  };
+
+  const contentContainerRe =
+    /<(section|div|article)\b[^>]*(?:class|id)=["'][^"']*(?:figma-image|qq-content-stack|figma-html-wrapper|custom-figma-block|new_custom_pdp|section_custom_content|product__content|product__description|hero__media|hero__image|hero__content|image__hero__frame|image__hero__scale|brick__slider|brick__section|brick__block__image|tab2-container|tab3-container)[^"']*["'][^>]*>[\s\S]{0,18000}?<\/\1>/gi;
+  for (const match of html.matchAll(contentContainerRe)) {
+    const block = match[0] || "";
+    for (const tag of block.match(/<(?:img|source)\b[^>]*>/gi) || []) {
+      pushTagImageSources(tag);
+      if (out.length >= 24) return out;
+    }
+    pushCssImageSources(block);
+    if (out.length >= 24) return out;
   }
 
   return out;
@@ -1144,6 +1198,7 @@ export function extractProductFromHtmlSnapshot(params: {
       ].map((value) => cleanHtmlText(value)),
     ),
     imageCandidates: extractHtmlImageCandidates(html, params.baseUrl),
+    contentImageCandidates: extractHtmlContentImageCandidates(html, params.baseUrl),
     scripts: extractJsonLdScriptsFromHtml(html),
     domVariants: [],
     productDetailsText: descriptionSection?.body || "",
@@ -2750,6 +2805,7 @@ export function mergeShopifyDirectPdpSignals(
     const mergedProduct: ExtractedProduct = {
       ...product,
       image_urls: [...product.image_urls],
+      content_image_urls: [...(product.content_image_urls || [])],
       variant_skus: [...product.variant_skus],
       variants: product.variants.map((variant) => ({
         ...variant,
@@ -2806,6 +2862,7 @@ export function mergeShopifyDirectPdpSignals(
       ...fallbackProduct.variants.flatMap((variant) => variant.image_urls),
       ...fallbackProduct.variants.map((variant) => variant.image_url),
     ]);
+    const fallbackContentImages = dedupeStringList(fallbackProduct.content_image_urls || []);
     const fallbackProductImages = selectRelevantFallbackImageUrls(
       {
         title: mergedProduct.title,
@@ -2813,8 +2870,13 @@ export function mergeShopifyDirectPdpSignals(
       },
       rawFallbackProductImages,
     );
+    const mergedContentImages = dedupeStringList([
+      ...(mergedProduct.content_image_urls || []),
+      ...fallbackContentImages,
+    ]);
+    if (mergedContentImages.length > 0) mergedProduct.content_image_urls = mergedContentImages;
 
-    if (fallbackProductImages.length === 0) return mergedProduct;
+    if (fallbackProductImages.length === 0 && mergedContentImages.length === 0) return mergedProduct;
 
     const fallbackBySku = new Map(
       fallbackProduct.variants
@@ -2841,6 +2903,7 @@ export function mergeShopifyDirectPdpSignals(
           ...(matchedFallback?.image_urls || []),
           matchedFallback?.image_url,
           ...fallbackProductImages,
+          ...mergedContentImages,
         ]),
       );
 
@@ -2861,6 +2924,7 @@ export function mergeShopifyDirectPdpSignals(
       ...mergedProduct.image_urls,
       mergedProduct.image_url,
       ...fallbackProductImages,
+      ...mergedContentImages,
       ...mergedProduct.variants.flatMap((variant) => variant.image_urls),
       ...mergedProduct.variants.map((variant) => variant.image_url),
     ]);
@@ -3276,7 +3340,7 @@ function toAbsoluteUrl(baseUrl: string, href: string) {
 }
 
 const INVALID_IMAGE_URL_RE =
-  /(placeholder\.svg|\/favicon|\/apple-touch-icon|\/logo(?:[._/-]|$)|\/sprite(?:[._/-]|$)|tracking|teads\.tv)/i;
+  /(placeholder\.svg|\/favicon|\/apple-touch-icon|\/[^/?#]*logo[^/?#]*\.(?:png|jpe?g|webp|svg)(?:[?#]|$)|\/logo(?:[._/-]|$)|\/sprite(?:[._/-]|$)|\/track(?:ing)?[._/-]|tracking|teads\.tv)/i;
 
 function normalizeImageUrlCandidate(baseUrl: string, raw: string) {
   const trimmed = raw.trim();
@@ -3289,6 +3353,15 @@ function normalizeImageUrlCandidate(baseUrl: string, raw: string) {
   if (!/^https?:\/\//i.test(absolute)) return "";
   if (INVALID_IMAGE_URL_RE.test(absolute)) return "";
   return absolute;
+}
+
+function imageDedupeKey(value: string) {
+  try {
+    const parsed = new URL(value);
+    return `${parsed.origin}${parsed.pathname}`.toLowerCase();
+  } catch {
+    return value.toLowerCase();
+  }
 }
 
 export function resolveStructuredImageUrls(baseUrl: string, value: unknown): string[] {
@@ -3624,12 +3697,21 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         "img[src]",
       ];
       const invalidUrlRe =
-        /(placeholder\.svg|\/favicon|\/apple-touch-icon|\/logo(?:[._/-]|$)|\/sprite(?:[._/-]|$)|tracking|teads\.tv|\/MenuBanner\/|\/Library-Sites-)/i;
+        /(placeholder\.svg|\/favicon|\/apple-touch-icon|\/[^/?#]*logo[^/?#]*\.(?:png|jpe?g|webp|svg)(?:[?#]|$)|\/logo(?:[._/-]|$)|\/sprite(?:[._/-]|$)|\/track(?:ing)?[._/-]|tracking|teads\.tv|\/MenuBanner\/|\/Library-Sites-)/i;
       const seen = new Set<string>();
       const out: string[] = [];
+      const dedupeKey = (value: string) => {
+        try {
+          const parsed = new URL(value);
+          return `${parsed.origin}${parsed.pathname}`.toLowerCase();
+        } catch {
+          return value.toLowerCase();
+        }
+      };
 
       const push = (raw: string | null | undefined) => {
         const trimmed = typeof raw === "string" ? raw.trim() : "";
+        if (out.length >= 8) return;
         if (!trimmed) return;
 
         const candidates = trimmed
@@ -3642,9 +3724,11 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
             const absolute = new URL(candidate, documentBase).toString();
             if (!/^https?:\/\//i.test(absolute)) continue;
             if (invalidUrlRe.test(absolute)) continue;
-            if (seen.has(absolute)) continue;
-            seen.add(absolute);
+            const key = dedupeKey(absolute);
+            if (seen.has(key)) continue;
+            seen.add(key);
             out.push(absolute);
+            if (out.length >= 8) return;
           } catch {
             // ignore invalid image candidates
           }
@@ -3670,6 +3754,96 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         }
 
         if (out.length >= 8) break;
+      }
+
+      return out;
+    })();
+    const contentImageCandidates = (() => {
+      const selectors = [
+        ".figma-image img",
+        ".figma-image source",
+        ".qq-content-stack img",
+        ".qq-content-stack source",
+        ".figma-html-wrapper img",
+        ".figma-html-wrapper source",
+        ".custom-figma-block img",
+        ".custom-figma-block source",
+        ".hero__media img",
+        ".hero__media source",
+        ".hero__image img",
+        ".hero__image source",
+        ".image__hero__frame img",
+        ".image__hero__frame source",
+        ".image__hero__scale img",
+        ".image__hero__scale source",
+        ".brick__slider img",
+        ".brick__slider source",
+        ".brick__section img",
+        ".brick__section source",
+        ".brick__block__image img",
+        ".brick__block__image source",
+        "[id*='__new_custom_pdp'] img",
+        "[id*='__new_custom_pdp'] source",
+        "[id*='section_custom_content'] img",
+        "[id*='section_custom_content'] source",
+        "[class*='product__content'] img",
+        "[class*='product__content'] source",
+        ".product__description img",
+        ".product__description source",
+      ];
+      const invalidUrlRe =
+        /(placeholder\.svg|\/favicon|\/apple-touch-icon|\/[^/?#]*logo[^/?#]*\.(?:png|jpe?g|webp|svg)(?:[?#]|$)|\/logo(?:[._/-]|$)|\/sprite(?:[._/-]|$)|\/track(?:ing)?[._/-]|tracking|teads\.tv|\/MenuBanner\/|\/Library-Sites-)/i;
+      const seen = new Set<string>();
+      const out: string[] = [];
+      const dedupeKey = (value: string) => {
+        try {
+          const parsed = new URL(value);
+          return `${parsed.origin}${parsed.pathname}`.toLowerCase();
+        } catch {
+          return value.toLowerCase();
+        }
+      };
+
+      const push = (raw: string | null | undefined) => {
+        const trimmed = typeof raw === "string" ? raw.trim() : "";
+        if (out.length >= 24) return;
+        if (!trimmed) return;
+
+        const candidates = trimmed
+          .split(",")
+          .map((part) => part.trim().split(/\s+/)[0] || "")
+          .filter(Boolean);
+
+        for (const candidate of candidates) {
+          try {
+            const absolute = new URL(candidate, documentBase).toString();
+            if (!/^https?:\/\//i.test(absolute)) continue;
+            if (invalidUrlRe.test(absolute)) continue;
+            const key = dedupeKey(absolute);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(absolute);
+            if (out.length >= 24) return;
+          } catch {
+            // ignore invalid image candidates
+          }
+        }
+      };
+
+      for (const selector of selectors) {
+        const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 48);
+        for (const node of nodes) {
+          const el = node as HTMLElement;
+          push(el.getAttribute("data-src"));
+          push(el.getAttribute("data-srcset"));
+          push(el.getAttribute("zoom-src"));
+          push(el.getAttribute("data-zoom-src"));
+          push(el.getAttribute("data-zoom-image"));
+          push(el.getAttribute("data-large-image"));
+          push(el.getAttribute("srcset"));
+          push(el.getAttribute("src"));
+          if (out.length >= 24) return out;
+        }
       }
 
       return out;
@@ -4241,6 +4415,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       metaDescription,
       priceTexts,
       imageCandidates,
+      contentImageCandidates,
       scripts,
       domVariants,
       productDetailsText,
@@ -4323,9 +4498,13 @@ function buildProductFromPageSignals(params: {
   );
 
   const imageRaw = primaryProductObj?.image ?? productGroupObj?.image;
+  const contentImageUrls = dedupeStringList(
+    resolveStructuredImageUrls(params.baseUrl, extracted.contentImageCandidates),
+  );
   const productImageUrls = dedupeStringList([
     ...resolveStructuredImageUrls(params.baseUrl, [imageRaw, productGroupObj?.image, extracted.imageCandidates]),
     ...variantProducts.flatMap((variantProduct) => resolveStructuredImageUrls(params.baseUrl, variantProduct.image)),
+    ...contentImageUrls,
   ]);
   const imageUrl = productImageUrls[0] || "";
 
@@ -4602,6 +4781,7 @@ function buildProductFromPageSignals(params: {
     url: productUrl,
     image_url: finalProductImageUrl,
     image_urls: finalProductImageUrls,
+    ...(contentImageUrls.length > 0 ? { content_image_urls: contentImageUrls } : {}),
     variant_skus: dedupeStringList(variants.map((variant) => variant.sku)),
     variants,
     ...productPdpFields,

@@ -2178,6 +2178,8 @@ test("extractProductFromHtmlSnapshot parses Beauty of Joseon Broadcast custom PD
   assert.match(product?.description_raw || "", /Rice-Infused Hydration/i);
   assert.match(product?.how_to_use_raw || "", /After cleansing/i);
   assert.equal(product?.faq_items?.length, 2);
+  assert.deepEqual(product?.content_image_urls, ["https://cdn.example.com/rice.jpg"]);
+  assert.ok(product?.image_urls.includes("https://cdn.example.com/rice.jpg"));
   assert.deepEqual(
     (product?.faq_items || []).map((item) => item.source_kind),
     ["merchant_faq", "merchant_faq"],
@@ -2279,6 +2281,9 @@ test("enrichDirectShopifyPdpResponse uses Beauty of Joseon tabs as the direct Sh
                 <p>Shake well before use and apply generously.</p>
               </div>
             </div>
+            <section class="qq-content-stack">
+              <div class="figma-image"><img src="https://cdn.shopify.com/s/files/1/0558/4135/7989/files/Untitled_design_95.jpg" /></div>
+            </section>
           </body>
         </html>
       `,
@@ -2294,6 +2299,14 @@ test("enrichDirectShopifyPdpResponse uses Beauty of Joseon tabs as the direct Sh
   assert.match(merged.products[0]?.ingredients_raw || "", /Zinc Oxide/i);
   assert.match(merged.products[0]?.how_to_use_raw || "", /Shake well/i);
   assert.equal(merged.products[0]?.faq_items?.length, 1);
+  assert.ok(
+    merged.products[0]?.image_urls.includes(
+      "https://cdn.shopify.com/s/files/1/0558/4135/7989/files/Untitled_design_95.jpg",
+    ),
+  );
+  assert.deepEqual(merged.products[0]?.content_image_urls, [
+    "https://cdn.shopify.com/s/files/1/0558/4135/7989/files/Untitled_design_95.jpg",
+  ]);
 });
 
 test("extractProductFromHtmlSnapshot parses Murad ingredient and how-to sections without Shopify JSON", () => {

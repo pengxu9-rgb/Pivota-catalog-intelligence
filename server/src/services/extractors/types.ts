@@ -95,6 +95,7 @@ export type ExtractedProduct = {
   url: string;
   image_url: string;
   image_urls: string[];
+  content_image_urls?: string[];
   variant_skus: string[];
   variants: ExtractedVariant[];
   description_raw?: string;

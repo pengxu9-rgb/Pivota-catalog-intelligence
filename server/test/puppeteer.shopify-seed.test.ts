@@ -465,21 +465,40 @@ test("enrichDirectShopifyPdpResponse preserves direct feed response when browser
     },
   };
 
-  const result = await enrichDirectShopifyPdpResponse({
-    brand: "Tom Ford Beauty",
-    baseUrl: "https://www.tomfordbeauty.com",
-    seedUrl: "https://www.tomfordbeauty.com/product/fucking-fabulous-parfum?size=50_ml",
-    response,
-    diagnostics: response.diagnostics,
-    log: (type, msg) => logs.push({ type, msg }),
-    browserRunner: async () => {
-      throw new Error("browser explode");
+  let result:
+    | Awaited<ReturnType<typeof enrichDirectShopifyPdpResponse>>
+    | undefined;
+  await withMockFetch(
+    {
+      "https://www.tomfordbeauty.com/product/fucking-fabulous-parfum?size=50_ml": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: "<html><head><title>Fucking Fabulous Parfum</title></head><body></body></html>",
+      },
     },
-  });
+    async () => {
+      result = await enrichDirectShopifyPdpResponse({
+        brand: "Tom Ford Beauty",
+        baseUrl: "https://www.tomfordbeauty.com",
+        seedUrl: "https://www.tomfordbeauty.com/product/fucking-fabulous-parfum?size=50_ml",
+        response,
+        diagnostics: response.diagnostics,
+        log: (type, msg) => logs.push({ type, msg }),
+        htmlFetcher: async () => ({
+          status: 200,
+          finalUrl: "https://www.tomfordbeauty.com/products/fucking-fabulous-parfum",
+          body: "<html><head><title>Fucking Fabulous Parfum</title></head><body></body></html>",
+        }),
+        browserRunner: async () => {
+          throw new Error("browser explode");
+        },
+      });
+    },
+  );
 
-  assert.equal(result.platform, "Shopify (Direct PDP)");
-  assert.equal(result.products.length, 1);
-  assert.equal(result.products[0]?.title, "Fucking Fabulous Parfum");
+  assert.equal(result?.platform, "Shopify (Direct PDP)");
+  assert.equal(result?.products.length, 1);
+  assert.equal(result?.products[0]?.title, "Fucking Fabulous Parfum");
   assert.match(logs.map((entry) => `${entry.type}:${entry.msg}`).join("\n"), /Browser enrichment failed for Shopify PDP/);
 });
 
@@ -518,7 +537,7 @@ test("chooseDiscoveryBatchCandidates caps direct seed rediscovery windows to the
   ]);
 });
 
-test("enrichDirectShopifyPdpResponse recovers PDP modules from native HTML before browser enrichment", async () => {
+test("enrichDirectShopifyPdpResponse uses native PDP HTML as primary direct Shopify signals", async () => {
   const response = {
     brand: "NUXE",
     domain: "https://us.nuxe.com/products/face-cleansing-and-make-up-removing-gel",
@@ -638,7 +657,7 @@ test("enrichDirectShopifyPdpResponse recovers PDP modules from native HTML befor
   assert.match(merged.products[0]?.how_to_use_raw || "", /Apply to damp face/i);
 });
 
-test("enrichDirectShopifyPdpResponse merges Pixi-style direct PDP fallback modules", async () => {
+test("enrichDirectShopifyPdpResponse keeps browser enrichment behind native PDP HTML", async () => {
   const logs: Array<{ type: string; msg: string }> = [];
   const response = {
     brand: "Pixi",
@@ -760,6 +779,11 @@ test("enrichDirectShopifyPdpResponse merges Pixi-style direct PDP fallback modul
         response,
         diagnostics: response.diagnostics,
         log: (type, msg) => logs.push({ type, msg }),
+        htmlFetcher: async () => ({
+          status: 200,
+          finalUrl: "https://pixibeauty.com/products/glow-tonic-250ml",
+          body: "<html><head><title>Glow Tonic</title></head><body></body></html>",
+        }),
         browserRunner: async () => ({
           result: fallbackProduct,
           mode: "local",
@@ -1983,6 +2007,293 @@ test("choosePreferredProductOverview prefers expanded product details over short
     overview,
     "The Acne Set offers a targeted skincare regimen featuring Salicylic Acid 2% Solution for treating acne.\n\nThis set includes...\n\nGlucoside Foaming Cleanser removes dirt and environmental impurities.\nSalicylic Acid 2% Solution exfoliates and helps clear pores.",
   );
+});
+
+test("choosePreferredProductOverview prefers line-broken tab descriptions over compressed JSON-LD", () => {
+  const overview = choosePreferredProductOverview({
+    structured:
+      "Meet the Tint + SPF You’ll Actually Wear\nNaturally radiant fluid sunscreen.\nEffortless Skin EnhancementDesigned to be your skin, but better.",
+    detailed:
+      "Meet the Tint + SPF You’ll Actually Wear\nNaturally radiant fluid sunscreen.\n\nEffortless Skin Enhancement\nDesigned to be your skin, but better.",
+    meta: "Discover Beauty of Joseon skincare.",
+  });
+
+  assert.equal(
+    overview,
+    "Meet the Tint + SPF You’ll Actually Wear\nNaturally radiant fluid sunscreen.\n\nEffortless Skin Enhancement\nDesigned to be your skin, but better.",
+  );
+});
+
+test("extractProductFromHtmlSnapshot parses Beauty of Joseon product tabs and modal details", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>Daily Tinted Fluid Sunscreen DN350</title>
+          <meta name="description" content="Discover Beauty of Joseon: clean, effective Korean skincare using traditional Hanbang ingredients." />
+          <meta property="og:price:amount" content="10.00" />
+          <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "Product",
+              "name": "Daily Tinted Fluid Sunscreen DN350",
+              "url": "https://beautyofjoseon.com/products/daily-tinted-fluid-sunscreen-dn350",
+              "description": "Meet the Tint + SPF You’ll Actually WearNaturally radiant, this tinted fluid sunscreen feels like skincare.Effortless Skin EnhancementDesigned to be your skin, but better.",
+              "image": ["https://cdn.shopify.com/s/files/1/0558/4135/7989/files/DTFS_DN350_Thumbnail_1.jpg"],
+              "offers": {
+                "@type": "Offer",
+                "price": "10.00",
+                "priceCurrency": "USD",
+                "availability": "https://schema.org/InStock"
+              }
+            }
+          </script>
+        </head>
+        <body>
+          <h1>Daily Tinted Fluid Sunscreen DN350</h1>
+          <div class="product-tabs">
+            <ul class="tabs product-tabs-title">
+              <li class="tab-link tab-link-0 current" data-tab="0"><span>Description</span></li>
+              <li class="tab-link tab-link-1" data-tab="1"><span>Ingredients</span></li>
+              <li class="tab-link tab-link-2" data-tab="2"><span>FAQ</span></li>
+              <li class="tab-link tab-link-3" data-tab="3"><span>How to Use</span></li>
+            </ul>
+            <div class="tab-content tab-content-0 current rte">
+              <toggle-ellipsis>
+                <div class="toggle-ellipsis__content">
+                  <p><strong>Meet the Tint + SPF You’ll Actually Wear</strong></p>
+                  <p>Naturally radiant, this tinted fluid sunscreen feels like skincare.</p>
+                  <p><strong>Effortless Skin Enhancement</strong><br>Designed to be your skin, but better.</p>
+                  <p><strong>Lightweight, All-in-One Coverage</strong><br>Buildable tint, skincare, and SPF in one step.</p>
+                  <p><strong>12 Versatile Shades</strong><br>Available in 12 sheer shades for light to deep skin tones.</p>
+                </div>
+                <div class="toggle-ellipsis__actions"><button>Read more</button></div>
+              </toggle-ellipsis>
+            </div>
+            <div class="tab-content tab-content-1 rte">
+              <toggle-ellipsis>
+                <div class="toggle-ellipsis__content">
+                  <p>Zinc Oxide, Water, Butyloctyl Salicylate, Iron Oxides, Silica.</p>
+                </div>
+              </toggle-ellipsis>
+            </div>
+            <div class="tab-content tab-content-2 rte">
+              <toggle-ellipsis>
+                <div class="toggle-ellipsis__content">
+                  <p><strong>1. Is this a skin tint?</strong><br>Not exactly; it is a mineral sunscreen with sheer tint.<br><br><strong>2. Is Daily Tinted Fluid Sunscreen FDA-approved?</strong><br>Yes, it uses zinc oxide for a mineral sunscreen.</p>
+                </div>
+                <div class="toggle-ellipsis__actions"><button>Read more</button></div>
+              </toggle-ellipsis>
+            </div>
+            <div class="tab-content tab-content-3 rte">
+              <toggle-ellipsis>
+                <div class="toggle-ellipsis__content">
+                  <p><strong>Shake well before use.</strong><br><br>Apply a generous amount evenly over areas exposed to the sun.</p>
+                </div>
+              </toggle-ellipsis>
+            </div>
+          </div>
+          <product-modal>
+            <a class="radio__legend__link text-link" data-popup-open>How to Use DTFS the Right Way</a>
+            <dialog class="product-modal">
+              <div class="product-modal__content small">
+                <p><strong>SHAKE WELL BEFORE USE<br><br></strong>Gently shake the product before use.<br><br><strong>START WITH THE RIGHT AMOUNT<br><br></strong>Dispense a small amount to begin with.</p>
+              </div>
+            </dialog>
+          </product-modal>
+        </body>
+      </html>
+    `,
+    url: "https://beautyofjoseon.com/products/daily-tinted-fluid-sunscreen-dn350",
+    baseUrl: "https://beautyofjoseon.com",
+  });
+
+  assert.ok(product);
+  assert.match(product?.description_raw || "", /Effortless Skin Enhancement\nDesigned/i);
+  assert.doesNotMatch(product?.description_raw || "", /EnhancementDesigned/);
+  assert.match(product?.ingredients_raw || "", /Zinc Oxide/i);
+  assert.match(product?.how_to_use_raw || "", /START WITH THE RIGHT AMOUNT/i);
+  assert.equal(product?.faq_items?.length, 2);
+  assert.deepEqual(
+    (product?.details_sections || []).map((section) => section.heading),
+    [
+      "Meet the Tint + SPF You’ll Actually Wear",
+      "Effortless Skin Enhancement",
+      "Lightweight, All-in-One Coverage",
+      "12 Versatile Shades",
+      "Ingredients",
+      "FAQ",
+      "How to Use",
+      "How to Use DTFS the Right Way",
+    ],
+  );
+});
+
+test("extractProductFromHtmlSnapshot parses Beauty of Joseon Broadcast custom PDP sections", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>Glow Replenishing Rice Milk</title>
+          <meta property="og:price:amount" content="18.00" />
+          <meta name="description" content="A hydrating balancing toner with an innovative dual-layer formula." />
+        </head>
+        <body>
+          <h1>Glow Replenishing Rice Milk</h1>
+          <section class="qq-content-stack">
+            <div class="figma-text">
+              <h2>Rice-Infused Hydration</h2>
+              <p>Inspired by the Joseon-era practice of beautifying skin with rice water.</p>
+              <h2>Secret Sebum-Control Layer</h2>
+              <p>Targets excess sebum and clogged pores so skin looks refreshed without greasy shine.</p>
+            </div>
+            <div class="figma-image"><img src="https://cdn.example.com/rice.jpg" /></div>
+          </section>
+          <div class="hero__content">
+            <h2 class="hero__title heading-size-4">How to Use</h2>
+            <p class="hero__description h5--body">
+              <div class="metafield-rich_text_field"><p>After cleansing, apply a few drops with your hands or a cotton pad.</p></div>
+            </p>
+          </div>
+          <details class="accordion">
+            <summary class="accordion__title h6">What skin types is this product recommended for?</summary>
+            <div class="accordion__body rte">
+              <div class="accordion__content"><p>We made this toner for all skin types.</p></div>
+            </div>
+          </details>
+          <details class="accordion">
+            <summary class="accordion__title h6">Can I use this toner during the day and at night?</summary>
+            <div class="accordion__body rte">
+              <div class="accordion__content"><p>Yes, it can be used morning and night.</p></div>
+            </div>
+          </details>
+        </body>
+      </html>
+    `,
+    url: "https://beautyofjoseon.com/products/glow-replenishing-rice-milk",
+    baseUrl: "https://beautyofjoseon.com",
+  });
+
+  assert.ok(product);
+  assert.match(product?.description_raw || "", /Rice-Infused Hydration/i);
+  assert.match(product?.how_to_use_raw || "", /After cleansing/i);
+  assert.equal(product?.faq_items?.length, 2);
+  assert.deepEqual(
+    (product?.faq_items || []).map((item) => item.source_kind),
+    ["merchant_faq", "merchant_faq"],
+  );
+  assert.deepEqual(
+    (product?.details_sections || []).map((section) => section.heading),
+    ["Rice-Infused Hydration", "Secret Sebum-Control Layer", "How to Use"],
+  );
+});
+
+test("enrichDirectShopifyPdpResponse uses Beauty of Joseon tabs as the direct Shopify main path", async () => {
+  const response = {
+    brand: "Beauty of Joseon",
+    domain: "https://beautyofjoseon.com/products/daily-tinted-fluid-sunscreen-dn350",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Daily Tinted Fluid Sunscreen DN350",
+        url: "https://beautyofjoseon.com/products/daily-tinted-fluid-sunscreen-dn350",
+        image_url: "https://cdn.shopify.com/s/files/1/0558/4135/7989/files/DTFS_DN350_Thumbnail_1.jpg",
+        image_urls: ["https://cdn.shopify.com/s/files/1/0558/4135/7989/files/DTFS_DN350_Thumbnail_1.jpg"],
+        variant_skus: ["01BU013", "01BU027"],
+        variants: [
+          {
+            id: "52402575442292",
+            sku: "01BU013",
+            url: "https://beautyofjoseon.com/products/daily-tinted-fluid-sunscreen-dn350",
+            option_name: "Size",
+            option_value: "1.69 fl. oz. (50ml)",
+            price: "10.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "https://cdn.shopify.com/s/files/1/0558/4135/7989/files/DTFS_DN350_Thumbnail_1.jpg",
+            image_urls: ["https://cdn.shopify.com/s/files/1/0558/4135/7989/files/DTFS_DN350_Thumbnail_1.jpg"],
+            ad_copy: "copy",
+          },
+        ],
+        ...buildProductPdpFields({}),
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 10, max: 10, avg: 10 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "beautyofjoseon.com",
+      resolved_base_url: "https://beautyofjoseon.com",
+      discovery_strategy: "shopify_json",
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  let browserCalled = false;
+  const merged = await enrichDirectShopifyPdpResponse({
+    brand: "Beauty of Joseon",
+    baseUrl: "https://beautyofjoseon.com",
+    seedUrl: "https://beautyofjoseon.com/products/daily-tinted-fluid-sunscreen-dn350",
+    response,
+    diagnostics: response.diagnostics,
+    log: () => undefined,
+    htmlFetcher: async () => ({
+      status: 200,
+      finalUrl: "https://beautyofjoseon.com/products/daily-tinted-fluid-sunscreen-dn350",
+      body: `
+        <html>
+          <head>
+            <title>Daily Tinted Fluid Sunscreen DN350</title>
+            <meta property="og:price:amount" content="10.00" />
+          </head>
+          <body>
+            <h1>Daily Tinted Fluid Sunscreen DN350</h1>
+            <div class="product-tabs">
+              <ul class="tabs product-tabs-title">
+                <li data-tab="0"><span>Description</span></li>
+                <li data-tab="1"><span>Ingredients</span></li>
+                <li data-tab="2"><span>FAQ</span></li>
+                <li data-tab="3"><span>How to Use</span></li>
+              </ul>
+              <div class="tab-content tab-content-0 rte">
+                <p><strong>Effortless Skin Enhancement</strong><br>Designed to be your skin, but better.</p>
+              </div>
+              <div class="tab-content tab-content-1 rte">
+                <p>Zinc Oxide, Water, Iron Oxides, Silica.</p>
+              </div>
+              <div class="tab-content tab-content-2 rte">
+                <p><strong>Is this tinted sunscreen matte?</strong><br>It is not too dewy and not too matte.</p>
+              </div>
+              <div class="tab-content tab-content-3 rte">
+                <p>Shake well before use and apply generously.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    }),
+    browserRunner: async () => {
+      browserCalled = true;
+      throw new Error("browser should not run for native PDP HTML");
+    },
+  });
+
+  assert.equal(browserCalled, false);
+  assert.match(merged.products[0]?.description_raw || "", /Effortless Skin Enhancement/i);
+  assert.match(merged.products[0]?.ingredients_raw || "", /Zinc Oxide/i);
+  assert.match(merged.products[0]?.how_to_use_raw || "", /Shake well/i);
+  assert.equal(merged.products[0]?.faq_items?.length, 1);
 });
 
 test("extractProductFromHtmlSnapshot parses Murad ingredient and how-to sections without Shopify JSON", () => {

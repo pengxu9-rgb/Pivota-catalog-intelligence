@@ -520,8 +520,18 @@ export function choosePreferredProductOverview(params: {
     const startsWithStructured = detailedLower.startsWith(structuredLower);
     const materiallyLonger = detailed.length >= Math.max(structured.length + 60, Math.round(structured.length * 1.35));
     const looksLikeExpandedOverview = /\bthis set includes\b|\bproduct details\b|\n|•|\bto use\b/i.test(detailed);
+    const sharedOpening =
+      structured.length >= 40 &&
+      detailed.length >= 40 &&
+      structuredLower.slice(0, 40) === detailedLower.slice(0, 40);
+    const structuredLineCount = structured.split("\n").map((line) => cleanText(line)).filter(Boolean).length;
+    const detailedLineCount = detailed.split("\n").map((line) => cleanText(line)).filter(Boolean).length;
+    const detailedKeepsStructure =
+      sharedOpening &&
+      detailedLineCount > structuredLineCount &&
+      detailed.length >= Math.max(80, Math.round(structured.length * 0.75));
 
-    if (startsWithStructured || (materiallyLonger && looksLikeExpandedOverview)) {
+    if (startsWithStructured || detailedKeepsStructure || (materiallyLonger && looksLikeExpandedOverview)) {
       return detailed;
     }
   }
@@ -657,8 +667,17 @@ function pushRelevantHtmlSection(
   if (/^how to$/i.test(heading)) heading = "How to Use";
   const body = cleanHtmlText(bodyRaw);
   if (!heading || !body) return;
+  if (heading.length > 180) return;
   if (
-    !/\b(details?|benefits?|how to (?:use|apply)|usage(?: details)?|suggested usage|directions?|ingredients?|active ingredients?|key ingredients?|inci|description|beauty tips|formula|about|what(?:'|’)s in it\??)\b/i.test(
+    body.length > 12_000 &&
+    /\b(?:window\.|document\.|function\s+\w+|productVariants|shopify-osm|klarna|matchmymakeup|addEventListener)\b/i.test(
+      body,
+    )
+  ) {
+    return;
+  }
+  if (
+    !/\b(details?|benefits?|how to (?:use|apply)|usage(?: details)?|suggested usage|directions?|ingredients?|active ingredients?|key ingredients?|inci|description|beauty tips|formula|about|what(?:'|’)s in it\??|faq|frequently asked questions?|q\s*&\s*a|questions?|clinical(?:\s+results?)?|results?|hydration|hydrates?|sebum|oil[-\s]*moisture|moisture|absorbs?|pores?|texture|finish|coverage|shades?|spf|skin)\b/i.test(
       heading,
     )
   ) {
@@ -672,15 +691,136 @@ function pushRelevantHtmlSection(
   });
 }
 
+function extractStrongLedHtmlSections(html: string, sourceKind: string) {
+  const sections: ExtractedProductDetailSection[] = [];
+  const paragraphMatches = Array.from(html.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi));
+  let currentHeading = "";
+  let currentBodyParts: string[] = [];
+
+  const flush = () => {
+    if (!currentHeading || currentBodyParts.length === 0) {
+      currentHeading = "";
+      currentBodyParts = [];
+      return;
+    }
+
+    pushRelevantHtmlSection(sections, currentHeading, currentBodyParts.join("\n\n"), sourceKind);
+    currentHeading = "";
+    currentBodyParts = [];
+  };
+
+  for (const match of paragraphMatches) {
+    const paragraphHtml = match[1] || "";
+    const strongLed = paragraphHtml.match(/^\s*<strong\b[^>]*>([\s\S]*?)<\/strong>\s*(?:<br\s*\/?>)?\s*([\s\S]*)$/i);
+    const heading = cleanHtmlText(strongLed?.[1] || "");
+    const bodyAfterHeading = cleanHtmlText(strongLed?.[2] || "");
+    const looksLikeSectionHeading =
+      Boolean(heading) &&
+      heading.length <= 140 &&
+      !/[.!?]\s+\S/.test(heading);
+
+    if (looksLikeSectionHeading) {
+      flush();
+      currentHeading = heading;
+      if (bodyAfterHeading) currentBodyParts.push(bodyAfterHeading);
+      continue;
+    }
+
+    const body = cleanHtmlText(paragraphHtml);
+    if (body && currentHeading) currentBodyParts.push(body);
+  }
+
+  flush();
+  return dedupeDetailSections(sections);
+}
+
+function stripProductTabActionHtml(html: string) {
+  return html.replace(/<div\b[^>]*class=["'][^"']*\btoggle-ellipsis__actions\b[\s\S]*$/i, "");
+}
+
+function extractHeadingParagraphPairSections(html: string, sourceKind: string) {
+  const sections: ExtractedProductDetailSection[] = [];
+  for (const containerMatch of html.matchAll(
+    /<div\b[^>]*class=["'][^"']*\bfigma-text\b[^"']*["'][^>]*>([\s\S]*?)(?=<\/div>\s*<div\b[^>]*class=["'][^"']*\bfigma-image\b|<\/div>\s*<\/div>\s*<\/div>)/gi,
+  )) {
+    const containerHtml = containerMatch[1] || "";
+    for (const pairMatch of containerHtml.matchAll(
+      /<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>\s*<p\b[^>]*>([\s\S]*?)<\/p>/gi,
+    )) {
+      pushRelevantHtmlSection(sections, pairMatch[2] || "", pairMatch[3] || "", sourceKind);
+    }
+  }
+  return dedupeDetailSections(sections);
+}
+
+function extractHeroDescriptionSections(html: string) {
+  const sections: ExtractedProductDetailSection[] = [];
+  for (const match of html.matchAll(
+    /<h([1-6])\b[^>]*class=["'][^"']*\bhero__title\b[^"']*["'][^>]*>([\s\S]*?)<\/h\1>[\s\S]{0,5000}?<p\b[^>]*class=["'][^"']*\bhero__description\b[^"']*["'][^>]*>([\s\S]*?)<\/p>/gi,
+  )) {
+    pushRelevantHtmlSection(sections, match[2] || "", match[3] || "", "hero_description_html");
+  }
+  return dedupeDetailSections(sections);
+}
+
+function extractHtmlProductTabSections(html: string) {
+  const headingsByTab = new Map<string, string>();
+  for (const match of html.matchAll(
+    /<li\b[^>]*\bdata-tab=["']([^"']+)["'][^>]*>[\s\S]*?<span\b[^>]*>([\s\S]*?)<\/span>[\s\S]*?<\/li>/gi,
+  )) {
+    const tabId = cleanText(match[1]);
+    const heading = cleanHtmlText(match[2] || "");
+    if (tabId && heading) headingsByTab.set(tabId, heading);
+  }
+
+  const contentMatches = Array.from(
+    html.matchAll(/<div\b[^>]*class=["'][^"']*\btab-content\b[^"']*\btab-content-([^"'\s]+)\b[^"']*["'][^>]*>/gi),
+  );
+  if (headingsByTab.size === 0 || contentMatches.length === 0) return [];
+
+  const sections: ExtractedProductDetailSection[] = [];
+  for (let idx = 0; idx < contentMatches.length; idx += 1) {
+    const match = contentMatches[idx]!;
+    const tabId = cleanText(match[1]);
+    const heading = headingsByTab.get(tabId);
+    if (!heading) continue;
+
+    const start = match.index || 0;
+    const nextContentStart = contentMatches[idx + 1]?.index;
+    const nextProductBlockStart = html.slice(start + match[0].length).search(/<div\b[^>]*class=["'][^"']*\bproduct__block\b/);
+    const fallbackEnd = nextProductBlockStart >= 0 ? start + match[0].length + nextProductBlockStart : html.length;
+    const end = typeof nextContentStart === "number" ? nextContentStart : fallbackEnd;
+    const sectionHtml = stripProductTabActionHtml(html.slice(start, end));
+
+    const strongLedSections = /^description$/i.test(heading)
+      ? extractStrongLedHtmlSections(sectionHtml, "product_tab_description")
+      : [];
+    if (strongLedSections.length > 0) {
+      sections.push(...strongLedSections);
+      continue;
+    }
+
+    pushRelevantHtmlSection(sections, heading, sectionHtml, "product_tab_html");
+  }
+
+  return dedupeDetailSections(sections);
+}
+
 function extractHtmlDetailSections(html: string) {
   const sections: ExtractedProductDetailSection[] = [];
+
+  sections.push(...extractHtmlProductTabSections(html));
+  sections.push(...extractHeadingParagraphPairSections(html, "custom_heading_paragraph_html"));
+  sections.push(...extractHeroDescriptionSections(html));
 
   for (const match of html.matchAll(/<details\b[^>]*>([\s\S]*?)<\/details>/gi)) {
     const block = match[1] || "";
     const summaryMatch = block.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/i);
     if (!summaryMatch) continue;
+    const heading = cleanHtmlText(summaryMatch[1] || "");
+    if (looksLikeFaqQuestion(heading) && !/\bhow(?:\s*|-)?to(?:\s+(?:use|apply))?\b/i.test(heading)) continue;
     const bodyHtml = block.replace(summaryMatch[0], "");
-    pushRelevantHtmlSection(sections, summaryMatch[1] || "", bodyHtml, "details_summary");
+    pushRelevantHtmlSection(sections, heading, bodyHtml, "details_summary");
   }
 
   for (const match of html.matchAll(
@@ -758,7 +898,93 @@ function extractHtmlDetailSections(html: string) {
     pushRelevantHtmlSection(sections, "Description", descriptionBlock, "page_product_description");
   }
 
+  for (const match of html.matchAll(
+    /<product-modal\b[^>]*>[\s\S]*?<a\b[^>]*data-popup-open[^>]*>([\s\S]*?)<\/a>[\s\S]*?<dialog\b[^>]*class=["'][^"']*\bproduct-modal\b[^"']*["'][^>]*>[\s\S]*?<div\b[^>]*class=["'][^"']*\bproduct-modal__content\b[^"']*["'][^>]*>([\s\S]*?)<\/div>[\s\S]*?<\/dialog>[\s\S]*?<\/product-modal>/gi,
+  )) {
+    pushRelevantHtmlSection(sections, match[1] || "", match[2] || "", "product_modal_html");
+  }
+
   return dedupeDetailSections(sections);
+}
+
+function looksLikeFaqQuestion(value: string | undefined) {
+  const normalized = normalizeFaqQuestion(value);
+  if (!normalized) return false;
+  return (
+    /[?？]$/.test(normalized) ||
+    /^(?:can|is|are|do|does|did|will|would|should|could|where|when|why|how|what|who|which)\b/i.test(normalized)
+  );
+}
+
+function extractHtmlFaqItems(html: string, sourceUrl: string) {
+  const items: ExtractedProductFaqItem[] = [];
+  const seen = new Set<string>();
+  const push = (questionRaw: string, answerRaw: string, sourceKind: string, sourceTitle = "FAQ") => {
+    const question = normalizeFaqQuestion(questionRaw).replace(/^\d{1,2}[.)]\s*/, "");
+    const answer = normalizeFaqAnswer(answerRaw);
+    if (!looksLikeFaqQuestion(question) || !answer) return;
+    const key = `${question.toLowerCase()}|${answer.toLowerCase()}|${sourceKind.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push({
+      question,
+      answer,
+      source_kind: sourceKind,
+      source_url: sourceUrl,
+      source_title: sourceTitle,
+    });
+  };
+
+  const tabHeadingsById = new Map<string, string>();
+  for (const match of html.matchAll(
+    /<li\b[^>]*\bdata-tab=["']([^"']+)["'][^>]*>[\s\S]*?<span\b[^>]*>([\s\S]*?)<\/span>[\s\S]*?<\/li>/gi,
+  )) {
+    const tabId = cleanText(match[1]);
+    const heading = cleanHtmlText(match[2] || "");
+    if (tabId && /\b(?:faq|frequently asked questions?|q\s*&\s*a|questions?)\b/i.test(heading)) {
+      tabHeadingsById.set(tabId, heading || "FAQ");
+    }
+  }
+
+  const contentMatches = Array.from(
+    html.matchAll(/<div\b[^>]*class=["'][^"']*\btab-content\b[^"']*\btab-content-([^"'\s]+)\b[^"']*["'][^>]*>/gi),
+  );
+  for (let idx = 0; idx < contentMatches.length; idx += 1) {
+    const match = contentMatches[idx]!;
+    const tabId = cleanText(match[1]);
+    const heading = tabHeadingsById.get(tabId);
+    if (!heading) continue;
+
+    const start = match.index || 0;
+    const nextContentStart = contentMatches[idx + 1]?.index;
+    const nextProductBlockStart = html.slice(start + match[0].length).search(/<div\b[^>]*class=["'][^"']*\bproduct__block\b/);
+    const fallbackEnd = nextProductBlockStart >= 0 ? start + match[0].length + nextProductBlockStart : html.length;
+    const end = typeof nextContentStart === "number" ? nextContentStart : fallbackEnd;
+    const sectionHtml = stripProductTabActionHtml(html.slice(start, end));
+    const strongMatches = Array.from(sectionHtml.matchAll(/<strong\b[^>]*>([\s\S]*?)<\/strong>/gi));
+
+    for (let qIdx = 0; qIdx < strongMatches.length; qIdx += 1) {
+      const strongMatch = strongMatches[qIdx]!;
+      const question = cleanHtmlText(strongMatch[1] || "");
+      if (!looksLikeFaqQuestion(question)) continue;
+      const answerStart = (strongMatch.index || 0) + strongMatch[0].length;
+      const answerEnd = strongMatches[qIdx + 1]?.index ?? sectionHtml.length;
+      push(question, sectionHtml.slice(answerStart, answerEnd), "product_tab_faq", heading);
+    }
+  }
+
+  for (const match of html.matchAll(/<details\b[^>]*>([\s\S]*?)<\/details>/gi)) {
+    const block = match[1] || "";
+    const summaryMatch = block.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/i);
+    if (!summaryMatch) continue;
+    const question = cleanHtmlText(summaryMatch[1] || "");
+    if (/\bhow(?:\s*|-)?to(?:\s+(?:use|apply))?\b/i.test(question)) continue;
+    if (!looksLikeFaqQuestion(question)) continue;
+    const bodyHtml = block.replace(summaryMatch[0], "");
+    push(question, bodyHtml, "merchant_faq", "FAQ");
+  }
+
+  return dedupeFaqItems(items);
 }
 
 function extractHtmlImageCandidates(html: string, baseUrl: string) {
@@ -866,6 +1092,7 @@ export function extractProductFromHtmlSnapshot(params: {
         : null,
     ].filter((section): section is ExtractedProductDetailSection => Boolean(section)),
   );
+  const faqItems = extractHtmlFaqItems(html, params.url);
   const ingredientsSection =
     detailsSections.find((section) => {
       const heading = cleanText(section?.heading);
@@ -876,9 +1103,34 @@ export function extractProductFromHtmlSnapshot(params: {
     firstMatchingSectionBody(detailsSections, [/\bhow(?:\s*|-)?to(?:\s+(?:use|apply))?\b/i]) ||
     firstMatchingSectionBody(detailsSections, [/\b(usage(?: details)?|suggested usage|directions?|beauty tips)\b/i]);
   const activeIngredientsSection = firstMatchingSectionBody(detailsSections, [/\b(?:active|key|hero) ingredients?\b/i]);
+  const productTabDescriptionBody = cleanText(
+    detailsSections
+      .filter((section) => cleanText(section.source_kind) === "product_tab_description")
+      .map((section) => [cleanText(section.heading), normalizedSectionBody(section)].filter(Boolean).join("\n"))
+      .join("\n\n"),
+  );
+  const customPdpDescriptionBody = cleanText(
+    detailsSections
+      .filter((section) => cleanText(section.source_kind) === "custom_heading_paragraph_html")
+      .map((section) => [cleanText(section.heading), normalizedSectionBody(section)].filter(Boolean).join("\n"))
+      .join("\n\n"),
+  );
   const descriptionSection =
     firstMatchingSectionBody(detailsSections, [/\bdescription\b/i]) ||
-    firstMatchingSectionBody(detailsSections, [/\b(details?|benefits?|about)\b/i]);
+    firstMatchingSectionBody(detailsSections, [/\b(details?|benefits?|about)\b/i]) ||
+    (productTabDescriptionBody
+      ? {
+          heading: "Description",
+          body: productTabDescriptionBody,
+          source_kind: "product_tab_description",
+        }
+      : customPdpDescriptionBody
+        ? {
+            heading: "Description",
+            body: customPdpDescriptionBody,
+            source_kind: "custom_heading_paragraph_html",
+          }
+      : null);
 
   const extracted: ScrapedPageSignals = {
     title,
@@ -900,7 +1152,7 @@ export function extractProductFromHtmlSnapshot(params: {
     ingredientsDisclaimerText: undefined,
     activeIngredientsText: activeIngredientsSection?.body,
     detailsSections,
-    faqItems: [],
+    faqItems,
   };
 
   const pageLooksLikeProduct =
@@ -1553,6 +1805,19 @@ function countRecoveredPdpFields(product: ExtractedProduct | null | undefined) {
   );
 }
 
+function chooseMergedDescriptionRaw(existing?: string, fallback?: string) {
+  return (
+    choosePreferredProductOverview({
+      structured: existing,
+      detailed: fallback,
+      meta: existing,
+    }) ||
+    cleanText(existing) ||
+    cleanText(fallback) ||
+    undefined
+  );
+}
+
 export function canReturnHtmlProductsWithoutBrowser(params: {
   products: ExtractedProduct[];
   candidateCount: number;
@@ -2085,7 +2350,6 @@ export async function enrichDirectShopifyPdpResponse(params: {
   const productMissingImages = product.image_urls.length === 0;
   const variantMissingImages = product.variants.some((variant) => variant.image_urls.length === 0);
   const productMissingPdpFields = productHasMissingPdpFields(product);
-  if (!productMissingImages && !variantMissingImages && !productMissingPdpFields) return params.response;
 
   const enrichmentUrl = resolveDirectPdpEnrichmentUrl({
     seedUrl: params.seedUrl,
@@ -2094,6 +2358,7 @@ export async function enrichDirectShopifyPdpResponse(params: {
   });
   if (!enrichmentUrl) return params.response;
 
+  let responseWithDirectPdpSignals = params.response;
   const htmlFetcher = params.htmlFetcher || fetchHtmlViaNativeRequest;
   const htmlSnapshot = await htmlFetcher(enrichmentUrl, params.diagnostics);
   if (htmlSnapshot.body) {
@@ -2104,44 +2369,64 @@ export async function enrichDirectShopifyPdpResponse(params: {
       log: params.log,
     });
     if (htmlProduct) {
-      const htmlMerged = mergeShopifyDirectPdpFallback(params.brand, params.response, htmlProduct);
+      const htmlMerged = mergeShopifyDirectPdpSignals(params.brand, params.response, htmlProduct);
       const htmlMergedProduct = htmlMerged.products[0];
+      const htmlRecoveredMorePdpFields = countRecoveredPdpFields(htmlMergedProduct) > countRecoveredPdpFields(product);
+      const htmlRecoveredMoreImages =
+        (htmlMergedProduct?.image_urls.length || 0) > product.image_urls.length ||
+        Boolean(
+          htmlMergedProduct?.variants.some((variant, idx) => {
+            const originalVariant = product.variants[idx];
+            return (variant.image_urls.length || 0) > (originalVariant?.image_urls.length || 0);
+          }),
+        );
+      if (htmlRecoveredMorePdpFields || htmlRecoveredMoreImages) {
+        responseWithDirectPdpSignals = htmlMerged;
+      }
       const htmlStillMissingImages =
         (htmlMergedProduct?.image_urls.length || 0) === 0 ||
         Boolean(htmlMergedProduct?.variants.some((variant) => variant.image_urls.length === 0));
       const htmlStillMissingPdpFields = htmlMergedProduct ? productHasMissingPdpFields(htmlMergedProduct) : true;
 
       if (!htmlStillMissingImages && !htmlStillMissingPdpFields) {
-        params.log("success", `Recovered Shopify PDP fields from native HTML snapshot: ${enrichmentUrl}`);
+        params.log("success", `Merged Shopify PDP page signals from native HTML: ${enrichmentUrl}`);
         return htmlMerged;
       }
 
       if (!productMissingImages && !variantMissingImages && !htmlStillMissingPdpFields) {
-        params.log("success", `Recovered Shopify PDP modules from native HTML snapshot: ${enrichmentUrl}`);
+        params.log("success", `Merged Shopify PDP modules from native HTML: ${enrichmentUrl}`);
         return htmlMerged;
       }
     }
   }
+
+  const directPdpProduct = responseWithDirectPdpSignals.products[0];
+  const directPdpStillMissingImages =
+    (directPdpProduct?.image_urls.length || 0) === 0 ||
+    Boolean(directPdpProduct?.variants.some((variant) => variant.image_urls.length === 0));
+  const directPdpStillMissingPdpFields = directPdpProduct ? productHasMissingPdpFields(directPdpProduct) : true;
+  if (!directPdpStillMissingImages && !directPdpStillMissingPdpFields) return responseWithDirectPdpSignals;
+  if (!productMissingImages && !variantMissingImages && !productMissingPdpFields) return responseWithDirectPdpSignals;
 
   params.log(
     "info",
     `Shopify direct PDP returned incomplete image/PDP fields. Attempting browser enrichment: ${enrichmentUrl}`,
   );
 
-  let responseWithHtmlFallback = params.response;
   try {
     const htmlSnapshot = await fetchTextTracked(params.seedUrl, {}, params.diagnostics);
-    const htmlFallbackProduct =
+    const secondaryHtmlProduct =
       htmlSnapshot.ok && htmlSnapshot.body
-        ? extractStaticHtmlPdpFallbackProduct({
-            brand: params.brand,
-            url: params.seedUrl,
+        ? extractProductFromHtmlSnapshot({
             html: htmlSnapshot.body,
+            url: params.seedUrl,
+            baseUrl: params.baseUrl,
+            log: params.log,
           })
         : null;
-    if (htmlFallbackProduct) {
-      responseWithHtmlFallback = mergeShopifyDirectPdpFallback(params.brand, responseWithHtmlFallback, htmlFallbackProduct);
-      const mergedProduct = responseWithHtmlFallback.products[0];
+    if (secondaryHtmlProduct) {
+      responseWithDirectPdpSignals = mergeShopifyDirectPdpSignals(params.brand, responseWithDirectPdpSignals, secondaryHtmlProduct);
+      const mergedProduct = responseWithDirectPdpSignals.products[0];
       const recoveredFields =
         Number(Boolean(mergedProduct?.description_raw)) +
         Number(Boolean(mergedProduct?.ingredients_raw || mergedProduct?.active_ingredients_raw)) +
@@ -2150,14 +2435,14 @@ export async function enrichDirectShopifyPdpResponse(params: {
       if (recoveredFields > 0) {
         params.log(
           "info",
-          `Recovered Shopify PDP fields from native HTML snapshot before browser enrichment: ${params.seedUrl}`,
+          `Merged Shopify PDP fields from secondary native HTML snapshot before browser enrichment: ${params.seedUrl}`,
         );
       }
-      if (mergedProduct && !productHasMissingPdpFields(mergedProduct)) return responseWithHtmlFallback;
+      if (mergedProduct && !productHasMissingPdpFields(mergedProduct)) return responseWithDirectPdpSignals;
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error || "unknown_error");
-    params.log("warn", `Native HTML snapshot enrichment failed for Shopify PDP: ${msg}`);
+    params.log("warn", `Secondary native HTML snapshot enrichment failed for Shopify PDP: ${msg}`);
   }
 
   const navigationTimeoutMs = clampIntShared(
@@ -2192,15 +2477,15 @@ export async function enrichDirectShopifyPdpResponse(params: {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error || "unknown_error");
     params.log("warn", `Browser enrichment failed for Shopify PDP; returning best available response: ${msg}`);
-    return responseWithHtmlFallback;
+    return responseWithDirectPdpSignals;
   }
 
   if (!browserRun.result) {
     params.log("warn", `Browser enrichment did not recover images for Shopify PDP: ${params.seedUrl}`);
-    return responseWithHtmlFallback;
+    return responseWithDirectPdpSignals;
   }
 
-  const merged = mergeShopifyDirectPdpFallback(params.brand, responseWithHtmlFallback, browserRun.result);
+  const merged = mergeShopifyDirectPdpSignals(params.brand, responseWithDirectPdpSignals, browserRun.result);
   if ((merged.products[0]?.image_urls.length || 0) > (product.image_urls.length || 0)) {
     params.log(
       "success",
@@ -2282,14 +2567,22 @@ function buildShopifyResponse(params: {
       : product.options?.map((o) => o.name).filter((n): n is string => Boolean(n && n.trim())).join(" / ") || "Variant";
     const officialText = product.body_html;
     const currency = params.currencyHint || "USD";
+    const officialDetailsSections = extractStrongLedHtmlSections(officialText || "", "shopify_body_html_section");
+    const derivedOfficialPdpBodies = deriveProductPdpModuleBodies({
+      detailsSections: officialDetailsSections,
+    });
     const productPdpFields = buildProductPdpFields({
       descriptionRaw: officialText,
-      ingredientsRaw: extractLabeledSectionText(officialText, ["Ingredients and Safety", "Ingredients"]),
+      detailsSections: officialDetailsSections,
+      ingredientsRaw:
+        extractLabeledSectionText(officialText, ["Ingredients and Safety", "Ingredients"]) ||
+        derivedOfficialPdpBodies.ingredientsRaw,
       activeIngredientsRaw: extractLabeledSectionText(officialText, ["Active Ingredients", "Active Ingredient"]),
-      howToUseRaw: extractLabeledSectionText(officialText, ["How to Use"]),
+      howToUseRaw: extractLabeledSectionText(officialText, ["How to Use"]) || derivedOfficialPdpBodies.howToUseRaw,
       faqItems: [],
       fieldSources: {
         description_raw: officialText ? ["shopify_body_html"] : [],
+        details_sections: officialDetailsSections.map((section) => section.source_kind),
         ingredients_raw: officialText ? ["shopify_body_html_labeled_ingredients"] : [],
         active_ingredients_raw: officialText ? ["shopify_body_html_labeled_active_ingredients"] : [],
         how_to_use_raw: officialText ? ["shopify_body_html_labeled_how_to_use"] : [],
@@ -2358,7 +2651,7 @@ function buildShopifyResponse(params: {
       ...extractedVariants.map((variant) => variant.sku),
     ]);
     const mergedPdpFields = buildProductPdpFields({
-      descriptionRaw: existing.description_raw || productPdpFields.description_raw,
+      descriptionRaw: chooseMergedDescriptionRaw(existing.description_raw, productPdpFields.description_raw),
       detailsSections:
         (Array.isArray(existing.details_sections) && existing.details_sections.length > 0)
           ? existing.details_sections
@@ -2444,7 +2737,7 @@ function buildShopifyResponse(params: {
   };
 }
 
-export function mergeShopifyDirectPdpFallback(
+export function mergeShopifyDirectPdpSignals(
   brand: string,
   response: Omit<ExtractResponse, "generated_at" | "logs">,
   fallbackProduct: ExtractedProduct,
@@ -2466,7 +2759,7 @@ export function mergeShopifyDirectPdpFallback(
     Object.assign(
       mergedProduct,
       buildProductPdpFields({
-        descriptionRaw: product.description_raw || fallbackProduct.description_raw,
+        descriptionRaw: chooseMergedDescriptionRaw(product.description_raw, fallbackProduct.description_raw),
         detailsSections: dedupeDetailSections([
           ...(Array.isArray(product.details_sections) ? product.details_sections : []),
           ...(Array.isArray(fallbackProduct.details_sections) ? fallbackProduct.details_sections : []),
@@ -2594,6 +2887,8 @@ export function mergeShopifyDirectPdpFallback(
     ad_copy: { by_variant_id: adCopyById },
   };
 }
+
+export const mergeShopifyDirectPdpFallback = mergeShopifyDirectPdpSignals;
 
 function resolveShopifyProductImageUrls(baseUrl: string, product: ShopifyProduct) {
   return dedupeStringList(resolveStructuredImageUrls(baseUrl, [product.featured_image, product.images]));

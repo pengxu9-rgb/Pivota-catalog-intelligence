@@ -87,20 +87,36 @@ test("buildProductPdpFields preserves explicit PDP module fields and sources", (
     ingredientsRaw: "Titanium Dioxide, Zinc Oxide, Glycerin",
     activeIngredientsRaw: "Titanium Dioxide, Zinc Oxide",
     howToUseRaw: "Apply evenly before sun exposure.",
+    faqItems: [
+      {
+        question: "Can I use this every day?",
+        answer: "Yes, it is suitable for daily use.",
+        source_kind: "faq_section",
+      },
+    ],
     fieldSources: {
       description_raw: ["structured_overview"],
       details_sections: ["accordion_ingredients", "accordion_how_to_use"],
       ingredients_raw: ["page_ingredients_section"],
       active_ingredients_raw: ["page_active_ingredients_section"],
       how_to_use_raw: ["page_how_to_use_section"],
+      faq_items: ["page_faq_section"],
     },
   });
 
   assert.equal(fields.description_raw, "A lightweight moisturizer with SPF 20.");
   assert.equal(fields.field_capture_status?.ingredients_raw, "present");
   assert.equal(fields.field_capture_status?.how_to_use_raw, "present");
+  assert.equal(fields.field_capture_status?.faq_items, "present");
   assert.equal(fields.details_sections?.length, 2);
   assert.deepEqual(fields.field_sources?.ingredients_raw, ["page_ingredients_section"]);
+  assert.deepEqual(fields.faq_items, [
+    {
+      question: "Can I use this every day?",
+      answer: "Yes, it is suitable for daily use.",
+      source_kind: "faq_section",
+    },
+  ]);
 });
 
 test("buildProductPdpFields does not fabricate ingredient fields from generic copy", () => {
@@ -115,7 +131,9 @@ test("buildProductPdpFields does not fabricate ingredient fields from generic co
   assert.equal(fields.ingredients_raw, undefined);
   assert.equal(fields.active_ingredients_raw, undefined);
   assert.equal(fields.how_to_use_raw, undefined);
+  assert.equal(fields.faq_items, undefined);
   assert.equal(fields.field_capture_status?.ingredients_raw, "missing");
+  assert.equal(fields.field_capture_status?.faq_items, "missing");
 });
 
 test("deriveProductPdpModuleBodies extracts full modal ingredients and active ingredients separately", () => {
@@ -167,6 +185,35 @@ test("deriveProductPdpModuleBodies keeps summary-style ingredient accordions out
     "Rose Flower Oil nourishes & restores. Ceramide provides time-release moisture. Probiotics protect & balance.",
   );
   assert.equal(bodies.howToUseRaw, "Use daily after cleansing and serum.");
+});
+
+test("deriveProductPdpModuleBodies prefers full INCI over key ingredient summaries", () => {
+  const fullInci =
+    "Water, Methylpropanediol, Propanediol, 1,2-Hexanediol, Glycerin, Panthenol, Oryza Sativa (Rice) Extract, Rice Amino Acids";
+  assert.equal(
+    looksLikeFullIngredientListText("Rice Extract\n\nRice Amino Acids\n\nSebum Control Complex\n\nFull Ingredient List"),
+    false,
+  );
+  assert.equal(looksLikeFullIngredientListText(fullInci), true);
+
+  const bodies = deriveProductPdpModuleBodies({
+    ingredientsMarkdownText: "Rice Extract\n\nRice Amino Acids\n\nSebum Control Complex\n\nFull Ingredient List",
+    detailsSections: [
+      {
+        heading: "Key Ingredients",
+        body: "Rice Extract\n\nRice Amino Acids\n\nSebum Control Complex\n\nFull Ingredient List",
+        source_kind: "heading_sibling",
+      },
+      {
+        heading: "Full Ingredient List",
+        body: fullInci,
+        source_kind: "product_modal_content",
+      },
+    ],
+  });
+
+  assert.equal(bodies.ingredientsRaw, fullInci);
+  assert.equal(bodies.activeIngredientsRaw, undefined);
 });
 
 test("deriveProductPdpModuleBodies extracts Tom Ford-style details summary accordions", () => {

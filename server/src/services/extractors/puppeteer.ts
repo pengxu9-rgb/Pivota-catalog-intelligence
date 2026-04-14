@@ -8,6 +8,7 @@ import type {
   ExtractResponse,
   ExtractedProduct,
   ExtractedProductDetailSection,
+  ExtractedProductFaqItem,
   ExtractedVariant,
   ExtractedVariantRow,
   Extractor,
@@ -405,6 +406,7 @@ type ScrapedPageSignals = {
   activeIngredientsText?: string;
   detailsSections: ExtractedProductDetailSection[];
   appDataRaw?: string;
+  faqItems: ExtractedProductFaqItem[];
 };
 
 function clampInt(value: string | undefined, fallback: number, min: number, max: number) {
@@ -898,6 +900,7 @@ export function extractProductFromHtmlSnapshot(params: {
     ingredientsDisclaimerText: undefined,
     activeIngredientsText: activeIngredientsSection?.body,
     detailsSections,
+    faqItems: [],
   };
 
   const pageLooksLikeProduct =
@@ -1040,11 +1043,11 @@ function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
   const out: ExtractedProductDetailSection[] = [];
   const seen = new Set<string>();
   for (const section of Array.isArray(sections) ? sections : []) {
-    const heading = cleanText(section?.heading);
+    const heading = normalizeDetailSectionHeading(section?.heading);
     const body = cleanText(section?.body);
     const sourceKind = cleanText(section?.source_kind) || "unknown";
     if (!heading || !body) continue;
-    const key = `${heading.toLowerCase()}|${body.toLowerCase()}|${sourceKind.toLowerCase()}`;
+    const key = `${heading.toLowerCase()}|${body.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({
@@ -1067,6 +1070,65 @@ function normalizedSectionBody(section: ExtractedProductDetailSection | null | u
   if (!heading) return body;
   const stripped = cleanText(body.replace(new RegExp(`^${escapeRegex(heading)}(?:\\s*[:\\-–—]?\\s*)?`, "i"), ""));
   return stripped || body;
+}
+
+function normalizeDetailSectionHeading(value: string | undefined) {
+  const heading = cleanText(value);
+  if (!heading) return "";
+  if (/^(?:product details?|details?|about(?: the product)?|description)$/i.test(heading)) return "Details";
+  if (/^(?:benefits?|why it works|what it does|why we love it)$/i.test(heading)) return "Benefits";
+  if (/^(?:key ingredients?|highlight(?:ed)? ingredients?|ingredients story)$/i.test(heading)) {
+    return "Key Ingredients";
+  }
+  if (/^(?:clinical(?: results?| claims?)?|results?|proven results?)$/i.test(heading)) {
+    return "Clinical Results";
+  }
+  if (/^(?:how to apply|directions?|usage|how[-\s]*to)$/i.test(heading)) return "How to Use";
+  if (/^(?:ingredients?|ingredients and safety|ingredient list|full ingredients?|full ingredient list|inci)$/i.test(heading)) {
+    return "Ingredients";
+  }
+  if (/^(?:faq|frequently asked questions?|q(?:uestions)?\s*&\s*a|questions?)$/i.test(heading)) {
+    return "FAQ";
+  }
+  return heading;
+}
+
+function normalizeFaqQuestion(value: string | undefined) {
+  return cleanText(value)
+    .replace(/^(?:q(?:uestion)?\s*[:/-]\s*)/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeFaqAnswer(value: string | undefined) {
+  return cleanText(value)
+    .replace(/^(?:a(?:nswer)?\s*[:/-]\s*)/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function dedupeFaqItems(items: ExtractedProductFaqItem[]) {
+  const out: ExtractedProductFaqItem[] = [];
+  const seen = new Set<string>();
+  for (const item of Array.isArray(items) ? items : []) {
+    const question = normalizeFaqQuestion(item?.question);
+    const answer = normalizeFaqAnswer(item?.answer);
+    const sourceKind = cleanText(item?.source_kind) || "unknown";
+    const sourceUrl = cleanText(item?.source_url);
+    const sourceTitle = cleanText(item?.source_title);
+    if (!question || !answer) continue;
+    const key = `${question.toLowerCase()}|${answer.toLowerCase()}|${sourceKind.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      question,
+      answer,
+      source_kind: sourceKind,
+      ...(sourceUrl ? { source_url: sourceUrl } : {}),
+      ...(sourceTitle ? { source_title: sourceTitle } : {}),
+    });
+  }
+  return out;
 }
 
 function uniqueFieldSources(values: Array<string | undefined | null>) {
@@ -1128,12 +1190,17 @@ export function looksLikeFullIngredientListText(text: string | undefined) {
   if (!normalized) return false;
   const commaCount = (normalized.match(/,/g) || []).length;
   const dashSeparatedCount = (normalized.match(/\s-\s/g) || []).length;
+  const proseSignal =
+    /\b(?:nourishes?|provides?|helps?|boosts?|refines?|hydrates?|absorbs?|soothes?|calms?|brightens?|moisturiz(?:es?|ing)|balances?)\b/i.test(
+      normalized,
+    );
   return (
-    /\b(active ingredients?|inactive ingredients?|full ingredients?|ingredient list|inci|composition)\b/i.test(normalized) ||
+    /\b(active ingredients?|inactive ingredients?|full ingredients?|ingredient list|inci|composition)\s*:/i.test(normalized) ||
     /\b(?:water\/aqua|aqua\/water|aqua\/water\/eau)\b/i.test(normalized) ||
     /\bci\s*\d{5}\b/i.test(normalized) ||
     commaCount >= 4 ||
-    dashSeparatedCount >= 4
+    dashSeparatedCount >= 4 ||
+    (commaCount >= 2 && !proseSignal && normalized.length < 500)
   );
 }
 
@@ -1155,39 +1222,50 @@ export function deriveProductPdpModuleBodies(params: {
   detailsSections?: ExtractedProductDetailSection[];
 }) {
   const detailsSections = dedupeDetailSections(params.detailsSections || []);
-  const ingredientSection =
-    detailsSections.find((section) => {
-      const heading = cleanText(section?.heading);
-      return /\b(ingredients?|inci|composition)\b/i.test(heading) && !/\b(?:active|key|hero) ingredients?\b/i.test(heading);
-    }) ||
+  const ingredientSections = detailsSections.filter((section) => {
+    const heading = cleanText(section?.heading);
+    return /\b(ingredients?|ingredient list|inci|composition|what(?:'|’)s in it\??|formula)\b/i.test(heading);
+  });
+  const fullIngredientSection =
+    ingredientSections.find((section) => looksLikeFullIngredientListText(section.body)) ||
     firstMatchingSectionBody(detailsSections, [/\bwhat(?:'|’)s in it\??\b/i]) ||
     firstMatchingSectionBody(detailsSections, [/\bformula\b/i]);
-  const activeIngredientSection = firstMatchingSectionBody(detailsSections, [/\b(?:active|key|hero) ingredients?\b/i]);
+  const ingredientSection =
+    fullIngredientSection ||
+    ingredientSections.find((section) => !/\b(?:active|key|hero) ingredients?\b/i.test(cleanText(section?.heading))) ||
+    ingredientSections[0];
   const ingredientSectionBody = cleanText(ingredientSection?.body);
   const explicitIngredients = cleanText(params.ingredientsMarkdownText);
+  const explicitFullIngredients = looksLikeFullIngredientListText(explicitIngredients)
+    ? stripIngredientPackageDisclaimer(explicitIngredients)
+    : "";
+  const activeIngredientSection =
+    firstMatchingSectionBody(detailsSections, [/\bactive ingredients?\b/i]) ||
+    (!explicitIngredients ? firstMatchingSectionBody(detailsSections, [/\b(?:key|hero) ingredients?\b/i]) : null);
   const explicitActiveIngredients = cleanText(params.activeIngredientsText);
   const sectionActiveIngredients = cleanText(activeIngredientSection?.body);
   const activeIngredients =
     (sectionActiveIngredients.length > explicitActiveIngredients.length ? sectionActiveIngredients : explicitActiveIngredients) ||
     undefined;
-  const labeledActiveIngredients =
-    extractDelimitedLabeledSectionText(
-      explicitIngredients || ingredientSectionBody,
-      ["Active Ingredients", "Active Ingredient"],
-      ["Inactive Ingredients", "Ingredient List", "Ingredients"],
-    ) || undefined;
   const ingredientsRaw =
-    stripIngredientPackageDisclaimer(explicitIngredients) ||
+    explicitFullIngredients ||
     (looksLikeFullIngredientListText(ingredientSectionBody)
       ? stripIngredientPackageDisclaimer(ingredientSectionBody)
       : "") ||
     undefined;
+  const ingredientSummaryBody = !explicitFullIngredients && explicitIngredients ? explicitIngredients : ingredientSectionBody;
+  const labeledActiveIngredients =
+    extractDelimitedLabeledSectionText(
+      ingredientsRaw || ingredientSummaryBody,
+      ["Active Ingredients", "Active Ingredient"],
+      ["Inactive Ingredients", "Ingredient List", "Ingredients"],
+    ) || undefined;
   const activeIngredientsRaw =
     ((labeledActiveIngredients && labeledActiveIngredients.length >= (activeIngredients || "").length
       ? labeledActiveIngredients
       : activeIngredients) ||
       labeledActiveIngredients) ||
-    (!ingredientsRaw && ingredientSectionBody ? ingredientSectionBody : "") ||
+    (!ingredientsRaw && ingredientSummaryBody ? ingredientSummaryBody : "") ||
     undefined;
   const howToUseRaw =
     cleanText(params.howToUseText) ||
@@ -1415,6 +1493,7 @@ export function buildProductPdpFields(params: {
   ingredientsRaw?: string;
   activeIngredientsRaw?: string;
   howToUseRaw?: string;
+  faqItems?: ExtractedProductFaqItem[];
   fieldSources?: Partial<Record<keyof NonNullable<ExtractedProduct["field_capture_status"]>, string[]>>;
 }) {
   const descriptionRaw = cleanText(params.descriptionRaw);
@@ -1422,6 +1501,7 @@ export function buildProductPdpFields(params: {
   const ingredientsRaw = cleanText(params.ingredientsRaw);
   const activeIngredientsRaw = cleanText(params.activeIngredientsRaw);
   const howToUseRaw = cleanText(params.howToUseRaw);
+  const faqItems = dedupeFaqItems(params.faqItems || []);
 
   return {
     ...(descriptionRaw ? { description_raw: descriptionRaw } : {}),
@@ -1429,12 +1509,14 @@ export function buildProductPdpFields(params: {
     ...(ingredientsRaw ? { ingredients_raw: ingredientsRaw } : {}),
     ...(activeIngredientsRaw ? { active_ingredients_raw: activeIngredientsRaw } : {}),
     ...(howToUseRaw ? { how_to_use_raw: howToUseRaw } : {}),
+    ...(faqItems.length > 0 ? { faq_items: faqItems } : {}),
     field_capture_status: {
       description_raw: descriptionRaw ? "present" : "missing",
       details_sections: detailsSections.length > 0 ? "present" : "missing",
       ingredients_raw: ingredientsRaw ? "present" : "missing",
       active_ingredients_raw: activeIngredientsRaw ? "present" : "missing",
       how_to_use_raw: howToUseRaw ? "present" : "missing",
+      faq_items: faqItems.length > 0 ? "present" : "missing",
     } as const,
     field_sources: {
       description_raw: uniqueFieldSources(params.fieldSources?.description_raw || []),
@@ -1442,18 +1524,21 @@ export function buildProductPdpFields(params: {
       ingredients_raw: uniqueFieldSources(params.fieldSources?.ingredients_raw || []),
       active_ingredients_raw: uniqueFieldSources(params.fieldSources?.active_ingredients_raw || []),
       how_to_use_raw: uniqueFieldSources(params.fieldSources?.how_to_use_raw || []),
+      faq_items: uniqueFieldSources(params.fieldSources?.faq_items || []),
     },
   };
 }
 
 function productHasMissingPdpFields(product: ExtractedProduct) {
   const detailsSections = Array.isArray(product?.details_sections) ? product.details_sections : [];
+  const faqItems = Array.isArray(product?.faq_items) ? product.faq_items : [];
   const descriptionMissing = !cleanText(product?.description_raw);
   const moduleMissing =
     detailsSections.length === 0 &&
     !cleanText(product?.ingredients_raw) &&
     !cleanText(product?.active_ingredients_raw) &&
-    !cleanText(product?.how_to_use_raw);
+    !cleanText(product?.how_to_use_raw) &&
+    faqItems.length === 0;
   return descriptionMissing || moduleMissing;
 }
 
@@ -2202,11 +2287,13 @@ function buildShopifyResponse(params: {
       ingredientsRaw: extractLabeledSectionText(officialText, ["Ingredients and Safety", "Ingredients"]),
       activeIngredientsRaw: extractLabeledSectionText(officialText, ["Active Ingredients", "Active Ingredient"]),
       howToUseRaw: extractLabeledSectionText(officialText, ["How to Use"]),
+      faqItems: [],
       fieldSources: {
         description_raw: officialText ? ["shopify_body_html"] : [],
         ingredients_raw: officialText ? ["shopify_body_html_labeled_ingredients"] : [],
         active_ingredients_raw: officialText ? ["shopify_body_html_labeled_active_ingredients"] : [],
         how_to_use_raw: officialText ? ["shopify_body_html_labeled_how_to_use"] : [],
+        faq_items: [],
       },
     });
 
@@ -2279,6 +2366,10 @@ function buildShopifyResponse(params: {
       ingredientsRaw: existing.ingredients_raw || productPdpFields.ingredients_raw,
       activeIngredientsRaw: existing.active_ingredients_raw || productPdpFields.active_ingredients_raw,
       howToUseRaw: existing.how_to_use_raw || productPdpFields.how_to_use_raw,
+      faqItems:
+        (Array.isArray(existing.faq_items) && existing.faq_items.length > 0)
+          ? existing.faq_items
+          : productPdpFields.faq_items,
       fieldSources: {
         description_raw: [
           ...(existing.field_sources?.description_raw || []),
@@ -2299,6 +2390,10 @@ function buildShopifyResponse(params: {
         how_to_use_raw: [
           ...(existing.field_sources?.how_to_use_raw || []),
           ...(productPdpFields.field_sources?.how_to_use_raw || []),
+        ],
+        faq_items: [
+          ...(existing.field_sources?.faq_items || []),
+          ...(productPdpFields.field_sources?.faq_items || []),
         ],
       },
     });
@@ -2379,6 +2474,10 @@ export function mergeShopifyDirectPdpFallback(
         ingredientsRaw: product.ingredients_raw || fallbackProduct.ingredients_raw,
         activeIngredientsRaw: product.active_ingredients_raw || fallbackProduct.active_ingredients_raw,
         howToUseRaw: product.how_to_use_raw || fallbackProduct.how_to_use_raw,
+        faqItems:
+          (Array.isArray(product.faq_items) && product.faq_items.length > 0)
+            ? product.faq_items
+            : fallbackProduct.faq_items,
         fieldSources: {
           description_raw: [
             ...(product.field_sources?.description_raw || []),
@@ -2399,6 +2498,10 @@ export function mergeShopifyDirectPdpFallback(
           how_to_use_raw: [
             ...(product.field_sources?.how_to_use_raw || []),
             ...(fallbackProduct.field_sources?.how_to_use_raw || []),
+          ],
+          faq_items: [
+            ...(product.field_sources?.faq_items || []),
+            ...(fallbackProduct.field_sources?.faq_items || []),
           ],
         },
       }),
@@ -3431,12 +3534,146 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       }
       return undefined;
     })();
+    const faqItems = (() => {
+      const items: Array<{
+        question: string;
+        answer: string;
+        source_kind: string;
+        source_url?: string;
+        source_title?: string;
+      }> = [];
+      const seen = new Set<string>();
+
+      const normalizeQuestion = (value: string) =>
+        normalizeSectionText(value)
+          .replace(/^(?:q(?:uestion)?\s*[:/-]\s*)/i, "")
+          .trim();
+      const normalizeAnswer = (value: string) =>
+        normalizeSectionText(value)
+          .replace(/^(?:a(?:nswer)?\s*[:/-]\s*)/i, "")
+          .trim();
+      const looksLikeQuestion = (value: string) => {
+        const normalized = normalizeQuestion(value);
+        if (!normalized) return false;
+        return (
+          /[?？]$/.test(normalized) ||
+          /^(?:can|is|are|do|does|did|will|would|should|could|where|when|why|how|what|who|which)\b/i.test(normalized)
+        );
+      };
+      const pushFaqItem = (questionRaw: string, answerRaw: string, sourceKind: string, sourceTitle = "FAQ") => {
+        const question = normalizeQuestion(questionRaw);
+        const answer = normalizeAnswer(answerRaw);
+        if (!question || !answer || !looksLikeQuestion(question)) return;
+        const key = `${question.toLowerCase()}|${answer.toLowerCase()}|${sourceKind.toLowerCase()}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        items.push({
+          question,
+          answer,
+          source_kind: sourceKind,
+          source_url: location.href,
+          source_title: sourceTitle,
+        });
+      };
+      const resolveControlledBody = (control: HTMLElement) => {
+        const targetId = control.getAttribute("aria-controls") || "";
+        if (targetId) {
+          const target = document.getElementById(targetId);
+          const targetText = normalizeSectionText((target as HTMLElement | null)?.innerText || target?.textContent || "");
+          if (targetText) return targetText;
+        }
+
+        if (control.tagName.toLowerCase() === "summary") {
+          const details = control.closest("details");
+          if (details) {
+            const bodyParts = Array.from(details.children)
+              .filter((child) => child !== control)
+              .map((child) => normalizeSectionText((child as HTMLElement).innerText || child.textContent || ""))
+              .filter(Boolean);
+            if (bodyParts.length > 0) return bodyParts.join("\n\n");
+          }
+        }
+
+        const wrapper =
+          control.closest("accordion-wrap") ||
+          control.closest(".pv-extra-details__accordion") ||
+          control.closest(".acc") ||
+          control.parentElement;
+        const content =
+          wrapper?.querySelector?.(
+            ".accordion-content-wrap-inner, .accordion-content-wrap, .acc__menu, .pv-extra-details__accordion-body, .faq-answer, .faq__answer",
+          ) || control.nextElementSibling;
+        return normalizeSectionText((content as HTMLElement | null)?.innerText || content?.textContent || "");
+      };
+      const collectFaqItemsFromRoot = (root: ParentNode | null | undefined, sourceKind: string, sourceTitle = "FAQ") => {
+        if (!root) return;
+        const controls = Array.from(
+          root.querySelectorAll(
+            "button[aria-controls], [role='tab'][aria-controls], button.accordion-title, .acc__btn, details > summary",
+          ),
+        ) as HTMLElement[];
+        for (const control of controls.slice(0, 32)) {
+          const question = normalizeQuestion(
+            control.getAttribute("title") || control.getAttribute("aria-label") || control.textContent || "",
+          );
+          if (!looksLikeQuestion(question)) continue;
+          const answer = resolveControlledBody(control);
+          pushFaqItem(question, answer, sourceKind, sourceTitle);
+        }
+
+        const questionNodes = Array.from(root.querySelectorAll("[data-faq-question], .faq-question, .faq__question, h3, h4, h5")) as HTMLElement[];
+        for (const node of questionNodes.slice(0, 24)) {
+          const question = normalizeQuestion(node.getAttribute("data-faq-question") || node.textContent || "");
+          if (!looksLikeQuestion(question)) continue;
+          const answerNode =
+            node.nextElementSibling ||
+            node.parentElement?.querySelector?.("[data-faq-answer], .faq-answer, .faq__answer, p, div");
+          const answer = normalizeAnswer((answerNode as HTMLElement | null)?.innerText || answerNode?.textContent || "");
+          pushFaqItem(question, answer, sourceKind, sourceTitle);
+        }
+      };
+
+      const faqContainers = new Set<ParentNode>();
+      const faqHeadingNodes = Array.from(
+        document.querySelectorAll("h2, h3, h4, h5, button[aria-controls], summary, .accordion-title, .acc__btn"),
+      ) as HTMLElement[];
+      for (const node of faqHeadingNodes.slice(0, 80)) {
+        const heading = normalizeSectionText(node.textContent || "");
+        if (!/\b(?:faq|frequently asked questions?|q\s*&\s*a|questions?)\b/i.test(heading)) continue;
+        const targetId = node.getAttribute("aria-controls") || "";
+        const target = targetId ? document.getElementById(targetId) : null;
+        const container =
+          target ||
+          node.closest("section, article, details") ||
+          node.parentElement ||
+          node;
+        faqContainers.add(container);
+      }
+
+      if (faqContainers.size > 0) {
+        for (const container of Array.from(faqContainers)) {
+          collectFaqItemsFromRoot(container, "faq_section", "FAQ");
+        }
+      }
+
+      if (items.length === 0) {
+        collectFaqItemsFromRoot(document, "accordion_question_answer", "FAQ");
+      }
+
+      return items;
+    })();
     const detailsSections = await (async () => {
       const sections: ExtractedProductDetailSection[] = [];
       const seen = new Set<string>();
       const looksRelevantHeading = (heading: string) =>
-        /\b(details?|benefits?|how(?:\s*|-)?to(?:\s+(?:use|apply))?|usage instructions?|ingredients?|active ingredients?|key ingredients?|inci|composition|about|what(?:'|’)s in it\??)\b/i.test(
+        /\b(details?|benefits?|how(?:\s*|-)?to(?:\s+(?:use|apply))?|usage instructions?|ingredients?|active ingredients?|key ingredients?|inci|composition|about|what(?:'|’)s in it\??|faq|frequently asked questions?|q\s*&\s*a|questions?|clinical(?:\s+results?)?|results?|hydration|hydrates?|sebum|oil[-\s]*moisture|moisture|absorbs?|pores?|texture|finish|layer)\b/i.test(
           heading,
+        );
+      const shouldSkipSectionNode = (node: Element | null | undefined) =>
+        Boolean(
+          node?.closest(
+            "header, nav, footer, .header__dropdown, .drawer__inner, .predictive-search, [class*='comparison'], [id*='comparison']",
+          ),
         );
       const pushSection = (headingRaw: string, bodyRaw: string, sourceKind: string) => {
         let heading = normalizeSectionText(headingRaw);
@@ -3537,10 +3774,58 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         pushSection("Key Ingredients", body, "key_ingredients_section");
       }
 
+      const productContentRoots = Array.from(
+        document.querySelectorAll(
+          [
+            ".figma-html-wrapper",
+            ".custom-figma-block",
+            ".figma-tab2-wrapper",
+            ".tab2-container",
+            ".tab3-html-wrapper",
+            ".tab3-container",
+            "[id*='__new_custom_pdp']",
+            "[id*='section_custom_content']",
+            ".product__description",
+          ].join(", "),
+        ),
+      ) as HTMLElement[];
+      for (const root of productContentRoots.filter((node) => !shouldSkipSectionNode(node)).slice(0, 24)) {
+        const headings = Array.from(root.querySelectorAll("h2, h3, h4")) as HTMLElement[];
+        for (const headingNode of headings.filter((node) => looksRelevantHeading(node.textContent || "")).slice(0, 16)) {
+          if (shouldSkipSectionNode(headingNode)) continue;
+          const heading = headingNode.textContent || "";
+          const bodyParts: string[] = [];
+          let cursor = headingNode.nextElementSibling;
+          let guard = 0;
+          while (cursor && guard < 6) {
+            if (/^H[2-4]$/i.test(cursor.tagName)) break;
+            if (!shouldSkipSectionNode(cursor)) {
+              const text = (cursor as HTMLElement).innerText || cursor.textContent || "";
+              if (normalizeSectionText(text)) bodyParts.push(text);
+            }
+            cursor = cursor.nextElementSibling;
+            guard += 1;
+          }
+
+          if (bodyParts.length === 0) {
+            const parent = headingNode.parentElement;
+            const parentText = normalizeSectionText(parent?.innerText || parent?.textContent || "");
+            const headingText = normalizeSectionText(heading);
+            const body = parentText.replace(headingText, "").trim();
+            if (body) bodyParts.push(body);
+          }
+
+          if (bodyParts.length > 0) {
+            pushSection(heading, bodyParts.join("\n\n"), "pdp_content_heading");
+          }
+        }
+      }
+
       const controls = Array.from(
         document.querySelectorAll("button[aria-controls], [role='tab'][aria-controls]"),
       ) as HTMLElement[];
       for (const control of controls.filter((node) => looksRelevantHeading(node.textContent || "")).slice(0, 24)) {
+        if (shouldSkipSectionNode(control)) continue;
         const heading =
           control.getAttribute("title") ||
           control.getAttribute("aria-label") ||
@@ -3556,6 +3841,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
 
       const accordionButtons = Array.from(document.querySelectorAll("button.accordion-title, .acc__btn")) as HTMLElement[];
       for (const button of accordionButtons.filter((node) => looksRelevantHeading(node.textContent || "")).slice(0, 24)) {
+        if (shouldSkipSectionNode(button)) continue;
         const heading =
           button.getAttribute("title") ||
           button.getAttribute("aria-label") ||
@@ -3583,6 +3869,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
 
       const detailSummaries = Array.from(document.querySelectorAll("details > summary")) as HTMLElement[];
       for (const summary of detailSummaries.filter((node) => looksRelevantHeading(node.textContent || "")).slice(0, 24)) {
+        if (shouldSkipSectionNode(summary)) continue;
         const heading =
           summary.getAttribute("title") ||
           summary.getAttribute("aria-label") ||
@@ -3604,7 +3891,22 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         pushSection(heading, body, "details_summary");
       }
 
-      const modalNodes = Array.from(document.querySelectorAll("aside.modal, .modal.js-modal, [role='dialog']"));
+      const productModalNodes = Array.from(document.querySelectorAll("product-modal")) as HTMLElement[];
+      for (const productModal of productModalNodes.slice(0, 16)) {
+        const heading =
+          productModal.querySelector("[data-popup-open], .radio__legend__link")?.textContent ||
+          productModal.querySelector("h1, h2, h3")?.textContent ||
+          "";
+        const bodyNode = productModal.querySelector(
+          "dialog .product-modal__content, dialog, .product-modal__content, [class*='modal__content']",
+        );
+        const body = (bodyNode as HTMLElement | null)?.innerText || bodyNode?.textContent || "";
+        pushSection(heading, body, "product_modal_content");
+      }
+
+      const modalNodes = Array.from(
+        document.querySelectorAll("aside.modal, .modal.js-modal, dialog.product-modal, [role='dialog']"),
+      );
       for (const modal of modalNodes.slice(0, 16)) {
         const heading =
           modal.querySelector(".modal__header h1, .modal__header h2, .modal__header h3, h1, h2, h3")?.textContent || "";
@@ -3615,6 +3917,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
 
       const headingNodes = Array.from(document.querySelectorAll("h2, h3, h4"));
       for (const headingNode of headingNodes.filter((node) => looksRelevantHeading(node.textContent || "")).slice(0, 24)) {
+        if (shouldSkipSectionNode(headingNode)) continue;
         const heading = headingNode.textContent || "";
         const bodyParts: string[] = [];
         let cursor = headingNode.nextElementSibling;
@@ -3652,6 +3955,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       activeIngredientsText,
       detailsSections,
       appDataRaw,
+      faqItems,
     };
   });
 }
@@ -3751,8 +4055,9 @@ function buildProductFromPageSignals(params: {
     domMetaBySku.set(meta.sku, meta);
   }
 
+  const faqItems = Array.isArray(extracted.faqItems) ? extracted.faqItems : [];
   const mergedDetailsSections = dedupeDetailSections([
-    ...extracted.detailsSections,
+    ...(Array.isArray(extracted.detailsSections) ? extracted.detailsSections : []),
     ...(paulasChoiceAppData?.detailsSections || []),
   ]);
   const howToUseText =
@@ -3778,6 +4083,7 @@ function buildProductFromPageSignals(params: {
     ingredientsRaw: derivedPdpBodies.ingredientsRaw,
     activeIngredientsRaw: derivedPdpBodies.activeIngredientsRaw,
     howToUseRaw: derivedPdpBodies.howToUseRaw,
+    faqItems,
     fieldSources: {
       description_raw: [
         officialText && cleanText(officialText) === cleanText(structuredOverview) ? "structured_overview" : "",
@@ -3826,6 +4132,7 @@ function buildProductFromPageSignals(params: {
           ? "details_section_how_to_use"
           : "",
       ],
+      faq_items: faqItems.length > 0 ? ["page_faq_section"] : [],
     },
   });
 
@@ -4022,7 +4329,7 @@ async function scrapeProductPage(params: {
   const expandRelevantPdpModules = async () => {
     await page.evaluate(() => {
       const relevantHeadingRe =
-        /\b(product details|details?|benefits?|how(?:\s*|-)?to(?:\s+(?:use|apply))?|usage instructions?|ingredients?(?:\s*&\s*|\s+and\s+)safety|ingredients?|active ingredients?|inci|composition|what(?:'|’)s in it\??)\b/i;
+        /\b(product details|details?|benefits?|how(?:\s*|-)?to(?:\s+(?:use|apply))?|usage instructions?|ingredients?(?:\s*&\s*|\s+and\s+)safety|ingredients?|active ingredients?|inci|composition|what(?:'|’)s in it\??|faq|frequently asked questions?|q\s*&\s*a|questions?|clinical(?:\s+results?)?|results?)\b/i;
 
       const summaries = Array.from(document.querySelectorAll("details > summary")) as HTMLElement[];
       for (const summary of summaries.filter((node) => relevantHeadingRe.test(node.textContent || "")).slice(0, 24)) {

@@ -73,12 +73,21 @@ export type ExtractedProductDetailSection = {
   source_kind: string;
 };
 
+export type ExtractedProductFaqItem = {
+  question: string;
+  answer: string;
+  source_kind: string;
+  source_url?: string;
+  source_title?: string;
+};
+
 export type ExtractedProductFieldCaptureStatus = {
   description_raw: "present" | "missing";
   details_sections: "present" | "missing";
   ingredients_raw: "present" | "missing";
   active_ingredients_raw: "present" | "missing";
   how_to_use_raw: "present" | "missing";
+  faq_items: "present" | "missing";
 };
 
 export type ExtractedProduct = {
@@ -93,6 +102,7 @@ export type ExtractedProduct = {
   ingredients_raw?: string;
   active_ingredients_raw?: string;
   how_to_use_raw?: string;
+  faq_items?: ExtractedProductFaqItem[];
   field_capture_status?: ExtractedProductFieldCaptureStatus;
   field_sources?: Record<string, string[]>;
 };

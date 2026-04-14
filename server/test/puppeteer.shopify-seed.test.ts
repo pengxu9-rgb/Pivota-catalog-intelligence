@@ -1839,6 +1839,13 @@ test("mergeShopifyDirectPdpFallback preserves fallback PDP fields even when no n
     ],
     ingredients_raw: "Ingredients: Water Aqua Eau, Glycerin, Panthenol.",
     how_to_use_raw: "Smooth into skin as needed.",
+    faq_items: [
+      {
+        question: "Can I use this every day?",
+        answer: "Yes, smooth into skin as needed.",
+        source_kind: "faq_section" as const,
+      },
+    ],
     variants: [
       {
         id: "fallback-v1",
@@ -1862,6 +1869,13 @@ test("mergeShopifyDirectPdpFallback preserves fallback PDP fields even when no n
   assert.equal(merged.products[0]?.ingredients_raw, "Ingredients: Water Aqua Eau, Glycerin, Panthenol.");
   assert.equal(merged.products[0]?.how_to_use_raw, "Smooth into skin as needed.");
   assert.equal(merged.products[0]?.details_sections?.length, 2);
+  assert.deepEqual(merged.products[0]?.faq_items, [
+    {
+      question: "Can I use this every day?",
+      answer: "Yes, smooth into skin as needed.",
+      source_kind: "faq_section",
+    },
+  ]);
   assert.equal(merged.products[0]?.image_url, "https://cdn.example.com/tomford-neroli-1.jpg");
 });
 

@@ -2242,11 +2242,15 @@ function productHasMissingPdpFields(product: ExtractedProduct) {
   });
   const hasIngredients = Boolean(cleanText(product?.ingredients_raw));
   const hasActiveIngredients = Boolean(cleanText(product?.active_ingredients_raw));
-  const hasHowToUse = Boolean(cleanText(product?.how_to_use_raw));
+  const howToUseRaw = cleanText(product?.how_to_use_raw);
+  const howToUseLooksLikeSectionSoup =
+    howToUseRaw.length > 800 &&
+    /\b(?:full\s+inci|full ingredients?|ingredient list|good for|key benefits?|description)\b/i.test(howToUseRaw);
+  const hasHowToUse = Boolean(howToUseRaw) && !howToUseLooksLikeSectionSoup;
   const hasFaq = faqItems.length > 0;
   const distinctModuleCount = [hasGeneralDetails, hasIngredients, hasActiveIngredients, hasHowToUse, hasFaq].filter(Boolean).length;
 
-  return descriptionMissing || distinctModuleCount < 2;
+  return descriptionMissing || distinctModuleCount < 2 || (!hasIngredients && !hasActiveIngredients) || howToUseLooksLikeSectionSoup;
 }
 
 function countRecoveredPdpFields(product: ExtractedProduct | null | undefined) {

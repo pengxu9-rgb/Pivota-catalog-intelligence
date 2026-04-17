@@ -23,6 +23,7 @@ import {
   deriveProductPdpModuleBodies,
   extractDelimitedLabeledSectionText,
   extractProductFromHtmlSnapshot,
+  extractShopifyBodyHtmlPdpTextFields,
   extractShopifyEmbeddedProductPayloadPdpFields,
   looksLikeFullIngredientListText,
 } from "../src/services/extractors/puppeteer";
@@ -188,6 +189,27 @@ test("deriveProductPdpModuleBodies keeps summary-style ingredient accordions out
     "Rose Flower Oil nourishes & restores. Ceramide provides time-release moisture. Probiotics protect & balance.",
   );
   assert.equal(bodies.howToUseRaw, "Use daily after cleansing and serum.");
+});
+
+test("deriveProductPdpModuleBodies does not treat active ingredient lists as full INCI", () => {
+  const bodies = deriveProductPdpModuleBodies({
+    detailsSections: [
+      {
+        heading: "Active Ingredients",
+        body: "Hippophae Rhamnoides Water, Niacinamide, 3-O-Ethyl Ascorbic Acid, Panthenol",
+        source_kind: "shopify_collapsible_tab_html",
+      },
+      {
+        heading: "How to Use",
+        body: "Apply after cleansing and toning.",
+        source_kind: "shopify_collapsible_tab_html",
+      },
+    ],
+  });
+
+  assert.equal(bodies.ingredientsRaw, undefined);
+  assert.match(bodies.activeIngredientsRaw || "", /Hippophae Rhamnoides Water/i);
+  assert.equal(bodies.howToUseRaw, "Apply after cleansing and toning.");
 });
 
 test("deriveProductPdpModuleBodies prefers full INCI over key ingredient summaries", () => {
@@ -454,6 +476,88 @@ test("extractShopifyEmbeddedProductPayloadPdpFields promotes inline Shopify prod
   assert.match(fields.ingredientsRaw || "", /Water, Glycine, Methylpropanediol/i);
   assert.equal(fields.howToUseRaw, "After cleansing the face, tidy up the skin texture using toner.");
   assert.deepEqual(fields.imageUrls, ["//roundlab.com/cdn/shop/files/mugwort-calming-sheet-mask-round-lab-1.png?v=1772849529"]);
+});
+
+test("extractShopifyBodyHtmlPdpTextFields splits Round Lab-style How to Use, Good For, and Full INCI sections", () => {
+  const fields = extractShopifyBodyHtmlPdpTextFields(`
+    <p><strong>How to Use</strong></p>
+    <p>(Short) After cleansing, apply an appropriate amount to the face. Gently pat until fully absorbed.</p>
+    <p><strong>Good For</strong></p>
+    <p>Dry or dehydrated skin. Daily barrier support care.</p>
+    <p><strong>Full INCI</strong></p>
+    <p>Water, Camellia Japonica Flower Extract, Glycerin, Butylene Glycol, Collagen Extract, Sodium DNA (PDRN), Niacinamide</p>
+    <p><strong>Key Benefits</strong></p>
+    <p>Milky hydration and elasticity support.</p>
+  `);
+
+  assert.equal(
+    fields.howToUseRaw,
+    "(Short) After cleansing, apply an appropriate amount to the face. Gently pat until fully absorbed.",
+  );
+  assert.match(fields.ingredientsRaw || "", /Water, Camellia Japonica Flower Extract/i);
+  assert.doesNotMatch(fields.howToUseRaw || "", /Full INCI|Camellia Japonica Flower Extract/i);
+});
+
+test("extractShopifyBodyHtmlPdpTextFields does not promote active-only sections to full INCI", () => {
+  const fields = extractShopifyBodyHtmlPdpTextFields(`
+    <p><strong>Active Ingredients</strong></p>
+    <p>Hippophae Rhamnoides Water, Niacinamide, 3-O-Ethyl Ascorbic Acid, Panthenol</p>
+    <p><strong>How to Use</strong></p>
+    <p>Apply a moderate amount after cleansing and toning.</p>
+  `);
+
+  assert.equal(fields.ingredientsRaw, "");
+  assert.match(fields.activeIngredientsRaw || "", /Hippophae Rhamnoides Water/i);
+  assert.equal(fields.howToUseRaw, "Apply a moderate amount after cleansing and toning.");
+});
+
+test("extractProductFromHtmlSnapshot parses Shopify collapsible PDP ingredients and how-to tabs", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>Soybean Panthenol Cleanser</title>
+          <meta property="og:price:amount" content="17.00" />
+          <link rel="canonical" href="https://roundlab.com/products/soybean-panthenol-cleanser" />
+        </head>
+        <body>
+          <h1>Soybean Panthenol Cleanser</h1>
+          <collapsible-tab class="m-collapsible no-js-hidden">
+            <button class="m-collapsible--button" data-trigger><span>ACTIVE INGREDIENTS</span></button>
+            <div class="m-collapsible--content" data-content hidden>
+              <div class="m-collapsible--content__inner rte">
+                Fermented Soybean Extract: Rich in amino acids and antioxidants to nourish skin.
+              </div>
+            </div>
+          </collapsible-tab>
+          <collapsible-tab class="m-collapsible no-js-hidden">
+            <button class="m-collapsible--button" data-trigger><span>HOW TO USE</span></button>
+            <div class="m-collapsible--content" data-content hidden>
+              <div class="m-collapsible--content__inner rte">
+                Dispense an appropriate amount into wet hands. Rinse thoroughly.
+              </div>
+            </div>
+          </collapsible-tab>
+          <div class="ingredients-tabs">
+            <div class="tab-panel">
+              <h4>Full Ingredients</h4>
+              <p class="full_ingredients">
+                Water(Aqua), Sodium Cocoyl Isethionate, Glycerin, Panthenol, Ceramide NP.
+              </p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+    url: "https://roundlab.com/products/soybean-panthenol-cleanser",
+    baseUrl: "https://roundlab.com",
+  });
+
+  assert.match(product?.how_to_use_raw || "", /Dispense an appropriate amount/i);
+  assert.match(product?.ingredients_raw || "", /Water\(Aqua\), Sodium Cocoyl Isethionate/i);
+  assert.match(product?.active_ingredients_raw || "", /Fermented Soybean Extract/i);
+  assert.match(product?.field_sources?.details_sections?.join(","), /shopify_collapsible_tab_html/);
+  assert.match(product?.field_sources?.details_sections?.join(","), /shopify_ingredients_tabs_html/);
 });
 
 test("extractShopifyEmbeddedProductPayloadPdpFields parses customMetafields from inline product scripts", () => {

@@ -833,6 +833,25 @@ function extractHtmlDetailSections(html: string) {
     pushRelevantHtmlSection(sections, match[1] || "", match[2] || "", "accordion_button_html");
   }
 
+  for (const match of html.matchAll(/<collapsible-tab\b[^>]*>([\s\S]*?)<\/collapsible-tab>/gi)) {
+    const block = match[1] || "";
+    const headingMatch =
+      block.match(
+        /<button\b[^>]*class=["'][^"']*\bm-collapsible--button\b[^"']*["'][^>]*>[\s\S]*?<span\b[^>]*>([\s\S]*?)<\/span>/i,
+      ) || block.match(/<button\b[^>]*>([\s\S]*?)<\/button>/i);
+    const bodyMatch =
+      block.match(/<div\b[^>]*class=["'][^"']*\bm-collapsible--content__inner\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i) ||
+      block.match(/<div\b[^>]*\bdata-content\b[^>]*>([\s\S]*?)<\/div>/i);
+    pushRelevantHtmlSection(sections, headingMatch?.[1] || "", bodyMatch?.[1] || "", "shopify_collapsible_tab_html");
+  }
+
+  for (const match of html.matchAll(
+    /<h[1-6]\b[^>]*>\s*(Active\s+Ingredients?|Full\s+Ingredients?|Full\s+INCI|Ingredients?|INCI)\s*<\/h[1-6]>\s*<p\b[^>]*class=["'][^"']*\b(?:active_ingredients|full_ingredients)\b[^"']*["'][^>]*>([\s\S]*?)<\/p>/gi,
+  )) {
+    const heading = /^active\b/i.test(cleanHtmlText(match[1] || "")) ? "Active Ingredients" : "Ingredients";
+    pushRelevantHtmlSection(sections, heading, match[2] || "", "shopify_ingredients_tabs_html");
+  }
+
   for (const match of html.matchAll(
     /<(?:div|p)\b[^>]*class=["'][^"']*\btitle\b[^"']*["'][^>]*>\s*(Ingredients|How to Use|Usage Details|Directions?|Benefits?|Description)\s*<\/(?:div|p)>[\s\S]{0,12000}?<(?:div|p)\b[^>]*class=["'][^"']*(ingredients-flyout-content|product-flyout-directions-list|description)[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|p)>/gi,
   )) {
@@ -1515,6 +1534,116 @@ export function extractDelimitedLabeledSectionText(
   return cleanText(match?.[1]);
 }
 
+function extractStandaloneGenericIngredientSectionText(text: string | undefined, stopLabels: string[] = []) {
+  const normalized = cleanText(text);
+  if (!normalized) return "";
+  const escapedStopLabels = stopLabels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const labelSeparator = "(?::|\\n|\\r\\n|\\s{2,}|\\s+-\\s+)?";
+  const pattern = escapedStopLabels
+    ? new RegExp(`(?:^|\\n|\\b)Ingredients\\s*${labelSeparator}\\s*([\\s\\S]+?)(?=(?:\\n|\\b)(?:${escapedStopLabels})\\s*${labelSeparator}|$)`, "gi")
+    : new RegExp(`(?:^|\\n|\\b)Ingredients\\s*${labelSeparator}\\s*([\\s\\S]+)$`, "gi");
+  for (const match of normalized.matchAll(pattern)) {
+    const prefix = normalized.slice(Math.max(0, match.index - 32), match.index);
+    if (/\b(?:active|key|hero)\s+$/i.test(prefix)) continue;
+    return cleanText(match[1]);
+  }
+  return "";
+}
+
+export function extractShopifyBodyHtmlPdpTextFields(html: string | undefined) {
+  const fullIngredientStopLabels = [
+    "How to use",
+    "How to Use",
+    "How To Apply",
+    "Directions",
+    "Suggested Usage",
+    "Good For",
+    "Best For",
+    "Key Benefits",
+    "Benefits",
+    "Description",
+    "FAQ",
+    "Frequently Asked Questions",
+  ];
+  const activeIngredientStopLabels = [
+    "Inactive Ingredients",
+    "Full INCI",
+    "INCI",
+    "Full Ingredients",
+    "Full Ingredient List",
+    "Ingredient List",
+    "Ingredients",
+    "How to use",
+    "How to Use",
+    "Directions",
+    "Good For",
+    "Benefits",
+    "Description",
+  ];
+  const howToUseStopLabels = [
+    "Good For",
+    "Best For",
+    "Who It's For",
+    "Who It’s For",
+    "Full INCI",
+    "INCI",
+    "Full Ingredients",
+    "Full Ingredient List",
+    "Ingredient List",
+    "Ingredients",
+    "Active Ingredients",
+    "Key Ingredients",
+    "Description",
+    "Key Benefits",
+    "Benefits",
+    "About",
+    "FAQ",
+    "Frequently Asked Questions",
+  ];
+  const fullIngredientsRaw =
+    extractDelimitedLabeledSectionText(
+      html,
+      ["Full INCI", "Full Ingredients", "Full Ingredient List", "Ingredient List", "INCI"],
+      fullIngredientStopLabels,
+    ) || "";
+  const genericIngredientsRaw =
+    extractDelimitedLabeledSectionText(
+      html,
+      ["Ingredients and Safety"],
+      ["Active Ingredients", ...fullIngredientStopLabels],
+    ) ||
+    extractStandaloneGenericIngredientSectionText(html, ["Active Ingredients", ...fullIngredientStopLabels]) ||
+    "";
+  const activeIngredientsRaw =
+    extractDelimitedLabeledSectionText(
+      html,
+      ["Active Ingredients", "Active Ingredient"],
+      activeIngredientStopLabels,
+    ) || "";
+  const howToUseRaw =
+    extractDelimitedLabeledSectionText(
+      html,
+      ["How to use", "How to Use", "How To Apply", "Directions", "Suggested Usage"],
+      howToUseStopLabels,
+    ) || "";
+  const normalizedGenericIngredients = cleanText(genericIngredientsRaw).toLowerCase();
+  const normalizedActiveIngredients = cleanText(activeIngredientsRaw).toLowerCase();
+  const safeGenericIngredientsRaw =
+    !fullIngredientsRaw &&
+    normalizedGenericIngredients &&
+    normalizedActiveIngredients &&
+    (normalizedActiveIngredients.includes(normalizedGenericIngredients) ||
+      normalizedGenericIngredients.includes(normalizedActiveIngredients))
+      ? ""
+      : genericIngredientsRaw;
+
+  return {
+    ingredientsRaw: stripIngredientPackageDisclaimer(fullIngredientsRaw || safeGenericIngredientsRaw),
+    activeIngredientsRaw,
+    howToUseRaw,
+  };
+}
+
 type ShopifyEmbeddedProductPayload = {
   description?: string;
   content?: string;
@@ -1721,31 +1850,15 @@ export function extractShopifyEmbeddedProductPayloadPdpFields(scriptTexts: strin
     if (howToUseText) customMetafieldHowTo.push(howToUseText);
   }
 
+  const delimitedPdpTextFields = extractShopifyBodyHtmlPdpTextFields(mergedHtml);
   const ingredientsRaw =
-    extractDelimitedLabeledSectionText(
-      mergedText,
-      ["Full Ingredients", "Full Ingredient List"],
-      ["How to use", "How to Use", "Directions", "FAQ", "Frequently Asked Questions"],
-    ) ||
-    extractDelimitedLabeledSectionText(
-      mergedText,
-      ["Ingredients", "Ingredient List"],
-      ["How to use", "How to Use", "Directions", "FAQ", "Frequently Asked Questions"],
-    ) ||
+    delimitedPdpTextFields.ingredientsRaw ||
     customMetafieldIngredients[0] ||
     undefined;
   const activeIngredientsRaw =
-    extractDelimitedLabeledSectionText(
-      mergedText,
-      ["Active Ingredients", "Active Ingredient"],
-      ["Inactive Ingredients", "Full Ingredients", "Full Ingredient List", "How to use", "How to Use", "Directions"],
-    ) || undefined;
+    delimitedPdpTextFields.activeIngredientsRaw || undefined;
   const howToUseRaw =
-    extractDelimitedLabeledSectionText(
-      mergedText,
-      ["How to use", "How to Use", "How To Apply", "Directions"],
-      ["FAQ", "Frequently Asked Questions"],
-    ) ||
+    delimitedPdpTextFields.howToUseRaw ||
     customMetafieldHowTo[0] ||
     undefined;
 
@@ -1812,7 +1925,11 @@ export function deriveProductPdpModuleBodies(params: {
     return /\b(ingredients?|ingredient list|inci|composition|what(?:'|’)s in it\??|formula)\b/i.test(heading);
   });
   const fullIngredientSection =
-    ingredientSections.find((section) => looksLikeFullIngredientListText(section.body)) ||
+    ingredientSections.find((section) => {
+      const heading = cleanText(section?.heading);
+      if (/\b(?:active|key|hero) ingredients?\b/i.test(heading)) return false;
+      return looksLikeFullIngredientListText(section.body);
+    }) ||
     firstMatchingSectionBody(detailsSections, [/\bwhat(?:'|’)s in it\??\b/i]) ||
     firstMatchingSectionBody(detailsSections, [/\bformula\b/i]);
   const ingredientSection =
@@ -1820,6 +1937,7 @@ export function deriveProductPdpModuleBodies(params: {
     ingredientSections.find((section) => !/\b(?:active|key|hero) ingredients?\b/i.test(cleanText(section?.heading))) ||
     ingredientSections[0];
   const ingredientSectionBody = cleanText(ingredientSection?.body);
+  const ingredientSectionIsActiveOnly = /\b(?:active|key|hero) ingredients?\b/i.test(cleanText(ingredientSection?.heading));
   const explicitIngredients = cleanText(params.ingredientsMarkdownText);
   const explicitFullIngredients = looksLikeFullIngredientListText(explicitIngredients)
     ? stripIngredientPackageDisclaimer(explicitIngredients)
@@ -1834,7 +1952,7 @@ export function deriveProductPdpModuleBodies(params: {
     undefined;
   const ingredientsRaw =
     explicitFullIngredients ||
-    (looksLikeFullIngredientListText(ingredientSectionBody)
+    (!ingredientSectionIsActiveOnly && looksLikeFullIngredientListText(ingredientSectionBody)
       ? stripIngredientPackageDisclaimer(ingredientSectionBody)
       : "") ||
     undefined;
@@ -2905,24 +3023,27 @@ function buildShopifyResponse(params: {
     const officialText = product.body_html;
     const currency = params.currencyHint || "USD";
     const officialDetailsSections = extractStrongLedHtmlSections(officialText || "", "shopify_body_html_section");
+    const officialPdpTextFields = extractShopifyBodyHtmlPdpTextFields(officialText);
     const derivedOfficialPdpBodies = deriveProductPdpModuleBodies({
       detailsSections: officialDetailsSections,
     });
     const productPdpFields = buildProductPdpFields({
       descriptionRaw: officialText,
       detailsSections: officialDetailsSections,
-      ingredientsRaw:
-        extractLabeledSectionText(officialText, ["Ingredients and Safety", "Ingredients"]) ||
-        derivedOfficialPdpBodies.ingredientsRaw,
-      activeIngredientsRaw: extractLabeledSectionText(officialText, ["Active Ingredients", "Active Ingredient"]),
-      howToUseRaw: extractLabeledSectionText(officialText, ["How to Use"]) || derivedOfficialPdpBodies.howToUseRaw,
+      ingredientsRaw: officialPdpTextFields.ingredientsRaw || derivedOfficialPdpBodies.ingredientsRaw,
+      activeIngredientsRaw: officialPdpTextFields.activeIngredientsRaw,
+      howToUseRaw: officialPdpTextFields.howToUseRaw || derivedOfficialPdpBodies.howToUseRaw,
       faqItems: [],
       fieldSources: {
         description_raw: officialText ? ["shopify_body_html"] : [],
         details_sections: officialDetailsSections.map((section) => section.source_kind),
-        ingredients_raw: officialText ? ["shopify_body_html_labeled_ingredients"] : [],
-        active_ingredients_raw: officialText ? ["shopify_body_html_labeled_active_ingredients"] : [],
-        how_to_use_raw: officialText ? ["shopify_body_html_labeled_how_to_use"] : [],
+        ingredients_raw: officialPdpTextFields.ingredientsRaw
+          ? ["shopify_body_html_delimited_ingredients"]
+          : officialText
+            ? ["shopify_body_html_derived_ingredients"]
+            : [],
+        active_ingredients_raw: officialPdpTextFields.activeIngredientsRaw ? ["shopify_body_html_delimited_active_ingredients"] : [],
+        how_to_use_raw: officialPdpTextFields.howToUseRaw ? ["shopify_body_html_delimited_how_to_use"] : [],
         faq_items: [],
       },
     });

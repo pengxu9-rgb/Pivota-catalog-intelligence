@@ -388,6 +388,49 @@ test("extractProductFromHtmlSnapshot parses BYOMA routine rich-text how-to secti
   assert.match(product?.field_sources?.how_to_use_raw?.join(","), /page_how_to_use_section/);
 });
 
+test("extractProductFromHtmlSnapshot parses SKIN1004 prhow and prinfo PDP sections", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>Azelaic Acid 10 Ampoule</title>
+          <meta property="og:price:amount" content="16.80" />
+          <link rel="canonical" href="https://www.skin1004.com/products/azelaic-acid-10-ampoule" />
+        </head>
+        <body>
+          <h1>Azelaic Acid 10 Ampoule</h1>
+          <div class="prhow-flex">
+            <div class="prhow-section-title txt_style_five">HOW TO USE</div>
+            <div class="swiper-container prhow-swiper-container">
+              <div class="swiper-slide">
+                <div class="prhow-txt txt_style_four">
+                  <div class="metafield-rich_text_field">
+                    <p><strong>[SKINCARE ROUTINE]</strong><br />Gently apply along the skin texture, then lightly pat to aid absorption.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="prinfo-content-ingrewrapper">
+            <div class="prinfo-ingre-title txt_style_three">FULL INGREDIENTS</div>
+            <div id="prinfo-tab3-body2" class="prinfo-content-body txt_style_four">
+              <div class="metafield-rich_text_field">
+                <p>Water, Azelaic Acid, Hydroxypropyl Cyclodextrin, Panthenol, Centella Asiatica Extract</p>
+              </div>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+    url: "https://www.skin1004.com/products/azelaic-acid-10-ampoule",
+    baseUrl: "https://www.skin1004.com",
+  });
+
+  assert.match(product?.how_to_use_raw || "", /Gently apply along the skin texture/i);
+  assert.match(product?.ingredients_raw || "", /Water, Azelaic Acid/i);
+  assert.match(product?.field_sources?.details_sections?.join(","), /skin1004_pr/);
+});
+
 test("extractShopifyEmbeddedProductPayloadPdpFields promotes inline Shopify product payloads into structured PDP fields", () => {
   const script = `window.reelUp_productJSON = ${JSON.stringify({
     description: `

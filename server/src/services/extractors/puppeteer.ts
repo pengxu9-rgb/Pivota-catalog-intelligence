@@ -854,6 +854,18 @@ function extractHtmlDetailSections(html: string) {
   }
 
   for (const match of html.matchAll(
+    /<div\b[^>]*class=["'][^"']*\bprhow-section-title\b[^"']*["'][^>]*>\s*(How\s+to\s+Use|How\s+to\s+Apply|Directions?|Usage Instructions?)\s*<\/div>[\s\S]{0,8000}?<div\b[^>]*class=["'][^"']*\bprhow-txt\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi,
+  )) {
+    pushRelevantHtmlSection(sections, match[1] || "How to Use", match[2] || "", "skin1004_prhow_rich_text_html");
+  }
+
+  for (const match of html.matchAll(
+    /<div\b[^>]*class=["'][^"']*\bprinfo-ingre-title\b[^"']*["'][^>]*>\s*(Full\s+Ingredients?|Ingredients?|INCI)\s*<\/div>[\s\S]{0,4000}?<div\b[^>]*class=["'][^"']*\bprinfo-content-body\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi,
+  )) {
+    pushRelevantHtmlSection(sections, "Ingredients", match[2] || "", "skin1004_prinfo_full_ingredients_html");
+  }
+
+  for (const match of html.matchAll(
     /<(?:p|div)\b[^>]*class=["'][^"']*ingredients-flyout-content[^"']*["'][^>]*>/gi,
   )) {
     const attrText = cleanHtmlText(decodeHtmlEntities(extractHtmlAttribute(match[0] || "", "data-original-ingredients")));

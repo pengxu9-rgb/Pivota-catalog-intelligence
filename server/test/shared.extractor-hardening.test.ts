@@ -21,6 +21,9 @@ import {
 import {
   buildProductPdpFields,
   deriveProductPdpModuleBodies,
+  extractDelimitedLabeledSectionText,
+  extractProductFromHtmlSnapshot,
+  extractShopifyEmbeddedProductPayloadPdpFields,
   looksLikeFullIngredientListText,
 } from "../src/services/extractors/puppeteer";
 
@@ -320,6 +323,137 @@ test("deriveProductPdpModuleBodies extracts The Ordinary-style ingredient flyout
   assert.match(bodies.ingredientsRaw || "", /Avobenzone 3\.0%/);
   assert.match(bodies.ingredientsRaw || "", /Inactive ingredients:/i);
   assert.match(bodies.activeIngredientsRaw || "", /Homosalate 7\.0%/);
+});
+
+test("extractDelimitedLabeledSectionText supports labels split across Shopify body_html blocks", () => {
+  const text = `
+    This mask is made with a pure cotton sheet mask.
+
+    How it works
+    Hydrating sheet mask that contains 91.45% pure Mugwort extract.
+
+    Ingredients
+    Active Ingredients: Glycine, Madecassoside
+    Full Ingredients: Water, Glycine, Methylpropanediol, Artemisia Vulgaris Extract
+    How to use
+    After cleansing the face, tidy up the skin texture using toner.
+  `;
+
+  assert.equal(
+    extractDelimitedLabeledSectionText(text, ["How to use"], ["FAQ", "Frequently Asked Questions"]),
+    "After cleansing the face, tidy up the skin texture using toner.",
+  );
+  assert.match(
+    extractDelimitedLabeledSectionText(
+      text,
+      ["Ingredients"],
+      ["How to use", "FAQ", "Frequently Asked Questions"],
+    ),
+    /Full Ingredients:/,
+  );
+});
+
+test("extractProductFromHtmlSnapshot parses BYOMA routine rich-text how-to sections", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>Balancing Face Mist</title>
+          <meta property="og:price:amount" content="15.99" />
+          <link rel="canonical" href="https://byoma.com/products/balancing-face-mist" />
+        </head>
+        <body>
+          <h1>Balancing Face Mist</h1>
+          <section class="routine-section">
+            <div class="left-section-routine">
+              <div class="routine-content">
+                <h2>HOW TO USE</h2>
+                <div class="metafield-rich_text_field">
+                  <ol>
+                    <li>Shake well before each use and mist onto clean, dry skin</li>
+                    <li>Follow with your favorite serums and moisturizer</li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+          </section>
+        </body>
+      </html>
+    `,
+    url: "https://byoma.com/products/balancing-face-mist",
+    baseUrl: "https://byoma.com",
+  });
+
+  assert.match(product?.how_to_use_raw || "", /Shake well before each use/i);
+  assert.match(product?.field_sources?.how_to_use_raw?.join(","), /page_how_to_use_section/);
+});
+
+test("extractShopifyEmbeddedProductPayloadPdpFields promotes inline Shopify product payloads into structured PDP fields", () => {
+  const script = `window.reelUp_productJSON = ${JSON.stringify({
+    description: `
+      <p>This mask is made with a pure cotton sheet mask soaked in clean, natural ingredients.</p>
+      <p><strong>How it works</strong></p>
+      <ul><li>Hydrating sheet mask that contains 91.45% pure Mugwort extract.</li></ul>
+      <p><strong>Ingredients</strong></p>
+      <p><strong>Active Ingredients:</strong> Glycine, Madecassoside</p>
+      <p><strong>Full Ingredients:</strong> Water, Glycine, Methylpropanediol, Artemisia Vulgaris Extract</p>
+      <p><strong>How to use</strong></p>
+      <ol><li>After cleansing the face, tidy up the skin texture using toner.</li></ol>
+    `,
+    images: ["//roundlab.com/cdn/shop/files/mugwort-calming-sheet-mask-round-lab-1.png?v=1772849529"],
+  })};`;
+
+  const fields = extractShopifyEmbeddedProductPayloadPdpFields([script]);
+
+  assert.match(fields.descriptionRaw || "", /pure cotton sheet mask/i);
+  assert.match(fields.detailsSections[0]?.body || "", /91\.45% pure Mugwort extract/i);
+  assert.equal(fields.activeIngredientsRaw, "Glycine, Madecassoside");
+  assert.match(fields.ingredientsRaw || "", /Water, Glycine, Methylpropanediol/i);
+  assert.equal(fields.howToUseRaw, "After cleansing the face, tidy up the skin texture using toner.");
+  assert.deepEqual(fields.imageUrls, ["//roundlab.com/cdn/shop/files/mugwort-calming-sheet-mask-round-lab-1.png?v=1772849529"]);
+});
+
+test("extractShopifyEmbeddedProductPayloadPdpFields parses customMetafields from inline product scripts", () => {
+  const script = `window.corner.sessionData.product = ${JSON.stringify({
+    customMetafields: {
+      how_to_use_1_: {
+        type: "root",
+        children: [
+          {
+            type: "paragraph",
+            children: [{ type: "text", value: "After cleansing, apply evenly and pat to absorb." }],
+          },
+        ],
+      },
+      product_info_tab_1_body: {
+        type: "root",
+        children: [
+          {
+            type: "paragraph",
+            children: [{ type: "text", value: "Brightens dull skin while supporting the barrier." }],
+          },
+        ],
+      },
+      product_info_tab_3_full_ingredients: {
+        type: "root",
+        children: [
+          {
+            type: "paragraph",
+            children: [{ type: "text", value: "Water, Glycerin, Niacinamide, Centella Asiatica Extract" }],
+          },
+        ],
+      },
+    },
+  })};`;
+
+  const fields = extractShopifyEmbeddedProductPayloadPdpFields([script]);
+
+  assert.match(fields.howToUseRaw || "", /apply evenly and pat to absorb/i);
+  assert.match(fields.ingredientsRaw || "", /Water, Glycerin, Niacinamide/i);
+  assert.deepEqual(
+    fields.detailsSections.map((section) => section.heading),
+    ["Benefits", "Ingredients", "How to Use"],
+  );
 });
 
 test("resolveStorefrontFromHtml resolves selector roots to the requested market storefront", () => {

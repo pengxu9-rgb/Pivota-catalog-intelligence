@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import http from "http";
 import https from "https";
-import { type Browser, type Page } from "puppeteer";
+import { type Browser, type HTTPRequest, type Page } from "puppeteer";
 
 import type {
   ExtractInput,
@@ -53,6 +53,8 @@ const DEFAULT_FETCH_TIMEOUT_MS = 8_000;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 15_000;
 const DEFAULT_SCRAPE_TIMEOUT_MS = 60_000;
 const DEFAULT_PRODUCT_URL_RESERVE = 4;
+const DEFAULT_BROWSERISH_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 export class PuppeteerExtractor implements Extractor {
   async extract(input: ExtractInput): Promise<ExtractResponse> {
@@ -399,6 +401,7 @@ type ScrapedPageSignals = {
   imageCandidates: string[];
   contentImageCandidates: string[];
   scripts: string[];
+  embeddedProductScripts: string[];
   domVariants: DomVariantMeta[];
   productDetailsText: string;
   howToUseText?: string;
@@ -845,6 +848,12 @@ function extractHtmlDetailSections(html: string) {
   }
 
   for (const match of html.matchAll(
+    /<h[1-6]\b[^>]*>\s*(How\s+to\s+Use|How\s+to\s+Apply|Directions?|Usage Instructions?)\s*<\/h[1-6]>[\s\S]{0,4000}?<(?:div|section)\b[^>]*class=["'][^"']*(?:metafield-rich_text_field|rich-text|rich_text|rte|markdown)[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|section)>/gi,
+  )) {
+    pushRelevantHtmlSection(sections, match[1] || "How to Use", match[2] || "", "heading_rich_text_html");
+  }
+
+  for (const match of html.matchAll(
     /<(?:p|div)\b[^>]*class=["'][^"']*ingredients-flyout-content[^"']*["'][^>]*>/gi,
   )) {
     const attrText = cleanHtmlText(decodeHtmlEntities(extractHtmlAttribute(match[0] || "", "data-original-ingredients")));
@@ -1200,6 +1209,7 @@ export function extractProductFromHtmlSnapshot(params: {
     imageCandidates: extractHtmlImageCandidates(html, params.baseUrl),
     contentImageCandidates: extractHtmlContentImageCandidates(html, params.baseUrl),
     scripts: extractJsonLdScriptsFromHtml(html),
+    embeddedProductScripts: extractEmbeddedProductScriptsFromHtml(html),
     domVariants: [],
     productDetailsText: descriptionSection?.body || "",
     howToUseText: howToUseSection?.body,
@@ -1485,11 +1495,267 @@ export function extractDelimitedLabeledSectionText(
   const escapedLabels = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
   if (!escapedLabels) return "";
   const escapedStopLabels = stopLabels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const labelSeparator = "(?::|\\n|\\r\\n|\\s{2,}|\\s+-\\s+)?";
   const pattern = escapedStopLabels
-    ? new RegExp(`(?:${escapedLabels})\\s*:\\s*([\\s\\S]+?)(?=(?:${escapedStopLabels})\\s*:|$)`, "i")
-    : new RegExp(`(?:${escapedLabels})\\s*:\\s*([\\s\\S]+)$`, "i");
+    ? new RegExp(`(?:^|\\n|\\b)(?:${escapedLabels})\\s*${labelSeparator}\\s*([\\s\\S]+?)(?=(?:\\n|\\b)(?:${escapedStopLabels})\\s*${labelSeparator}|$)`, "i")
+    : new RegExp(`(?:^|\\n|\\b)(?:${escapedLabels})\\s*${labelSeparator}\\s*([\\s\\S]+)$`, "i");
   const match = normalized.match(pattern);
   return cleanText(match?.[1]);
+}
+
+type ShopifyEmbeddedProductPayload = {
+  description?: string;
+  content?: string;
+  body_html?: string;
+  featured_image?: unknown;
+  image?: unknown;
+  images?: unknown;
+  media?: unknown;
+  customMetafields?: Record<string, unknown>;
+};
+
+function extractEmbeddedJsonObject(scriptText: string, anchorPattern: RegExp) {
+  const anchor = scriptText.match(anchorPattern);
+  if (!anchor || typeof anchor.index !== "number") return null;
+  const start = scriptText.indexOf("{", anchor.index);
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let idx = start; idx < scriptText.length; idx += 1) {
+    const char = scriptText[idx];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return scriptText.slice(start, idx + 1);
+    }
+  }
+
+  return null;
+}
+
+function extractRichTextJsonToText(value: unknown): string {
+  const walk = (node: unknown): string[] => {
+    if (!node || typeof node !== "object") return [];
+    const record = node as Record<string, unknown>;
+    const nodeType = typeof record.type === "string" ? record.type : "";
+    const textValue = typeof record.value === "string" ? record.value : "";
+    const children = Array.isArray(record.children) ? record.children : [];
+    const childText = children.flatMap((child) => walk(child)).filter(Boolean);
+
+    if (nodeType === "text") {
+      const text = cleanText(textValue);
+      return text ? [text] : [];
+    }
+    if (nodeType === "list-item") {
+      const text = cleanText(childText.join(" ").trim());
+      return text ? [`- ${text}`] : [];
+    }
+    if (nodeType === "paragraph" || nodeType === "heading" || nodeType === "root" || nodeType === "list") {
+      const text = cleanText(childText.join(nodeType === "list" ? "\n" : " ").trim());
+      return text ? [text] : [];
+    }
+
+    const text = cleanText([textValue, ...childText].join(" ").trim());
+    return text ? [text] : [];
+  };
+
+  return cleanText(walk(value).join("\n\n"));
+}
+
+function extractShopifyEmbeddedProductPayloadsFromScripts(scriptTexts: string[]): ShopifyEmbeddedProductPayload[] {
+  if (!Array.isArray(scriptTexts) || scriptTexts.length === 0) return [];
+  const payloads: ShopifyEmbeddedProductPayload[] = [];
+  const seen = new Set<string>();
+  const patterns = [
+    /window\.reelUp_productJSON\s*=/i,
+    /_RSConfig\.product\s*=/i,
+    /window\.corner\.sessionData\.product\s*=/i,
+    /corner\.sessionData\.product\s*=/i,
+  ];
+
+  for (const scriptText of scriptTexts) {
+    if (!scriptText) continue;
+    for (const pattern of patterns) {
+      const raw = extractEmbeddedJsonObject(scriptText, pattern);
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw) as ShopifyEmbeddedProductPayload;
+        const key = JSON.stringify([
+          typeof parsed.description === "string" ? parsed.description.slice(0, 200) : "",
+          typeof parsed.content === "string" ? parsed.content.slice(0, 200) : "",
+          typeof parsed.body_html === "string" ? parsed.body_html.slice(0, 200) : "",
+          typeof parsed.featured_image === "string" ? parsed.featured_image : "",
+        ]);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        payloads.push(parsed);
+      } catch {
+        // ignore invalid embedded JSON
+      }
+    }
+  }
+
+  return payloads;
+}
+
+function extractEmbeddedProductPayloadImageUrls(payloads: ShopifyEmbeddedProductPayload[]): string[] {
+  const rawUrls: string[] = [];
+
+  const visit = (value: unknown) => {
+    if (!value) return;
+    if (typeof value === "string") {
+      const cleaned = value.trim();
+      if (cleaned) rawUrls.push(cleaned);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      visit(record.src);
+      visit(record.url);
+      visit(record.image);
+      visit(record.featured_image);
+      visit(record.preview_image);
+    }
+  };
+
+  for (const payload of payloads) {
+    visit(payload.featured_image);
+    visit(payload.image);
+    visit(payload.images);
+    visit(payload.media);
+  }
+
+  return dedupeStringList(rawUrls);
+}
+
+export function extractShopifyEmbeddedProductPayloadPdpFields(scriptTexts: string[]) {
+  const payloads = extractShopifyEmbeddedProductPayloadsFromScripts(scriptTexts);
+  const mergedHtml = cleanText(
+    payloads
+      .flatMap((payload) => [payload.content, payload.description, payload.body_html])
+      .filter((value): value is string => Boolean(value && value.trim()))
+      .join("\n\n"),
+  );
+  const mergedText = cleanHtmlText(mergedHtml);
+  const detailsSections = dedupeDetailSections([
+    ...extractStrongLedHtmlSections(mergedHtml, "embedded_shopify_product_payload"),
+  ]);
+
+  const benefitsRaw = extractDelimitedLabeledSectionText(
+    mergedText,
+    ["How it works", "Benefits", "Product Benefits"],
+    ["Ingredients", "Active Ingredients", "Full Ingredients", "Full Ingredient List", "How to use", "How to Use", "Directions", "FAQ"],
+  );
+  if (benefitsRaw) {
+    detailsSections.push({
+      heading: "Benefits",
+      body: benefitsRaw,
+      source_kind: "embedded_shopify_product_payload",
+    });
+  }
+
+  const customMetafieldDetails: ExtractedProductDetailSection[] = [];
+  const customMetafieldIngredients: string[] = [];
+  const customMetafieldHowTo: string[] = [];
+
+  const pushCustomSection = (heading: string, body: string | undefined, sourceKind: string) => {
+    const cleaned = cleanText(body);
+    if (!cleaned) return;
+    customMetafieldDetails.push({ heading, body: cleaned, source_kind: sourceKind });
+  };
+
+  for (const payload of payloads) {
+    const customMetafields =
+      payload.customMetafields && typeof payload.customMetafields === "object" ? payload.customMetafields : null;
+    if (!customMetafields) continue;
+
+    const howToUseText = extractRichTextJsonToText(customMetafields.how_to_use_1_);
+    const tab1Text = extractRichTextJsonToText(customMetafields.product_info_tab_1_body);
+    const tab2Text = extractRichTextJsonToText(customMetafields.product_info_tab_2_body);
+    const fullIngredientsText = extractRichTextJsonToText(customMetafields.product_info_tab_3_full_ingredients);
+    const keyIngredientsText = extractRichTextJsonToText(customMetafields.product_info_tab_3_key_ingredients);
+
+    pushCustomSection("Benefits", tab1Text, "embedded_custom_metafield_tab_1");
+    pushCustomSection("Details", tab2Text, "embedded_custom_metafield_tab_2");
+    pushCustomSection("Key Ingredients", keyIngredientsText, "embedded_custom_metafield_key_ingredients");
+    pushCustomSection("Ingredients", fullIngredientsText, "embedded_custom_metafield_full_ingredients");
+    pushCustomSection("How to Use", howToUseText, "embedded_custom_metafield_how_to_use");
+
+    if (fullIngredientsText) customMetafieldIngredients.push(fullIngredientsText);
+    if (howToUseText) customMetafieldHowTo.push(howToUseText);
+  }
+
+  const ingredientsRaw =
+    extractDelimitedLabeledSectionText(
+      mergedText,
+      ["Full Ingredients", "Full Ingredient List"],
+      ["How to use", "How to Use", "Directions", "FAQ", "Frequently Asked Questions"],
+    ) ||
+    extractDelimitedLabeledSectionText(
+      mergedText,
+      ["Ingredients", "Ingredient List"],
+      ["How to use", "How to Use", "Directions", "FAQ", "Frequently Asked Questions"],
+    ) ||
+    customMetafieldIngredients[0] ||
+    undefined;
+  const activeIngredientsRaw =
+    extractDelimitedLabeledSectionText(
+      mergedText,
+      ["Active Ingredients", "Active Ingredient"],
+      ["Inactive Ingredients", "Full Ingredients", "Full Ingredient List", "How to use", "How to Use", "Directions"],
+    ) || undefined;
+  const howToUseRaw =
+    extractDelimitedLabeledSectionText(
+      mergedText,
+      ["How to use", "How to Use", "How To Apply", "Directions"],
+      ["FAQ", "Frequently Asked Questions"],
+    ) ||
+    customMetafieldHowTo[0] ||
+    undefined;
+
+  return {
+    descriptionRaw: mergedText || undefined,
+    detailsSections: dedupeDetailSections([...customMetafieldDetails, ...detailsSections]),
+    ingredientsRaw: cleanText(ingredientsRaw) || undefined,
+    activeIngredientsRaw: cleanText(activeIngredientsRaw) || undefined,
+    howToUseRaw: cleanText(howToUseRaw) || undefined,
+    imageUrls: extractEmbeddedProductPayloadImageUrls(payloads),
+  };
+}
+
+function extractEmbeddedProductScriptsFromHtml(html: string) {
+  return Array.from(html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi))
+    .map((match) => match[1] || "")
+    .filter((text) =>
+      /window\.reelUp_productJSON\s*=|_RSConfig\.product\s*=|window\.corner\.sessionData\.product\s*=|corner\.sessionData\.product\s*=/i.test(
+        text,
+      ),
+    )
+    .slice(0, 8);
 }
 
 export function looksLikeFullIngredientListText(text: string | undefined) {
@@ -1840,13 +2106,17 @@ function productHasMissingPdpFields(product: ExtractedProduct) {
   const detailsSections = Array.isArray(product?.details_sections) ? product.details_sections : [];
   const faqItems = Array.isArray(product?.faq_items) ? product.faq_items : [];
   const descriptionMissing = !cleanText(product?.description_raw);
-  const moduleMissing =
-    detailsSections.length === 0 &&
-    !cleanText(product?.ingredients_raw) &&
-    !cleanText(product?.active_ingredients_raw) &&
-    !cleanText(product?.how_to_use_raw) &&
-    faqItems.length === 0;
-  return descriptionMissing || moduleMissing;
+  const hasGeneralDetails = detailsSections.some((section) => {
+    const heading = cleanText(section?.heading);
+    return heading && !/\b(?:how(?:\s*|-)?to(?:\s+(?:use|apply))?|usage instructions?|directions?|ingredients?|active ingredients?|key ingredients?|hero ingredients?|inci|faq|frequently asked questions?|q\s*&\s*a|questions?)\b/i.test(heading);
+  });
+  const hasIngredients = Boolean(cleanText(product?.ingredients_raw));
+  const hasActiveIngredients = Boolean(cleanText(product?.active_ingredients_raw));
+  const hasHowToUse = Boolean(cleanText(product?.how_to_use_raw));
+  const hasFaq = faqItems.length > 0;
+  const distinctModuleCount = [hasGeneralDetails, hasIngredients, hasActiveIngredients, hasHowToUse, hasFaq].filter(Boolean).length;
+
+  return descriptionMissing || distinctModuleCount < 2;
 }
 
 function countRecoveredPdpFields(product: ExtractedProduct | null | undefined) {
@@ -3019,7 +3289,8 @@ async function fetchTextWithFinalUrl(url: string): Promise<{ ok: boolean; body: 
       signal: controller.signal,
       headers: {
         accept: "text/plain,text/html,application/xml;q=0.9,*/*;q=0.8",
-        "user-agent": process.env.PUPPETEER_USER_AGENT || "PivotaCatalogIntelligence/1.0",
+        "accept-language": "en-US,en;q=0.9",
+        "user-agent": process.env.PUPPETEER_USER_AGENT || DEFAULT_BROWSERISH_USER_AGENT,
       },
     });
     const finalUrl = res.url || url;
@@ -3467,7 +3738,8 @@ export async function fetchHtmlViaNativeRequest(
           method: "GET",
           headers: {
             accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "user-agent": process.env.PUPPETEER_USER_AGENT || "PivotaCatalogIntelligence/1.0",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": process.env.PUPPETEER_USER_AGENT || DEFAULT_BROWSERISH_USER_AGENT,
           },
         },
         (response) => {
@@ -3543,6 +3815,28 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       const container = document.createElement("div");
       container.innerHTML = raw;
       return container.textContent?.trim() || "";
+    };
+
+    const readSectionContainerText = (root: Element | null | undefined): string | undefined => {
+      if (!root) return undefined;
+      const candidates = [
+        ".markdown",
+        ".metafield-rich_text_field",
+        ".rte",
+        "[class*='rich_text']",
+        "[class*='rich-text']",
+        ".accordion__content",
+        ".accordion-content",
+        ".accordion-content-wrap",
+        ".accordion-content-wrap-inner",
+      ];
+      for (const selector of candidates) {
+        const node = root.querySelector(selector);
+        const text = normalizeSectionText((node as HTMLElement | null)?.innerText || node?.textContent || "");
+        if (text) return text;
+      }
+      const text = normalizeSectionText((root as HTMLElement).innerText || root.textContent || "");
+      return text || undefined;
     };
 
     const looksLikeIngredientModalText = (raw: string) =>
@@ -3657,6 +3951,14 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
     const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
       .map((s) => s.textContent || "")
       .filter(Boolean);
+    const embeddedProductScripts = Array.from(document.querySelectorAll("script"))
+      .map((script) => script.textContent || "")
+      .filter((text) =>
+        /window\.reelUp_productJSON\s*=|_RSConfig\.product\s*=|window\.corner\.sessionData\.product\s*=|corner\.sessionData\.product\s*=/i.test(
+          text,
+        ),
+      )
+      .slice(0, 8);
 
     const priceSelectors = [
       '[itemprop="price"]',
@@ -3939,8 +4241,8 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       }
     }
 
-    let howToUseText = howToUseContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
-    let ingredientsMarkdownText = ingredientsContent?.querySelector(".markdown")?.textContent?.trim() || undefined;
+    let howToUseText = readSectionContainerText(howToUseContent);
+    let ingredientsMarkdownText = readSectionContainerText(ingredientsContent);
     let ingredientsDisclaimerText =
       ingredientsContent?.querySelector(".product-details-accordions-ingredients-disclaimer")?.textContent?.trim() || undefined;
 
@@ -4252,6 +4554,9 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
             ".tab2-container",
             ".tab3-html-wrapper",
             ".tab3-container",
+            ".tab-panel",
+            ".left-section-routine",
+            ".routine-content",
             "[id*='__new_custom_pdp']",
             "[id*='section_custom_content']",
             ".product__description",
@@ -4417,6 +4722,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       imageCandidates,
       contentImageCandidates,
       scripts,
+      embeddedProductScripts,
       domVariants,
       productDetailsText,
       howToUseText,
@@ -4498,11 +4804,17 @@ function buildProductFromPageSignals(params: {
   );
 
   const imageRaw = primaryProductObj?.image ?? productGroupObj?.image;
+  const embeddedShopifyPayloadFields = extractShopifyEmbeddedProductPayloadPdpFields(extracted.embeddedProductScripts || []);
   const contentImageUrls = dedupeStringList(
     resolveStructuredImageUrls(params.baseUrl, extracted.contentImageCandidates),
   );
   const productImageUrls = dedupeStringList([
-    ...resolveStructuredImageUrls(params.baseUrl, [imageRaw, productGroupObj?.image, extracted.imageCandidates]),
+    ...resolveStructuredImageUrls(params.baseUrl, [
+      imageRaw,
+      productGroupObj?.image,
+      embeddedShopifyPayloadFields.imageUrls,
+      extracted.imageCandidates,
+    ]),
     ...variantProducts.flatMap((variantProduct) => resolveStructuredImageUrls(params.baseUrl, variantProduct.image)),
     ...contentImageUrls,
   ]);
@@ -4512,7 +4824,7 @@ function buildProductFromPageSignals(params: {
     (typeof primaryProductObj?.description === "string" ? primaryProductObj.description : undefined) ||
     (typeof productGroupObj?.description === "string" ? productGroupObj.description : undefined);
   const mergedDetailedOverview =
-    cleanText([extracted.productDetailsText, paulasChoiceAppData?.descriptionRaw].filter(Boolean).join("\n\n")) || undefined;
+    cleanText([extracted.productDetailsText, embeddedShopifyPayloadFields.descriptionRaw, paulasChoiceAppData?.descriptionRaw].filter(Boolean).join("\n\n")) || undefined;
 
   const officialText = choosePreferredProductOverview({
     structured: structuredOverview,
@@ -4532,18 +4844,22 @@ function buildProductFromPageSignals(params: {
   const faqItems = Array.isArray(extracted.faqItems) ? extracted.faqItems : [];
   const mergedDetailsSections = dedupeDetailSections([
     ...(Array.isArray(extracted.detailsSections) ? extracted.detailsSections : []),
+    ...embeddedShopifyPayloadFields.detailsSections,
     ...(paulasChoiceAppData?.detailsSections || []),
   ]);
   const howToUseText =
     (typeof extracted.howToUseText === "string" ? extracted.howToUseText.trim() : undefined) ||
+    embeddedShopifyPayloadFields.howToUseRaw ||
     paulasChoiceAppData?.howToUseRaw;
   const ingredientsMarkdownText =
     (typeof extracted.ingredientsMarkdownText === "string" ? extracted.ingredientsMarkdownText.trim() : undefined) ||
+    embeddedShopifyPayloadFields.ingredientsRaw ||
     paulasChoiceAppData?.ingredientsRaw;
   const ingredientsDisclaimerText =
     typeof extracted.ingredientsDisclaimerText === "string" ? extracted.ingredientsDisclaimerText.trim() : undefined;
   const activeIngredientsText =
     (typeof extracted.activeIngredientsText === "string" ? extracted.activeIngredientsText.trim() : undefined) ||
+    embeddedShopifyPayloadFields.activeIngredientsRaw ||
     paulasChoiceAppData?.activeIngredientsRaw;
   const derivedPdpBodies = deriveProductPdpModuleBodies({
     ingredientsMarkdownText,
@@ -4563,6 +4879,11 @@ function buildProductFromPageSignals(params: {
         officialText && cleanText(officialText) === cleanText(structuredOverview) ? "structured_overview" : "",
         officialText &&
         cleanText(officialText) === cleanText(mergedDetailedOverview) &&
+        Boolean(embeddedShopifyPayloadFields.descriptionRaw)
+          ? "embedded_shopify_product_payload"
+          : "",
+        officialText &&
+        cleanText(officialText) === cleanText(mergedDetailedOverview) &&
         Boolean(paulasChoiceAppData?.descriptionRaw)
           ? "paulaschoice_appdata_overview"
           : "",
@@ -4580,7 +4901,9 @@ function buildProductFromPageSignals(params: {
         ingredientsMarkdownText && looksLikeFullIngredientListText(ingredientsMarkdownText)
           ? cleanText(ingredientsMarkdownText) === cleanText(paulasChoiceAppData?.ingredientsRaw)
             ? "paulaschoice_appdata_all_ingredients"
-            : "page_ingredients_section"
+            : cleanText(ingredientsMarkdownText) === cleanText(embeddedShopifyPayloadFields.ingredientsRaw)
+              ? "embedded_shopify_product_payload"
+              : "page_ingredients_section"
           : "",
         !ingredientsMarkdownText && derivedPdpBodies.ingredientsRaw
           ? "details_section_ingredients"
@@ -4590,7 +4913,9 @@ function buildProductFromPageSignals(params: {
         activeIngredientsText
           ? cleanText(activeIngredientsText) === cleanText(paulasChoiceAppData?.activeIngredientsRaw)
             ? "paulaschoice_appdata_key_ingredients"
-            : "page_active_ingredients_section"
+            : cleanText(activeIngredientsText) === cleanText(embeddedShopifyPayloadFields.activeIngredientsRaw)
+              ? "embedded_shopify_product_payload"
+              : "page_active_ingredients_section"
           : "",
         !activeIngredientsText && derivedPdpBodies.activeIngredientsRaw
           ? "details_section_active_ingredients"
@@ -4600,7 +4925,9 @@ function buildProductFromPageSignals(params: {
         howToUseText
           ? cleanText(howToUseText) === cleanText(paulasChoiceAppData?.howToUseRaw)
             ? "paulaschoice_appdata_how_to_use"
-            : "page_how_to_use_section"
+            : cleanText(howToUseText) === cleanText(embeddedShopifyPayloadFields.howToUseRaw)
+              ? "embedded_shopify_product_payload"
+              : "page_how_to_use_section"
           : "",
         !howToUseText && derivedPdpBodies.howToUseRaw
           ? "details_section_how_to_use"
@@ -4800,6 +5127,7 @@ async function scrapeProductPage(params: {
 }): Promise<ExtractedProduct | null> {
   const page = await params.browser.newPage();
   let prefetchedProduct: ExtractedProduct | null = null;
+  let prefetchRequestHandler: ((request: HTTPRequest) => void) | null = null;
 
   const expandRelevantPdpModules = async () => {
     await page.evaluate(() => {
@@ -4850,6 +5178,26 @@ async function scrapeProductPage(params: {
       .catch(() => undefined);
   };
 
+  const enablePrefetchRequestBlocking = async () => {
+    if (prefetchRequestHandler) return;
+    await page.setRequestInterception(true);
+    prefetchRequestHandler = (request: HTTPRequest) => {
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+        void request.continue().catch(() => undefined);
+        return;
+      }
+      void request.abort().catch(() => undefined);
+    };
+    page.on("request", prefetchRequestHandler);
+  };
+
+  const disablePrefetchRequestBlocking = async () => {
+    if (!prefetchRequestHandler) return;
+    page.off("request", prefetchRequestHandler);
+    prefetchRequestHandler = null;
+    await page.setRequestInterception(false).catch(() => undefined);
+  };
+
   try {
     if (params.verbose) params.log("info", `Scraping: ${params.url}`);
     await preparePage(page, {
@@ -4860,8 +5208,10 @@ async function scrapeProductPage(params: {
     const prefetched = await fetchHtmlViaNativeRequest(params.url, params.diagnostics!);
     const prefetchedSourceUrl = prefetched.finalUrl || params.url;
     if (prefetched.body) {
+      await enablePrefetchRequestBlocking();
       await page.setContent(injectBaseHref(prefetched.body, prefetchedSourceUrl), { waitUntil: "domcontentloaded" });
       const prefetchedExtracted = await extractPageSignals(page);
+      await disablePrefetchRequestBlocking();
       const prefetchedLooksLikeProduct =
         looksLikeProductPageHtml(prefetched.body) ||
         (isLikelyProductUrlShared(prefetchedSourceUrl, params.baseUrl) &&
@@ -4882,6 +5232,7 @@ async function scrapeProductPage(params: {
       if (prefetchedProduct && !productHasMissingPdpFields(prefetchedProduct)) return prefetchedProduct;
     }
 
+    await disablePrefetchRequestBlocking();
     const visit = await gotoPageOrThrow(page, {
       url: params.url,
       baseUrl: params.baseUrl,
@@ -4943,6 +5294,7 @@ async function scrapeProductPage(params: {
     params.log("warn", `Failed to scrape ${params.url}: ${message}`);
     return null;
   } finally {
+    await disablePrefetchRequestBlocking();
     await page.close().catch(() => undefined);
   }
 }

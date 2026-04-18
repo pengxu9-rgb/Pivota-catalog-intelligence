@@ -885,6 +885,14 @@ test("extractProductFromHtmlSnapshot ignores navigation menus masquerading as PD
             <summary>Benefits</summary>
             <p>Highly pigmented pressed powder shades blend smoothly and build from soft definition to smoky looks.</p>
           </details>
+          <details>
+            <summary>How To Use</summary>
+            <p>Apply with a fluffy eye brush.</p>
+          </details>
+          <details>
+            <summary>How To Use</summary>
+            <p>Apply   with a fluffy eye brush.</p>
+          </details>
         </body>
       </html>
     `,
@@ -894,7 +902,7 @@ test("extractProductFromHtmlSnapshot ignores navigation menus masquerading as PD
 
   assert.deepEqual(
     (product?.details_sections || []).map((section) => section.heading),
-    ["Benefits"],
+    ["Benefits", "How to Use"],
   );
   assert.doesNotMatch((product?.details_sections || []).map((section) => section.body).join("\n"), /Our Patents/i);
 });
@@ -2885,7 +2893,7 @@ test("extractPaulasChoiceAppDataPdpFields recovers product modules from appData 
   assert.equal(fields?.howToUseRaw, "Apply after cleansing and do not rinse.");
   assert.deepEqual(
     fields?.detailsSections.map((section) => section.heading),
-    ["What is it", "Benefits", "Key Ingredients", "All Ingredients", "How to use", "Research"],
+    ["What is it", "Benefits", "Key Ingredients", "All Ingredients", "How to Use", "Research"],
   );
 });
 

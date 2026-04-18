@@ -1424,7 +1424,8 @@ function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
     const body = cleanText(section?.body);
     const sourceKind = cleanText(section?.source_kind) || "unknown";
     if (!heading || !body) continue;
-    const key = `${heading.toLowerCase()}|${body.toLowerCase()}`;
+    const bodyKey = body.replace(/\s+/g, " ").trim().toLowerCase();
+    const key = `${heading.toLowerCase()}|${bodyKey}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({
@@ -1460,7 +1461,7 @@ function normalizeDetailSectionHeading(value: string | undefined) {
   if (/^(?:clinical(?: results?| claims?)?|results?|proven results?)$/i.test(heading)) {
     return "Clinical Results";
   }
-  if (/^(?:how to apply|directions?|usage|how[-\s]*to)$/i.test(heading)) return "How to Use";
+  if (/^(?:how to use|how to apply|directions?|usage|how[-\s]*to)$/i.test(heading)) return "How to Use";
   if (/^(?:ingredients?|ingredients and safety|ingredient list|full ingredients?|full ingredient list|inci)$/i.test(heading)) {
     return "Ingredients";
   }

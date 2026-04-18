@@ -665,6 +665,9 @@ function looksLikeNavigationMenuSection(heading: string, body: string) {
   if (/^(?:about us|our story|our standards|our patents|learn more|customer service|shipping|returns?)$/i.test(heading)) {
     return true;
   }
+  if (/\b(?:about the brands|student discounts?|clara lionel foundation|careers?)\b/i.test(body)) {
+    return true;
+  }
 
   const navMatches =
     body.match(
@@ -785,6 +788,36 @@ function extractHeroDescriptionSections(html: string) {
   return dedupeDetailSections(sections);
 }
 
+function extractShopifyProductUseContents(html: string) {
+  const productUseTag = html.match(/<(?:div|section)\b[^>]*\bis=["']product-use["'][^>]*>/i)?.[0] || "";
+  const contents = extractHtmlAttribute(productUseTag, "contents");
+  if (!contents) return "";
+
+  const decoded = safeDecodeURIComponent(contents.replace(/\+/g, " "));
+  try {
+    const parsed = JSON.parse(decoded);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item) => (typeof item === "string" ? item : ""))
+        .filter(Boolean)
+        .join("\n\n");
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+function decodeUrlEncodedHtmlAttribute(value: string) {
+  const decodedEntities = decodeHtmlEntities(value || "");
+  const decodedHtml = decodeHtmlEntities(safeDecodeURIComponent(decodedEntities.replace(/\+/g, " ")));
+  const productUseContents = extractShopifyProductUseContents(decodedHtml);
+  return (productUseContents || decodedHtml).replace(
+    /<div\b[^>]*class=["'][^"']*\bproduct-info__regulatory\b[\s\S]*$/i,
+    "",
+  );
+}
+
 function extractHtmlProductTabSections(html: string) {
   const headingsByTab = new Map<string, string>();
   for (const match of html.matchAll(
@@ -849,6 +882,19 @@ function extractHtmlDetailSections(html: string) {
     /<button\b[^>]*(?:aria-label|title)=["']([^"']+)["'][^>]*>[\s\S]*?<\/button>[\s\S]{0,12000}?<div\b[^>]*class=["'][^"']*accordion__content[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi,
   )) {
     pushRelevantHtmlSection(sections, match[1] || "", match[2] || "", "accordion_button_html");
+  }
+
+  for (const match of html.matchAll(/<(?:div|section)\b[^>]*\bis=["']accordion["'][^>]*>/gi)) {
+    const tag = match[0] || "";
+    const heading = extractHtmlAttribute(tag, "title");
+    const content = extractHtmlAttribute(tag, "content");
+    if (!heading || !content) continue;
+    pushRelevantHtmlSection(
+      sections,
+      heading,
+      decodeUrlEncodedHtmlAttribute(content),
+      "shopify_encoded_accordion_attr",
+    );
   }
 
   for (const match of html.matchAll(/<accordion-wrap\b[^>]*>([\s\S]*?)<\/accordion-wrap>/gi)) {

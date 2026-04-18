@@ -1253,6 +1253,97 @@ test("extractStaticHtmlPdpFallbackProduct captures Fenty-style snapshot content 
   assert.deepEqual(fallback?.image_urls, ["https://cdn.example.com/hydra-vizor.jpg"]);
 });
 
+test("extractProductFromHtmlSnapshot parses Fenty encoded accordion content", () => {
+  const howToContent = encodeURIComponent(`
+    <div class="product__content-container">
+      <p>Use day and night on clean, dry skin. Apply to palms or cotton pad, then pat and press over your face.</p>
+      <div class="product-info__regulatory">
+        <p>AVOID CONTACT WITH EYES. KEEP OUT OF REACH OF CHILDREN.</p>
+      </div>
+    </div>
+  `).replace(/%20/g, "+");
+  const detailsContent = encodeURIComponent(`
+    <div class="product-detail__content">
+      <p>This BHA-powered purifying toner helps unclog pores, brightens, hydrates skin and keeps surface oil in check.</p>
+    </div>
+  `).replace(/%20/g, "+");
+  const ingredientsContent = encodeURIComponent(`
+    <div class="product-ingredients-modal__content">
+      <p>WATER, GLYCERIN, SALICYLIC ACID, ALOE BARBADENSIS LEAF JUICE.</p>
+    </div>
+  `).replace(/%20/g, "+");
+
+  const product = extractProductFromHtmlSnapshot({
+    brand: "Fenty Beauty",
+    url: "https://fentybeauty.com/products/cherry-dub-bha-toner-with-salicylic-acid-aloe-juice",
+    html: `
+      <html>
+        <head>
+          <meta property="og:title" content="Cherry Dub BHA Toner with Salicylic Acid + Aloe Juice" />
+          <meta name="description" content="BHA-powered purifying toner." />
+          <meta property="og:image" content="https://cdn.example.com/cherry-dub.jpg" />
+        </head>
+        <body>
+          <h1>Cherry Dub BHA Toner with Salicylic Acid + Aloe Juice</h1>
+          <section class="product-detail product__content">
+            <div is="accordion" title-class="h3 bold black" title="Details" content-class="accordion--product" content="${detailsContent}"></div>
+            <div is="accordion" title-class="h3 bold black" title="How To" content-class="accordion--product" content="${howToContent}"></div>
+            <div is="accordion" title-class="h3 bold black" title="Ingredients" content-class="accordion--product" content="${ingredientsContent}"></div>
+            <div is="accordion" title-class="h3 bold black" title="Details" content-class="accordion--product" content="${encodeURIComponent('<p>About the Brands</p><p>Student Discounts</p><p>Careers</p>').replace(/%20/g, '+')}"></div>
+          </section>
+        </body>
+      </html>
+    `,
+  });
+
+  assert.ok(product);
+  assert.equal(product?.details_sections?.some((section) => section.source_kind === "shopify_encoded_accordion_attr"), true);
+  assert.match(product?.description_raw || "", /BHA-powered purifying toner helps unclog pores/i);
+  assert.match(product?.how_to_use_raw || "", /Use day and night on clean, dry skin/i);
+  assert.doesNotMatch(product?.how_to_use_raw || "", /KEEP OUT OF REACH/i);
+  assert.match(product?.ingredients_raw || "", /SALICYLIC ACID/i);
+});
+
+test("extractProductFromHtmlSnapshot parses Fenty product-use encoded how-to content", () => {
+  const productUseBody = encodeURIComponent(JSON.stringify([
+    "<p>Glide pencil tip along the lash line. For a smoky eye look, immediately smudge with your finger tip.</p><p>Twist up as needed. Pencil does not retract.</p>",
+  ])).replace(/%20/g, "+");
+  const howToContent = encodeURIComponent(`
+    <div is="product-use" contents="${productUseBody}">
+      <div class="product-use__media">
+        <svg><title>Play</title></svg>
+      </div>
+      <div class="product-use__content-inner" v-html="item.body" />
+    </div>
+  `).replace(/%20/g, "+");
+
+  const product = extractProductFromHtmlSnapshot({
+    brand: "Fenty Beauty",
+    url: "https://fentybeauty.com/products/flypencil-longwear-pencil-eyeliner-bachelor-pad",
+    html: `
+      <html>
+        <head>
+          <meta property="og:title" content="Flypencil Longwear Pencil Eyeliner" />
+          <meta name="description" content="Longwear pencil eyeliner." />
+          <meta property="og:image" content="https://cdn.example.com/flypencil.jpg" />
+        </head>
+        <body>
+          <h1>Flypencil Longwear Pencil Eyeliner</h1>
+          <section class="product-detail product__content">
+            <div is="accordion" title="How To" content="${howToContent}"></div>
+          </section>
+        </body>
+      </html>
+    `,
+  });
+
+  assert.ok(product);
+  assert.match(product?.how_to_use_raw || "", /Glide pencil tip along the lash line/i);
+  assert.match(product?.how_to_use_raw || "", /Twist up as needed/i);
+  assert.doesNotMatch(product?.how_to_use_raw || "", /Play/i);
+  assert.doesNotMatch(product?.how_to_use_raw || "", /product-use__media/i);
+});
+
 test("deriveProductPdpModuleBodies recognizes Bioderma-style Usage instructions and Composition headings", () => {
   const derived = deriveProductPdpModuleBodies({
     detailsSections: [

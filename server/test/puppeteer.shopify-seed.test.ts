@@ -657,6 +657,133 @@ test("enrichDirectShopifyPdpResponse uses native PDP HTML as primary direct Shop
   assert.match(merged.products[0]?.how_to_use_raw || "", /Apply to damp face/i);
 });
 
+test("enrichDirectShopifyPdpResponse uses Shopify metadata view before browser enrichment", async () => {
+  const response = {
+    brand: "Kylie Cosmetics",
+    domain: "https://kyliecosmetics.com/products/plumping-powder-matte-lip",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Plumping Powder Matte Lip",
+        url: "https://kyliecosmetics.com/products/plumping-powder-matte-lip",
+        image_url: "https://cdn.example.com/kylie-lip.jpg",
+        image_urls: ["https://cdn.example.com/kylie-lip.jpg"],
+        variant_skus: ["KC805"],
+        variants: [
+          {
+            id: "46793745989874",
+            sku: "KC805",
+            url: "https://kyliecosmetics.com/products/plumping-powder-matte-lip",
+            option_name: "Shade",
+            option_value: "nude mood",
+            price: "22.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "https://cdn.example.com/kylie-lip.jpg",
+            image_urls: ["https://cdn.example.com/kylie-lip.jpg"],
+            ad_copy: "",
+          },
+        ],
+        ...buildProductPdpFields({
+          descriptionRaw: "Create a plump, perfected pout.",
+        }),
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 22, max: 22, avg: 22 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "kyliecosmetics.com",
+      resolved_base_url: "https://kyliecosmetics.com",
+      discovery_strategy: "shopify_json",
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  let browserCalled = false;
+  let merged:
+    | Awaited<ReturnType<typeof enrichDirectShopifyPdpResponse>>
+    | undefined;
+
+  await withMockFetch(
+    {
+      "https://kyliecosmetics.com/products/plumping-powder-matte-lip?view=metadata": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          product: {
+            id: 8581653397746,
+            title: "Plumping Powder Matte Lip",
+            handle: "plumping-powder-matte-lip",
+            url: "/products/plumping-powder-matte-lip",
+            variants: [{ id: 46793745989874, sku: "KC805", title: "nude mood" }],
+            options: [{ name: "shade" }],
+            images: ["//kyliecosmetics.com/cdn/shop/files/kylie-lip.jpg?v=1"],
+            featured_image: "//kyliecosmetics.com/cdn/shop/files/kylie-lip.jpg?v=1",
+          },
+          accordion_product_details:
+            "<p>My Plumping Powder Matte Lip is your go-to for creating a plump pout with a lightweight, matte finish.</p>",
+          accordion_ingredient_details: null,
+          variant_data: [
+            {
+              ingredient_detail:
+                "ISODODECANE, C13-15 ALKANE, SILICA, KAOLIN, DIMETHICONE/VINYL DIMETHICONE CROSSPOLYMER, CI 77491.",
+            },
+          ],
+        }),
+      },
+    },
+    async () => {
+      merged = await enrichDirectShopifyPdpResponse({
+        brand: "Kylie Cosmetics",
+        baseUrl: "https://kyliecosmetics.com",
+        seedUrl: "https://kyliecosmetics.com/products/plumping-powder-matte-lip",
+        response,
+        diagnostics: response.diagnostics,
+        log: () => undefined,
+        htmlFetcher: async () => ({
+          status: 200,
+          finalUrl: "https://kyliecosmetics.com/products/plumping-powder-matte-lip",
+          body: `
+            <html>
+              <head><title>Plumping Powder Matte Lip</title></head>
+              <body>
+                <h1>Plumping Powder Matte Lip</h1>
+                <div class="two-row-img-text-block__content">
+                  <h3>how to use</h3>
+                  <p>Using the doe foot applicator, define and coat lips with an even layer.</p>
+                </div>
+              </body>
+            </html>
+          `,
+        }),
+        browserRunner: async () => {
+          browserCalled = true;
+          throw new Error("browser should not be called");
+        },
+      });
+    },
+  );
+
+  assert.equal(browserCalled, false);
+  assert.equal(merged?.products[0]?.field_capture_status?.details_sections, "present");
+  assert.equal(merged?.products[0]?.field_capture_status?.ingredients_raw, "present");
+  assert.equal(merged?.products[0]?.field_capture_status?.how_to_use_raw, "present");
+  assert.match(merged?.products[0]?.ingredients_raw || "", /ISODODECANE/i);
+  assert.match(merged?.products[0]?.how_to_use_raw || "", /doe foot applicator/i);
+});
+
 test("enrichDirectShopifyPdpResponse keeps browser enrichment behind native PDP HTML", async () => {
   const logs: Array<{ type: string; msg: string }> = [];
   const response = {

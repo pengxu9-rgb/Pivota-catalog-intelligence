@@ -902,6 +902,23 @@ function extractHtmlDetailSections(html: string) {
   }
 
   for (const match of html.matchAll(
+    /<div\b[^>]*class=["'][^"']*\btwo-row-img-text-block__content\b[^"']*["'][^>]*>\s*<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>([\s\S]*?)<\/div>/gi,
+  )) {
+    pushRelevantHtmlSection(sections, match[2] || "", match[3] || "", "two_row_image_text_html");
+  }
+
+  for (const match of html.matchAll(
+    /<div\b[^>]*class=["'][^"']*\bcustomer-results\b[^"']*["'][^>]*>([\s\S]*?)(?=<\/section>|<div\b[^>]+id=["']shopify-section)/gi,
+  )) {
+    const block = match[1] || "";
+    const heading = block.match(/<h([1-6])\b[^>]*class=["'][^"']*\bcustomer-results__title\b[^"']*["'][^>]*>([\s\S]*?)<\/h\1>/i)?.[2] || "";
+    const body =
+      block.match(/<div\b[^>]*class=["'][^"']*\bcustomer-results__content\b[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/i)?.[1] ||
+      block;
+    pushRelevantHtmlSection(sections, heading, body, "customer_results_html");
+  }
+
+  for (const match of html.matchAll(
     /<div\b[^>]*class=["'][^"']*\bprhow-section-title\b[^"']*["'][^>]*>\s*(How\s+to\s+Use|How\s+to\s+Apply|Directions?|Usage Instructions?)\s*<\/div>[\s\S]{0,8000}?<div\b[^>]*class=["'][^"']*\bprhow-txt\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi,
   )) {
     pushRelevantHtmlSection(sections, match[1] || "How to Use", match[2] || "", "skin1004_prhow_rich_text_html");
@@ -2666,6 +2683,8 @@ type ShopifyProduct = {
   id: number;
   title: string;
   handle: string;
+  url?: string;
+  description?: string;
   body_html?: string;
   variants: ShopifyVariant[];
   options?: Array<{ name?: string }>;
@@ -2690,6 +2709,15 @@ type ShopifyImage = {
   src?: string;
   url?: string;
   variant_ids?: number[];
+};
+
+type ShopifyMetadataViewResponse = {
+  product?: ShopifyProduct & {
+    content?: string;
+  };
+  accordion_product_details?: string | null;
+  accordion_ingredient_details?: string | null;
+  variant_data?: Array<Record<string, unknown>>;
 };
 
 const SHOPIFY_FEED_NON_PRODUCT_TITLE_RE =
@@ -2729,6 +2757,77 @@ function extractCurrencyHintFromHtml(html: string): ExtractedVariant["currency"]
   }
 
   return null;
+}
+
+function buildShopifyMetadataViewUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set("view", "metadata");
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function extractShopifyMetadataIngredientRaw(metadata: ShopifyMetadataViewResponse) {
+  const accordionIngredients = cleanHtmlText(metadata.accordion_ingredient_details || undefined);
+  if (accordionIngredients) return accordionIngredients;
+
+  const variantIngredientDetails = (metadata.variant_data || [])
+    .map((entry) => cleanHtmlText(typeof entry?.ingredient_detail === "string" ? entry.ingredient_detail : undefined))
+    .filter(Boolean);
+  return (
+    variantIngredientDetails.find((text) => looksLikeFullIngredientListText(text)) ||
+    variantIngredientDetails.sort((a, b) => b.length - a.length)[0] ||
+    ""
+  );
+}
+
+function extractProductFromShopifyMetadataView(params: {
+  metadata: ShopifyMetadataViewResponse;
+  baseUrl: string;
+  fallbackUrl: string;
+}): ExtractedProduct | null {
+  const product = params.metadata.product;
+  if (!product || !cleanText(product.title)) return null;
+
+  const detailsSections: ExtractedProductDetailSection[] = [];
+  const detailsBody = cleanHtmlText(params.metadata.accordion_product_details || undefined);
+  const ingredientsRaw = extractShopifyMetadataIngredientRaw(params.metadata);
+
+  if (detailsBody) {
+    pushRelevantHtmlSection(detailsSections, "Details", detailsBody, "shopify_metadata_view_details");
+  }
+  if (ingredientsRaw) {
+    pushRelevantHtmlSection(detailsSections, "Ingredients", ingredientsRaw, "shopify_metadata_view_ingredients");
+  }
+
+  const productUrlPath = product.url || (product.handle ? `/products/${product.handle}` : params.fallbackUrl);
+  const productUrl = canonicalizeUrlShared(toAbsoluteUrlShared(params.baseUrl, productUrlPath), params.baseUrl);
+  const imageUrls = resolveShopifyProductImageUrls(params.baseUrl, product);
+  const pdpFields = buildProductPdpFields({
+    descriptionRaw: detailsBody || cleanHtmlText(product.description || product.body_html || product.content),
+    detailsSections,
+    ingredientsRaw,
+    fieldSources: {
+      description_raw: detailsBody ? ["shopify_metadata_view_details"] : product.description ? ["shopify_metadata_view_product"] : [],
+      details_sections: detailsSections.map((section) => section.source_kind),
+      ingredients_raw: ingredientsRaw ? ["shopify_metadata_view_ingredients"] : [],
+      active_ingredients_raw: [],
+      how_to_use_raw: [],
+      faq_items: [],
+    },
+  });
+
+  return {
+    title: cleanText(product.title),
+    url: productUrl,
+    image_url: imageUrls[0] || "",
+    image_urls: imageUrls,
+    variant_skus: dedupeStringList((product.variants || []).map((variant) => cleanText(variant.sku || String(variant.id)))),
+    variants: [],
+    ...pdpFields,
+  };
 }
 
 async function fetchShopifyCurrencyHint(
@@ -2965,6 +3064,37 @@ export async function enrichDirectShopifyPdpResponse(params: {
         params.log("success", `Merged Shopify PDP modules from native HTML: ${enrichmentUrl}`);
         return htmlMerged;
       }
+    }
+  }
+
+  const metadataViewUrl = buildShopifyMetadataViewUrl(enrichmentUrl);
+  if (metadataViewUrl) {
+    try {
+      const metadataView = await fetchTextTracked(metadataViewUrl, {}, params.diagnostics);
+      const metadata = metadataView.body
+        ? (JSON.parse(metadataView.body) as ShopifyMetadataViewResponse)
+        : null;
+      const metadataProduct = metadata
+        ? extractProductFromShopifyMetadataView({
+            metadata,
+            baseUrl: params.baseUrl,
+            fallbackUrl: enrichmentUrl,
+          })
+        : null;
+      if (metadataProduct) {
+        responseWithDirectPdpSignals = mergeShopifyDirectPdpSignals(params.brand, responseWithDirectPdpSignals, metadataProduct);
+        const mergedProduct = responseWithDirectPdpSignals.products[0];
+        if (countRecoveredPdpFields(mergedProduct) > countRecoveredPdpFields(product)) {
+          params.log("info", `Merged Shopify PDP fields from metadata view: ${metadataViewUrl}`);
+        }
+        if (mergedProduct && !productHasMissingPdpFields(mergedProduct)) {
+          params.log("success", `Merged Shopify PDP modules from metadata view: ${metadataViewUrl}`);
+          return responseWithDirectPdpSignals;
+        }
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error || "unknown_error");
+      params.log("warn", `Shopify metadata view enrichment failed for PDP: ${msg}`);
     }
   }
 
@@ -4803,6 +4933,8 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
             ".tab-panel",
             ".left-section-routine",
             ".routine-content",
+            ".two-row-img-text-block__content",
+            ".customer-results",
             "[id*='__new_custom_pdp']",
             "[id*='section_custom_content']",
             ".product__description",

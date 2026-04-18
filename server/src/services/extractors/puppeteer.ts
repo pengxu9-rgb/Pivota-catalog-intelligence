@@ -1468,6 +1468,7 @@ function normalizeDetailSectionHeading(value: string | undefined) {
   if (/^(?:faq|frequently asked questions?|q(?:uestions)?\s*&\s*a|questions?)$/i.test(heading)) {
     return "FAQ";
   }
+  if (/^technology$/i.test(heading)) return "Technology";
   return heading;
 }
 

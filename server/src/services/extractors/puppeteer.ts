@@ -4859,10 +4859,14 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
             button.closest(".pv-extra-details__accordion") ||
             button.closest(".acc") ||
             button.parentElement;
+          const nextSiblingText = normalizeSectionText(
+            (button.nextElementSibling as HTMLElement | null)?.innerText || button.nextElementSibling?.textContent || "",
+          );
           const content =
-            wrapper?.querySelector?.(".accordion-content-wrap-inner, .accordion-content-wrap, .acc__menu, .pv-extra-details__accordion-body") ||
-            button.nextElementSibling;
-          body = (content as HTMLElement | null)?.innerText || content?.textContent || "";
+            nextSiblingText
+              ? button.nextElementSibling
+              : wrapper?.querySelector?.(".accordion-content-wrap-inner, .accordion-content-wrap, .acc__menu, .pv-extra-details__accordion-body");
+          body = nextSiblingText || (content as HTMLElement | null)?.innerText || content?.textContent || "";
         }
         pushSection(heading, body, "accordion_button");
       }

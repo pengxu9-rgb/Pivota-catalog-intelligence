@@ -2156,6 +2156,33 @@ test("buildProductPdpFields splits delimited PDP description soup into structure
   });
 });
 
+test("buildProductPdpFields keeps full accordion body over truncated duplicate heading siblings", () => {
+  const fields = buildProductPdpFields({
+    detailsSections: [
+      {
+        heading: "How to Use",
+        body:
+          "Swipe over bare lips for a glossy wash of color, or dab over your favorite lipstick to add instant shine.\n\nComplete your look with the Stay Vulnerable Melting Blush.",
+        source_kind: "accordion_button",
+      },
+      {
+        heading: "How to Use",
+        body: "Swipe over bare lips for a glossy wash of color,...\n\nMore",
+        source_kind: "heading_sibling",
+      },
+    ],
+  });
+
+  assert.deepEqual(fields.details_sections, [
+    {
+      heading: "How to Use",
+      body:
+        "Swipe over bare lips for a glossy wash of color, or dab over your favorite lipstick to add instant shine.\n\nComplete your look with the Stay Vulnerable Melting Blush.",
+      source_kind: "accordion_button",
+    },
+  ]);
+});
+
 test("extractProductFromHtmlSnapshot parses Beauty of Joseon product tabs and modal details", () => {
   const product = extractProductFromHtmlSnapshot({
     html: `

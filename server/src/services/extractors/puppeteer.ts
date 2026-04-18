@@ -1427,6 +1427,18 @@ function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
     const bodyKey = body.replace(/\s+/g, "").toLowerCase();
     const key = `${heading.toLowerCase()}|${bodyKey}`;
     if (seen.has(key)) continue;
+    const comparableBody = comparableSectionBodyForContainment(body);
+    const duplicateIndex = out.findIndex((existing) => {
+      if (normalizeDetailSectionHeading(existing.heading).toLowerCase() !== heading.toLowerCase()) return false;
+      const existingComparableBody = comparableSectionBodyForContainment(existing.body);
+      if (existingComparableBody.length < 30 || comparableBody.length < 30) return false;
+      return existingComparableBody.includes(comparableBody) || comparableBody.includes(existingComparableBody);
+    });
+    if (duplicateIndex >= 0) {
+      const existingComparableBody = comparableSectionBodyForContainment(out[duplicateIndex]?.body);
+      if (existingComparableBody.length >= comparableBody.length) continue;
+      out.splice(duplicateIndex, 1);
+    }
     seen.add(key);
     out.push({
       heading,
@@ -1435,6 +1447,14 @@ function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
     });
   }
   return out;
+}
+
+function comparableSectionBodyForContainment(value: string | undefined) {
+  return cleanText(value)
+    .replace(/\b(?:see all ingredients|more)\b/gi, "")
+    .replace(/[.…]+/g, "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
 }
 
 function escapeRegex(value: string) {

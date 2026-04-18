@@ -2130,6 +2130,32 @@ test("choosePreferredProductOverview prefers line-broken tab descriptions over c
   );
 });
 
+test("buildProductPdpFields splits delimited PDP description soup into structured sections", () => {
+  const fields = buildProductPdpFields({
+    descriptionRaw:
+      "Indulge in 14 rich, warm hues in long-lasting, buttery soft formulas.\nHOW TO USE\nApply with a fluffy eye brush.\nDETAILS\nShades Included: Humble - antique white. Charmer - ballet pink.\nINGREDIENTS\nMica, Silica, Magnesium Stearate, Caprylic/Capric Triglyceride, Aqua/Water/Eau, Iron Oxides (CI 77491).",
+    fieldSources: {
+      description_raw: ["structured_overview"],
+    },
+  });
+
+  assert.equal(fields.description_raw, "Indulge in 14 rich, warm hues in long-lasting, buttery soft formulas.");
+  assert.deepEqual(
+    (fields.details_sections || []).map((section) => section.heading),
+    ["How to Use", "Details", "Ingredients"],
+  );
+  assert.equal(fields.how_to_use_raw, "Apply with a fluffy eye brush.");
+  assert.match(fields.ingredients_raw || "", /Aqua\/Water\/Eau/i);
+  assert.deepEqual(fields.field_capture_status, {
+    description_raw: "present",
+    details_sections: "present",
+    ingredients_raw: "present",
+    active_ingredients_raw: "missing",
+    how_to_use_raw: "present",
+    faq_items: "missing",
+  });
+});
+
 test("extractProductFromHtmlSnapshot parses Beauty of Joseon product tabs and modal details", () => {
   const product = extractProductFromHtmlSnapshot({
     html: `

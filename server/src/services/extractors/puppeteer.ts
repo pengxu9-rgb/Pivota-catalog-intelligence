@@ -1471,6 +1471,38 @@ function normalizeDetailSectionHeading(value: string | undefined) {
   return heading;
 }
 
+function splitDelimitedPdpDescriptionSections(value: string | undefined) {
+  const text = cleanText(value);
+  if (!text) return { overview: "", sections: [] as ExtractedProductDetailSection[] };
+
+  const headingPattern =
+    /(?:^|\n)\s*(HOW TO USE|HOW TO APPLY|DIRECTIONS|USAGE|DETAILS|PRODUCT DETAILS|INGREDIENTS|FULL INGREDIENTS|INGREDIENT LIST|KEY INGREDIENTS|BENEFITS|CLINICAL RESULTS|RESULTS|TECHNOLOGY)\s*:?\s*(?=\n|$)/gi;
+  const matches = Array.from(text.matchAll(headingPattern));
+  if (matches.length < 2) return { overview: text, sections: [] as ExtractedProductDetailSection[] };
+
+  const firstHeadingStart = matches[0]?.index ?? 0;
+  const overview = cleanText(text.slice(0, firstHeadingStart));
+  const sections: ExtractedProductDetailSection[] = [];
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index]!;
+    const nextMatch = matches[index + 1];
+    const start = (match.index ?? 0) + match[0].length;
+    const end = nextMatch?.index ?? text.length;
+    const heading = normalizeDetailSectionHeading(match[1]);
+    const body = cleanText(text.slice(start, end));
+    if (!heading || !body) continue;
+    sections.push({
+      heading,
+      body,
+      source_kind: "description_delimited_section",
+    });
+  }
+
+  const dedupedSections = dedupeDetailSections(sections);
+  if (dedupedSections.length < 2) return { overview: text, sections: [] as ExtractedProductDetailSection[] };
+  return { overview, sections: dedupedSections };
+}
+
 function normalizeFaqQuestion(value: string | undefined) {
   return cleanText(value)
     .replace(/^(?:q(?:uestion)?\s*[:/-]\s*)/i, "")
@@ -2229,12 +2261,29 @@ export function buildProductPdpFields(params: {
   faqItems?: ExtractedProductFaqItem[];
   fieldSources?: Partial<Record<keyof NonNullable<ExtractedProduct["field_capture_status"]>, string[]>>;
 }) {
-  const descriptionRaw = cleanText(params.descriptionRaw);
-  const detailsSections = dedupeDetailSections(params.detailsSections || []);
-  const ingredientsRaw = cleanText(params.ingredientsRaw);
-  const activeIngredientsRaw = cleanText(params.activeIngredientsRaw);
-  const howToUseRaw = cleanText(params.howToUseRaw);
+  const rawDescription = cleanText(params.descriptionRaw);
+  const delimitedDescription = splitDelimitedPdpDescriptionSections(rawDescription);
+  const descriptionRaw =
+    delimitedDescription.sections.length > 0 ? delimitedDescription.overview : rawDescription;
+  const detailsSections = dedupeDetailSections([
+    ...(params.detailsSections || []),
+    ...delimitedDescription.sections,
+  ]);
+  const derivedBodies = deriveProductPdpModuleBodies({
+    detailsSections,
+  });
+  const ingredientsRaw = cleanText(params.ingredientsRaw) || cleanText(derivedBodies.ingredientsRaw);
+  const activeIngredientsRaw = cleanText(params.activeIngredientsRaw) || cleanText(derivedBodies.activeIngredientsRaw);
+  const howToUseRaw = cleanText(params.howToUseRaw) || cleanText(derivedBodies.howToUseRaw);
   const faqItems = dedupeFaqItems(params.faqItems || []);
+  const derivedIngredientsSource =
+    !cleanText(params.ingredientsRaw) && derivedBodies.ingredientsRaw ? "details_section_ingredients" : "";
+  const derivedActiveIngredientsSource =
+    !cleanText(params.activeIngredientsRaw) && derivedBodies.activeIngredientsRaw
+      ? "details_section_active_ingredients"
+      : "";
+  const derivedHowToUseSource =
+    !cleanText(params.howToUseRaw) && derivedBodies.howToUseRaw ? "details_section_how_to_use" : "";
 
   return {
     ...(descriptionRaw ? { description_raw: descriptionRaw } : {}),
@@ -2252,11 +2301,20 @@ export function buildProductPdpFields(params: {
       faq_items: faqItems.length > 0 ? "present" : "missing",
     } as const,
     field_sources: {
-      description_raw: uniqueFieldSources(params.fieldSources?.description_raw || []),
-      details_sections: uniqueFieldSources(params.fieldSources?.details_sections || []),
-      ingredients_raw: uniqueFieldSources(params.fieldSources?.ingredients_raw || []),
-      active_ingredients_raw: uniqueFieldSources(params.fieldSources?.active_ingredients_raw || []),
-      how_to_use_raw: uniqueFieldSources(params.fieldSources?.how_to_use_raw || []),
+      description_raw: uniqueFieldSources([
+        ...(params.fieldSources?.description_raw || []),
+        delimitedDescription.sections.length > 0 && descriptionRaw ? "description_delimited_overview" : "",
+      ]),
+      details_sections: uniqueFieldSources([
+        ...(params.fieldSources?.details_sections || []),
+        ...delimitedDescription.sections.map((section) => section.source_kind),
+      ]),
+      ingredients_raw: uniqueFieldSources([...(params.fieldSources?.ingredients_raw || []), derivedIngredientsSource]),
+      active_ingredients_raw: uniqueFieldSources([
+        ...(params.fieldSources?.active_ingredients_raw || []),
+        derivedActiveIngredientsSource,
+      ]),
+      how_to_use_raw: uniqueFieldSources([...(params.fieldSources?.how_to_use_raw || []), derivedHowToUseSource]),
       faq_items: uniqueFieldSources(params.fieldSources?.faq_items || []),
     },
   };

@@ -661,6 +661,23 @@ function extractMetaTagContent(
   return "";
 }
 
+function looksLikeNavigationMenuSection(heading: string, body: string) {
+  if (/^(?:about us|our story|our standards|our patents|learn more|customer service|shipping|returns?)$/i.test(heading)) {
+    return true;
+  }
+
+  const navMatches =
+    body.match(
+      /\b(?:about us|our story|our standards|our patents|learn more|beauty pro|beauty affiliates?|affiliate program|customer service|contact us|shipping|returns?|privacy policy|terms of (?:service|use)|store locator|rewards?|refer a friend|careers?)\b/gi,
+    ) || [];
+  if (navMatches.length < 4) return false;
+
+  const productSignal = /\b(?:apply|ingredients?|formula|benefits?|skin|shade|finish|coverage|spf|fragrance|notes?|palette|brush|lip|lash|brow|serum|cream|cleanser|toner|moistur|sunscreen|mask|pigment|hydrating|exfoliat|smooth|soften)\b/i.test(
+    body,
+  );
+  return !productSignal || (navMatches.length >= 6 && body.length < 700);
+}
+
 function pushRelevantHtmlSection(
   sections: ExtractedProductDetailSection[],
   headingRaw: string,
@@ -671,6 +688,7 @@ function pushRelevantHtmlSection(
   if (/^how to$/i.test(heading)) heading = "How to Use";
   const body = cleanHtmlText(bodyRaw);
   if (!heading || !body) return;
+  if (looksLikeNavigationMenuSection(heading, body)) return;
   if (heading.length > 180) return;
   if (
     body.length > 12_000 &&

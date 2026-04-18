@@ -858,6 +858,47 @@ test("extractProductFromHtmlSnapshot parses Pixi accordion-wrap PDP sections", (
   assert.match(product?.field_sources?.details_sections?.join(","), /accordion_wrap_html/);
 });
 
+test("extractProductFromHtmlSnapshot ignores navigation menus masquerading as PDP detail sections", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <link rel="canonical" href="https://sigmabeauty.com/products/warm-neutrals-14-pc-palette" />
+          <meta name="description" content="A warm toned eyeshadow palette with wearable matte and shimmer shades." />
+          <meta property="og:image" content="https://sigmabeauty.com/cdn/shop/files/warm-neutrals.jpg" />
+        </head>
+        <body>
+          <h1>Warm Neutrals Eyeshadow Palette</h1>
+          <details>
+            <summary>Details</summary>
+            <ul>
+              <li>About Us</li>
+              <li>Our Story</li>
+              <li>Our Standards</li>
+              <li>Our Patents</li>
+              <li>Learn More</li>
+              <li>Sigma Beauty PRO</li>
+              <li>Sigma Beauty Affiliates</li>
+            </ul>
+          </details>
+          <details>
+            <summary>Benefits</summary>
+            <p>Highly pigmented pressed powder shades blend smoothly and build from soft definition to smoky looks.</p>
+          </details>
+        </body>
+      </html>
+    `,
+    url: "https://sigmabeauty.com/products/warm-neutrals-14-pc-palette",
+    baseUrl: "https://sigmabeauty.com",
+  });
+
+  assert.deepEqual(
+    (product?.details_sections || []).map((section) => section.heading),
+    ["Benefits"],
+  );
+  assert.doesNotMatch((product?.details_sections || []).map((section) => section.body).join("\n"), /Our Patents/i);
+});
+
 test("mergeShopifyDirectPdpFallback preserves Fenty-style description and active ingredient sections", () => {
   const response = {
     brand: "Fenty Beauty",

@@ -1424,7 +1424,7 @@ function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
     const body = cleanText(section?.body);
     const sourceKind = cleanText(section?.source_kind) || "unknown";
     if (!heading || !body) continue;
-    const bodyKey = body.replace(/\s+/g, " ").trim().toLowerCase();
+    const bodyKey = body.replace(/\s+/g, "").toLowerCase();
     const key = `${heading.toLowerCase()}|${bodyKey}`;
     if (seen.has(key)) continue;
     seen.add(key);

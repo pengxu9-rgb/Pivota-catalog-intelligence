@@ -4856,9 +4856,9 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         if (!normalizeSectionText(body)) {
           const wrapper =
             button.closest("accordion-wrap") ||
-            button.parentElement ||
             button.closest(".pv-extra-details__accordion") ||
-            button.closest(".acc");
+            button.closest(".acc") ||
+            button.parentElement;
           const content =
             wrapper?.querySelector?.(".accordion-content-wrap-inner, .accordion-content-wrap, .acc__menu, .pv-extra-details__accordion-body") ||
             button.nextElementSibling;

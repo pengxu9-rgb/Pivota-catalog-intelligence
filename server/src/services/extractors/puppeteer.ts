@@ -833,6 +833,17 @@ function extractHtmlDetailSections(html: string) {
     pushRelevantHtmlSection(sections, match[1] || "", match[2] || "", "accordion_button_html");
   }
 
+  for (const match of html.matchAll(/<accordion-wrap\b[^>]*>([\s\S]*?)<\/accordion-wrap>/gi)) {
+    const block = match[1] || "";
+    const headingMatch =
+      block.match(/<button\b[^>]*class=["'][^"']*\baccordion-title\b[^"']*["'][^>]*>([\s\S]*?)<\/button>/i) ||
+      block.match(/<button\b[^>]*>([\s\S]*?)<\/button>/i);
+    const bodyMatch =
+      block.match(/<div\b[^>]*class=["'][^"']*\baccordion-content-wrap-inner\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i) ||
+      block.match(/<div\b[^>]*class=["'][^"']*\baccordion-content-wrap\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+    pushRelevantHtmlSection(sections, headingMatch?.[1] || "", bodyMatch?.[1] || "", "accordion_wrap_html");
+  }
+
   for (const match of html.matchAll(/<collapsible-tab\b[^>]*>([\s\S]*?)<\/collapsible-tab>/gi)) {
     const block = match[1] || "";
     const headingMatch =

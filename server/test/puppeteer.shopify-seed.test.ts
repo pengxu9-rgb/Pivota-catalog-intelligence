@@ -801,6 +801,63 @@ test("enrichDirectShopifyPdpResponse keeps browser enrichment behind native PDP 
   assert.match(logs.map((entry) => `${entry.type}:${entry.msg}`).join("\n"), /Attempting browser enrichment/);
 });
 
+test("extractProductFromHtmlSnapshot parses Pixi accordion-wrap PDP sections", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <link rel="canonical" href="https://www.pixibeauty.com/products/retinol-tonic-250ml" />
+          <meta name="description" content="A rejuvenating tonic with time-release Retinol." />
+          <meta property="og:image" content="https://www.pixibeauty.com/cdn/shop/products/Retinol_Tonic_250ml.jpg?v=1701460078" />
+          <meta property="og:price:amount" content="29.00" />
+        </head>
+        <body>
+          <h1>Retinol Tonic Original Size</h1>
+          <accordion-wrap>
+            <button class="accordion-title" aria-controls="accordion-content-wrap-1">
+              Product Details
+            </button>
+            <div class="accordion-content-wrap" id="accordion-content-wrap-1">
+              <div class="accordion-content-wrap-inner">
+                <p><span class="accordion-bullet">•</span> Time-release Retinol smooths and renews.<br>
+                <span class="accordion-bullet">•</span> Peptides firm skin.</p>
+              </div>
+            </div>
+          </accordion-wrap>
+          <accordion-wrap>
+            <button class="accordion-title" aria-controls="accordion-content-wrap-2">How To Apply</button>
+            <div class="accordion-content-wrap" id="accordion-content-wrap-2">
+              <div class="accordion-content-wrap-inner">
+                <span class="accordion-bullet">•</span> Saturate a cotton pad and sweep across face.
+              </div>
+            </div>
+          </accordion-wrap>
+          <accordion-wrap>
+            <button class="accordion-title" aria-controls="accordion-content-wrap-3">Ingredients</button>
+            <div class="accordion-content-wrap" id="accordion-content-wrap-3">
+              <div class="accordion-content-wrap-inner">
+                <p><span class="accordion-bullet">•</span> Retinol renews and smooths.<br>
+                <span class="accordion-bullet">•</span> Peptides firm.</p>
+              </div>
+            </div>
+          </accordion-wrap>
+        </body>
+      </html>
+    `,
+    url: "https://www.pixibeauty.com/products/retinol-tonic-250ml",
+    baseUrl: "https://www.pixibeauty.com",
+  });
+
+  assert.equal(product?.title, "Retinol Tonic Original Size");
+  assert.deepEqual(
+    (product?.details_sections || []).map((section) => section.heading),
+    ["Details", "How to Use", "Ingredients"],
+  );
+  assert.match(product?.how_to_use_raw || "", /cotton pad/i);
+  assert.match(product?.active_ingredients_raw || "", /Retinol renews/i);
+  assert.match(product?.field_sources?.details_sections?.join(","), /accordion_wrap_html/);
+});
+
 test("mergeShopifyDirectPdpFallback preserves Fenty-style description and active ingredient sections", () => {
   const response = {
     brand: "Fenty Beauty",

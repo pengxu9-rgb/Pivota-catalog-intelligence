@@ -19,6 +19,7 @@ import {
   isNonProductShopifyFeedProduct,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
+  rankShopifyDirectCatalogReplacementCandidates,
   resolveDirectPdpEnrichmentUrl,
 } from "../src/services/extractors/puppeteer";
 
@@ -303,6 +304,48 @@ test("filterShopifyCatalogProducts removes obvious gift and sample feed rows whi
     } as any),
     true,
   );
+});
+
+test("rankShopifyDirectCatalogReplacementCandidates handles stale market suffixes conservatively", () => {
+  const candidates = rankShopifyDirectCatalogReplacementCandidates({
+    directHandle: "detox-drops-2-salicylic-acid-toner-eu",
+    products: [
+      {
+        id: 1,
+        title: "Detox Drops 2% Salicylic Acid Toner-Europe",
+        handle: "detox-drops-2-salicylic-acid-toner-eu",
+        variants: [{ id: 101, available: true }],
+      },
+      {
+        id: 2,
+        title: "Detox Drops 2% Salicylic Acid Toner",
+        handle: "detox-drops-2-salicylic-acid-toner-4oz",
+        variants: [{ id: 102, available: true }],
+      },
+      {
+        id: 3,
+        title: "Balancing Force Oil Control Toner",
+        handle: "balancing-force-oil-control-toner",
+        variants: [{ id: 103, available: true }],
+      },
+    ] as any,
+  });
+
+  assert.equal(candidates[0]?.handle, "detox-drops-2-salicylic-acid-toner-4oz");
+
+  const unsafeCandidates = rankShopifyDirectCatalogReplacementCandidates({
+    directHandle: "intense-rose-hand-cream",
+    products: [
+      {
+        id: 4,
+        title: "Rose Hand Cream",
+        handle: "rose-hand-cream-1",
+        variants: [{ id: 104, available: true }],
+      },
+    ] as any,
+  });
+
+  assert.equal(unsafeCandidates.length, 0);
 });
 
 test("PuppeteerExtractor filters non-product Shopify feed rows before picking domain-root products", async () => {

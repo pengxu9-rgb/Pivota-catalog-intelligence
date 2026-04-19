@@ -2947,11 +2947,159 @@ export function filterShopifyCatalogProducts(products: ShopifyProduct[]): Shopif
   return filtered.length > 0 ? filtered : products;
 }
 
+const SHOPIFY_MARKET_HANDLE_SUFFIX_RE = /-(?:eu|europe|ca|canada|us|usa|uk|gb|au|australia)$/i;
+const SHOPIFY_MARKET_TITLE_TOKEN_RE = /^(?:eu|europe|ca|canada|us|usa|uk|gb|au|australia)$/i;
+
+function normalizeShopifyReplacementText(value: unknown) {
+  return safeDecodeURIComponent(String(value || "").toLowerCase())
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function stripShopifyMarketHandleSuffix(handle: string) {
+  let normalized = normalizeShopifyReplacementText(handle).replace(/\s+/g, "-");
+  for (let idx = 0; idx < 3; idx += 1) {
+    const stripped = normalized.replace(SHOPIFY_MARKET_HANDLE_SUFFIX_RE, "");
+    if (stripped === normalized) break;
+    normalized = stripped;
+  }
+  return normalized;
+}
+
+function shopifyReplacementTokens(value: string) {
+  return normalizeShopifyReplacementText(value)
+    .split(/\s+/g)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2 && !SHOPIFY_MARKET_TITLE_TOKEN_RE.test(token));
+}
+
+function normalizeShopifyReplacementTitle(title: unknown) {
+  return shopifyReplacementTokens(String(title || "")).join(" ");
+}
+
+function sharedTokenCount(left: string[], right: string[]) {
+  const rightSet = new Set(right);
+  return Array.from(new Set(left)).filter((token) => rightSet.has(token)).length;
+}
+
+export function rankShopifyDirectCatalogReplacementCandidates(params: {
+  directHandle: string;
+  products: ShopifyProduct[];
+}): ShopifyProduct[] {
+  const directHandle = normalizeShopifyReplacementText(params.directHandle).replace(/\s+/g, "-");
+  const directBaseHandle = stripShopifyMarketHandleSuffix(directHandle);
+  const directHandleTokens = shopifyReplacementTokens(directBaseHandle);
+  const exactProduct = params.products.find(
+    (product) => normalizeShopifyReplacementText(product.handle).replace(/\s+/g, "-") === directHandle,
+  );
+  const exactTitle = normalizeShopifyReplacementTitle(exactProduct?.title);
+
+  const scored = params.products
+    .map((product) => {
+      const candidateHandle = normalizeShopifyReplacementText(product.handle).replace(/\s+/g, "-");
+      if (!candidateHandle || candidateHandle === directHandle) return null;
+
+      const candidateBaseHandle = stripShopifyMarketHandleSuffix(candidateHandle);
+      const candidateTokens = shopifyReplacementTokens(candidateBaseHandle);
+      const overlap = sharedTokenCount(directHandleTokens, candidateTokens);
+      let score = 0;
+
+      if (candidateBaseHandle === directBaseHandle) score += 10;
+      if (candidateHandle.startsWith(`${directBaseHandle}-`)) score += 8;
+      if (directBaseHandle.startsWith(`${candidateBaseHandle}-`)) score += 4;
+
+      const candidateTitle = normalizeShopifyReplacementTitle(product.title);
+      if (exactTitle && candidateTitle && candidateTitle === exactTitle) score += 10;
+
+      const minTokenCount = Math.min(directHandleTokens.length, candidateTokens.length);
+      if (overlap >= Math.min(4, minTokenCount)) score += overlap;
+      if ((product.variants || []).some((variant) => variant.available !== false)) score += 1;
+
+      const extraHandleLength = Math.max(0, candidateBaseHandle.length - directBaseHandle.length);
+      return { product, score, overlap, extraHandleLength };
+    })
+    .filter((entry): entry is { product: ShopifyProduct; score: number; overlap: number; extraHandleLength: number } =>
+      Boolean(entry && entry.score >= 9),
+    )
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.overlap - a.overlap ||
+        a.extraHandleLength - b.extraHandleLength ||
+        a.product.handle.localeCompare(b.product.handle),
+    );
+
+  return scored.map((entry) => entry.product);
+}
+
 function isDefaultShopifyVariant(variant: ShopifyVariant): boolean {
   const fields = [variant.title, variant.option1, variant.option2, variant.option3]
     .map((v) => (v || "").trim().toLowerCase())
     .filter(Boolean);
   return fields.length > 0 && fields.every((v) => v === "default title" || v === "default");
+}
+
+async function loadShopifyCatalogProducts(params: {
+  baseUrl: string;
+  collectionHandle?: string;
+  context: { headers?: Record<string, string>; cookies?: Record<string, string> };
+  diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
+}) {
+  const allProducts: ShopifyProduct[] = [];
+  const maxPages = clampIntShared(process.env.SHOPIFY_MAX_PAGES, 20, 1, 200);
+  const feedPrefix = params.collectionHandle ? `/collections/${params.collectionHandle}` : "";
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const url = `${params.baseUrl}${feedPrefix}/products.json?limit=250&page=${page}`;
+    const batch = await fetchJsonTracked<ShopifyProductsResponse>(url, params.context, params.diagnostics);
+    const products = batch.data?.products;
+    if (!products || products.length === 0) break;
+    allProducts.push(...products);
+    if (products.length < 250) break;
+  }
+
+  return allProducts;
+}
+
+async function recoverDirectShopifyProductFromCatalogFeed(params: {
+  directHandle: string;
+  baseUrl: string;
+  collectionHandle?: string;
+  context: { headers?: Record<string, string>; cookies?: Record<string, string> };
+  diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
+  log: Logger;
+}) {
+  const allProducts = await loadShopifyCatalogProducts({
+    baseUrl: params.baseUrl,
+    collectionHandle: params.collectionHandle,
+    context: params.context,
+    diagnostics: params.diagnostics,
+  });
+  if (allProducts.length === 0) return null;
+
+  const filteredProducts = filterShopifyCatalogProducts(allProducts);
+  const candidates = rankShopifyDirectCatalogReplacementCandidates({
+    directHandle: params.directHandle,
+    products: filteredProducts,
+  }).slice(0, 8);
+
+  for (const candidate of candidates) {
+    const candidateUrl = `${params.baseUrl}/products/${candidate.handle}.js`;
+    const candidateProduct = await fetchJsonTracked<ShopifyProduct>(candidateUrl, params.context, params.diagnostics);
+    if (candidateProduct.data && typeof candidateProduct.data.id === "number") {
+      params.log(
+        "success",
+        `Recovered Shopify direct PDP via catalog feed replacement: ${params.directHandle} -> ${candidate.handle}`,
+      );
+      return {
+        product: candidateProduct.data,
+        productUrl: `${params.baseUrl}/products/${candidate.handle}`,
+      };
+    }
+  }
+
+  return null;
 }
 
 async function tryExtractShopify(params: {
@@ -3000,6 +3148,36 @@ async function tryExtractShopify(params: {
       });
     }
     log("warn", `Shopify direct product feed not found for handle: ${directHandle}. Falling back to direct page discovery.`);
+    const recoveredProduct = await recoverDirectShopifyProductFromCatalogFeed({
+      directHandle,
+      baseUrl: params.baseUrl,
+      collectionHandle: params.collectionHandle,
+      context: shopifyContext,
+      diagnostics: params.diagnostics!,
+      log,
+    });
+    if (recoveredProduct) {
+      setDiscoveryStrategy(params.diagnostics!, "shopify_json");
+      const currencyHint = await fetchShopifyCurrencyHint(
+        dedupeStringList([params.seedUrl, recoveredProduct.productUrl, params.baseUrl]),
+        params.diagnostics!,
+        shopifyContext,
+      );
+      const response = buildShopifyResponse({
+        ...params,
+        currencyHint,
+        products: [recoveredProduct.product],
+        platformLabel: "Shopify (Direct PDP Catalog Recovery)",
+      });
+      return enrichDirectShopifyPdpResponse({
+        brand: params.brand,
+        baseUrl: params.baseUrl,
+        seedUrl: recoveredProduct.productUrl,
+        response,
+        diagnostics: params.diagnostics,
+        log,
+      });
+    }
     return null;
   }
 
@@ -3018,18 +3196,12 @@ async function tryExtractShopify(params: {
   setDiscoveryStrategy(params.diagnostics!, "shopify_json");
   const currencyHint = await fetchShopifyCurrencyHint(currencyHintUrls, params.diagnostics!, shopifyContext);
 
-  const allProducts: ShopifyProduct[] = [];
-  const maxPages = clampIntShared(process.env.SHOPIFY_MAX_PAGES, 20, 1, 200);
-  const feedPrefix = params.collectionHandle ? `/collections/${params.collectionHandle}` : "";
-
-  for (let page = 1; page <= maxPages; page++) {
-    const url = `${params.baseUrl}${feedPrefix}/products.json?limit=250&page=${page}`;
-    const batch = await fetchJsonTracked<ShopifyProductsResponse>(url, shopifyContext, params.diagnostics!);
-    const products = batch.data?.products;
-    if (!products || products.length === 0) break;
-    allProducts.push(...products);
-    if (products.length < 250) break;
-  }
+  const allProducts = await loadShopifyCatalogProducts({
+    baseUrl: params.baseUrl,
+    collectionHandle: params.collectionHandle,
+    context: shopifyContext,
+    diagnostics: params.diagnostics!,
+  });
 
   const filteredProducts = filterShopifyCatalogProducts(allProducts);
   const removedCount = allProducts.length - filteredProducts.length;

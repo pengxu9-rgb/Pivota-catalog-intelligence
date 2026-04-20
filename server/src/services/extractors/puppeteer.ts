@@ -2789,11 +2789,18 @@ const SHOPIFY_FEED_GIFT_TOKEN_RE = /(?:^|[-_/ ])gift(?:$|[-_/ ])/i;
 const SHOPIFY_FEED_PROMO_CONTEXT_RE = /\b(?:rewards store|gift with purchase|free gift|complimentary|welcome|surprise)\b/i;
 const SHOPIFY_FEED_ZERO_PRICE_TRAVEL_RE = /\b(?:travel|trial|mini)\b/i;
 
-const ZERO_DECIMAL_CURRENCIES = new Set(["JPY"]);
+const ZERO_DECIMAL_CURRENCIES = new Set(["JPY", "KRW"]);
 
 function normalizeCurrencyCode(raw: unknown): ExtractedVariant["currency"] | null {
   const normalized = String(raw || "").trim().toUpperCase();
-  if (normalized === "USD" || normalized === "EUR" || normalized === "SGD" || normalized === "JPY" || normalized === "CNY") {
+  if (
+    normalized === "USD" ||
+    normalized === "EUR" ||
+    normalized === "SGD" ||
+    normalized === "JPY" ||
+    normalized === "CNY" ||
+    normalized === "KRW"
+  ) {
     return normalized;
   }
   return null;
@@ -4302,7 +4309,9 @@ function normalizePrice(raw: unknown) {
   if (typeof raw === "number" && Number.isFinite(raw)) return raw.toFixed(2);
   if (typeof raw === "string" && raw.trim()) {
     const trimmed = raw.trim();
-    const symbolPrice = trimmed.match(/(?:[$€£¥￥]|价格\s*[:：]?\s*)\s*([0-9][\d,]*(?:\.\d+)?)/i)?.[1];
+    const symbolPrice =
+      trimmed.match(/(?:[$€£¥￥₩]|价格\s*[:：]?\s*)\s*([0-9][\d,]*(?:\.\d+)?)/i)?.[1] ||
+      trimmed.match(/([0-9][\d,]*(?:\.\d+)?)\s*원/i)?.[1];
     if (symbolPrice) {
       const parsed = Number(symbolPrice.replace(/,/g, ""));
       if (Number.isFinite(parsed)) return parsed.toFixed(2);
@@ -4320,6 +4329,7 @@ function inferCurrencyFromPriceTexts(
   if (!text) return null;
 
   const normalizedMarket = normalizeMarketId(marketId);
+  if (/\bKRW\b|₩|\d[\d,.\s]*원/i.test(text)) return "KRW";
   if (/\b(?:CNY|RMB)\b|人民币|￥/i.test(text)) return "CNY";
   if (/¥/.test(text)) {
     if (normalizedMarket === "CN") return "CNY";

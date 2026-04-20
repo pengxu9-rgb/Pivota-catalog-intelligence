@@ -84,6 +84,30 @@ test("symbol fallback maps ¥ to CNY under CN market and remains low confidence"
   assert.equal(out.confidence, "low");
 });
 
+test("symbol fallback maps Korean won symbols to KRW and remains low confidence", () => {
+  const out = resolveCurrency({
+    structuredCurrency: null,
+    metaCurrencyCandidates: [],
+    priceDisplayRaw: "₩19,000",
+    marketId: "KR",
+  });
+
+  assert.equal(out.code, "KRW");
+  assert.equal(out.confidence, "low");
+});
+
+test("symbol fallback maps Korean won suffix to KRW and remains low confidence", () => {
+  const out = resolveCurrency({
+    structuredCurrency: null,
+    metaCurrencyCandidates: [],
+    priceDisplayRaw: "19,000원",
+    marketId: "KR",
+  });
+
+  assert.equal(out.code, "KRW");
+  assert.equal(out.confidence, "low");
+});
+
 test("CN market profile is exposed with CNY authority context", () => {
   const profile = getMarketProfile("CN");
 
@@ -94,6 +118,24 @@ test("CN market profile is exposed with CNY authority context", () => {
   assert.equal(profile.cookies.cart_currency, "CNY");
   assert.equal(profile.url_params.currency, "CNY");
   assert.equal(getSupportedMarketIds().includes("CN"), true);
+});
+
+test("KR market profile is exposed with KRW authority context", () => {
+  const profile = getMarketProfile("KR");
+
+  assert.equal(profile.market_id, "KR");
+  assert.equal(profile.country, "KR");
+  assert.equal(profile.currency_target, "KRW");
+  assert.equal(profile.locale, "ko-KR");
+  assert.equal(profile.cookies.cart_currency, "KRW");
+  assert.equal(profile.url_params.currency, "KRW");
+  assert.equal(getSupportedMarketIds().includes("KR"), true);
+});
+
+test("parsePrice handles Korean won display strings", () => {
+  const out = parsePrice("19,000원");
+  assert.equal(out.price_amount, 19000);
+  assert.equal(out.price_type, "list");
 });
 
 test("computeCounters aggregates by site+market dimensions", () => {

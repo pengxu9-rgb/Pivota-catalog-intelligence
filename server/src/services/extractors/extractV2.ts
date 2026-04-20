@@ -978,6 +978,7 @@ export function inferCurrencyFromSymbol(rawPrice: string | null, marketId: Marke
 
   if (/€/.test(rawPrice)) return "EUR";
   if (/£/.test(rawPrice)) return "GBP";
+  if (/₩|\bKRW\b|\d[\d,.\s]*원/i.test(rawPrice)) return "KRW";
 
   const upperMarket = String(marketId || "").toUpperCase();
 
@@ -1004,6 +1005,7 @@ function fallbackCurrencyByMarket(marketId: string): string | null {
   if (marketId === "SG") return "SGD";
   if (marketId === "JP") return "JPY";
   if (marketId === "CN") return "CNY";
+  if (marketId === "KR") return "KRW";
   return null;
 }
 

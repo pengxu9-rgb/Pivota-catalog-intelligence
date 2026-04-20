@@ -18,7 +18,7 @@ const NEGATIVE_PATH_RE =
   /(?:^|\/)(?:c|collections?|collection|category|catalogsearch|search|cart|account|customer|blog|blogs|pages?|faq|privacy|terms|wishlist|gift(?:ing)?|store-locator|customer-service|all-products|appointments?|booking|online-booking|locations?)(?:\/|$)/i;
 const PRODUCT_SIGNAL_RE =
   /"@type"\s*:\s*(?:"Product"|\[[^\]]*"Product")|application\/ld\+json|add to cart|buy now|quick shop|price(?:currency)?|itemprop=["']price["']/i;
-const PRICE_SIGNAL_RE = /[$€£¥]\s?\d|price(?:currency)?|sale price|from\s+[$€£¥]/i;
+const PRICE_SIGNAL_RE = /[$€£¥₩]\s?\d|\d[\d,.\s]*원|price(?:currency)?|sale price|from\s+[$€£¥₩]/i;
 const CATEGORY_TEXT_RE = /\b(shop|bestsellers|skincare|haircare|bodycare|fragrance|makeup|collections?)\b/i;
 const STOREFRONT_RESOLUTION_MIN_SCORE = 4;
 const COOKIE_ACTION_LABEL_PATTERNS = [
@@ -39,6 +39,7 @@ const MARKET_KEYWORDS: Record<MarketId, string[]> = {
   SG: ["singapore", "sg"],
   JP: ["japan", "jp", "日本"],
   CN: ["china", "mainland china", "cn", "中国", "zh-cn"],
+  KR: ["korea", "south korea", "kr", "한국", "대한민국", "ko-kr"],
 };
 
 export type FetchContext = {
@@ -163,7 +164,14 @@ export async function mapWithConcurrency<T, R>(
 
 export function normalizeMarketId(value: string | undefined): MarketId {
   const normalized = String(value || "US").trim().toUpperCase();
-  if (normalized === "EU-DE" || normalized === "US" || normalized === "SG" || normalized === "JP" || normalized === "CN") {
+  if (
+    normalized === "EU-DE" ||
+    normalized === "US" ||
+    normalized === "SG" ||
+    normalized === "JP" ||
+    normalized === "CN" ||
+    normalized === "KR"
+  ) {
     return normalized;
   }
   return "US";

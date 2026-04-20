@@ -2786,7 +2786,7 @@ const ZERO_DECIMAL_CURRENCIES = new Set(["JPY"]);
 
 function normalizeCurrencyCode(raw: unknown): ExtractedVariant["currency"] | null {
   const normalized = String(raw || "").trim().toUpperCase();
-  if (normalized === "USD" || normalized === "EUR" || normalized === "SGD" || normalized === "JPY") {
+  if (normalized === "USD" || normalized === "EUR" || normalized === "SGD" || normalized === "JPY" || normalized === "CNY") {
     return normalized;
   }
   return null;

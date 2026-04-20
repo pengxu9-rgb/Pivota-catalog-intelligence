@@ -5866,7 +5866,7 @@ async function scrapeProductPage(params: {
     });
     const prefetched = await fetchHtmlViaNativeRequest(params.url, params.diagnostics!);
     const prefetchedSourceUrl = prefetched.finalUrl || params.url;
-    if (prefetched.body) {
+    if (prefetched.body && (!prefetched.status || prefetched.status < 400)) {
       await enablePrefetchRequestBlocking();
       await page.setContent(injectBaseHref(prefetched.body, prefetchedSourceUrl), { waitUntil: "domcontentloaded" });
       const prefetchedExtracted = await extractPageSignals(page);
@@ -5899,6 +5899,7 @@ async function scrapeProductPage(params: {
       context: params.context,
       diagnostics: params.diagnostics!,
     });
+    if (visit.status && visit.status >= 400) return null;
 
     await expandRelevantPdpModules();
 
@@ -5971,6 +5972,7 @@ async function scrapeProductPageViaHtml(params: {
 }) {
   const snapshot = await fetchHtmlViaNativeRequest(params.url, params.diagnostics!);
   if (!snapshot.body) return null;
+  if (snapshot.status && snapshot.status >= 400) return null;
 
   return extractProductFromHtmlSnapshot({
     html: snapshot.body,

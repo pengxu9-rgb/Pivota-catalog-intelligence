@@ -29,9 +29,25 @@ test("isLikelyProductUrl supports .html and /products/ PDP URLs", () => {
     true,
   );
   assert.equal(isLikelyProductUrl("https://theordinary.com/products/squalane-face-cleanser", BASE_URL), true);
+  assert.equal(isLikelyProductUrl("https://theordinary.com/products/", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://theordinary.com/the-geranium-rose-body-cream", BASE_URL), true);
   assert.equal(isLikelyProductUrl("https://us.caudalie.com/c/all-products.html", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://us.caudalie.com/online-booking/location", BASE_URL), false);
+  assert.equal(isLikelyProductUrl("https://roundlab.co.kr/member/privacy.html", "https://roundlab.co.kr"), false);
+  assert.equal(isLikelyProductUrl("https://roundlab.co.kr/member/agreement.html", "https://roundlab.co.kr"), false);
+  assert.equal(isLikelyProductUrl("https://roundlab.co.kr/shopinfo/company.html", "https://roundlab.co.kr"), false);
+  assert.equal(isLikelyProductUrl("https://roundlab.co.kr/product/1025-독도-토너-200ml/22/", "https://roundlab.co.kr"), true);
+  assert.equal(
+    isLikelyProductUrl("https://www.kao-kirei.com/ja/official/sofina-ip/products/", "https://www.kao-kirei.com"),
+    false,
+  );
+  assert.equal(
+    isLikelyProductUrl(
+      "https://www.kao-kirei.com/ja/official/sofina-ip/products/treatmentmist/",
+      "https://www.kao-kirei.com",
+    ),
+    true,
+  );
   assert.equal(isLikelyProductUrl("https://theordinary.com/", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://theordinary.com/en-us", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://cdn.example.com/de-de/foo-100436.html", BASE_URL), false);

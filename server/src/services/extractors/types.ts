@@ -1,4 +1,4 @@
-export type MarketId = "US" | "EU-DE" | "SG" | "JP" | "CN";
+export type MarketId = "US" | "EU-DE" | "SG" | "JP" | "CN" | "KR";
 
 export type DiscoveryStrategy =
   | "shopify_json"
@@ -49,7 +49,7 @@ export type ExtractRequestBody = {
 
 export type ExtractInput = ExtractRequestBody;
 
-export type CurrencyCode = "USD" | "EUR" | "SGD" | "JPY" | "CNY";
+export type CurrencyCode = "USD" | "EUR" | "SGD" | "JPY" | "CNY" | "KRW";
 export type StockStatus = "In Stock" | "Low Stock" | "Out of Stock";
 
 export type ExtractedVariant = {

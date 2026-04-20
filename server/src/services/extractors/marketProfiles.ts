@@ -115,11 +115,42 @@ const PROFILE_MAP: Record<string, MarketProfile> = {
     shipping_destination: "CN",
     geo_hint: "CN",
   },
+  KR: {
+    market_id: "KR",
+    country: "KR",
+    currency_target: "KRW",
+    locale: "ko-KR",
+    headers: {
+      "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.6",
+    },
+    cookies: {
+      localization: "KR",
+      cart_currency: "KRW",
+      country: "KR",
+      locale: "ko-KR",
+      shipping_destination: "KR",
+    },
+    url_params: {
+      country: "KR",
+      locale: "ko-KR",
+      currency: "KRW",
+      shipping_destination: "KR",
+    },
+    shipping_destination: "KR",
+    geo_hint: "KR",
+  },
 };
 
 function normalizeMarketId(value: string): MarketId {
   const normalized = value.trim().toUpperCase();
-  if (normalized === "US" || normalized === "EU-DE" || normalized === "SG" || normalized === "JP" || normalized === "CN") {
+  if (
+    normalized === "US" ||
+    normalized === "EU-DE" ||
+    normalized === "SG" ||
+    normalized === "JP" ||
+    normalized === "CN" ||
+    normalized === "KR"
+  ) {
     return normalized;
   }
   return DEFAULT_MARKET_ID;

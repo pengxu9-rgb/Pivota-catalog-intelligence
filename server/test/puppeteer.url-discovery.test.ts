@@ -48,6 +48,19 @@ test("isLikelyProductUrl supports .html and /products/ PDP URLs", () => {
     ),
     true,
   );
+  assert.equal(
+    isLikelyProductUrl(
+      "https://www.kao-kirei.com/ja/item/khg/bioresarasarauv/4901301413246/",
+      "https://www.kao-kirei.com",
+    ),
+    true,
+  );
+  assert.equal(isLikelyProductUrl("https://www.kao-kirei.com/jp/ja/shopping-guide.html", "https://www.kao-kirei.com"), false);
+  assert.equal(isLikelyProductUrl("https://www.kao-kirei.com/jp/ja/transaction-law.html", "https://www.kao-kirei.com"), false);
+  assert.equal(
+    isLikelyProductUrl("https://www.kao-kirei.com/jp/ja/terms-of-subscription.html", "https://www.kao-kirei.com"),
+    false,
+  );
   assert.equal(isLikelyProductUrl("https://theordinary.com/", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://theordinary.com/en-us", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://cdn.example.com/de-de/foo-100436.html", BASE_URL), false);

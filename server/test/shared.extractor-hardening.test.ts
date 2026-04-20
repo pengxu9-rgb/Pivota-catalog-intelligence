@@ -780,6 +780,43 @@ test("discoverProductUrls does not treat a homepage as a direct PDP when it only
   );
 });
 
+test("discoverProductUrls filters Korean legal and company sitemap pages before PDPs", async () => {
+  const diagnostics = createDiagnostics("roundlab.co.kr", "https://roundlab.co.kr");
+
+  await withMockFetch(
+    {
+      "https://roundlab.co.kr/robots.txt": {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+        body: "Sitemap: https://roundlab.co.kr/sitemap.xml",
+      },
+      "https://roundlab.co.kr/sitemap.xml": {
+        status: 200,
+        headers: { "content-type": "application/xml" },
+        body: `
+          <urlset>
+            <url><loc>https://roundlab.co.kr/member/privacy.html</loc></url>
+            <url><loc>https://roundlab.co.kr/member/agreement.html</loc></url>
+            <url><loc>https://roundlab.co.kr/shopinfo/company.html</loc></url>
+            <url><loc>https://roundlab.co.kr/product/1025-독도-토너-200ml/22/</loc></url>
+          </urlset>
+        `,
+      },
+    },
+    async () => {
+      const discovered = await discoverProductUrls({
+        baseUrl: "https://roundlab.co.kr",
+        maxProducts: 5,
+        context: {},
+        diagnostics,
+      });
+
+      assert.equal(diagnostics.discovery_strategy, "sitemap");
+      assert.deepEqual(discovered.productUrls, ["https://roundlab.co.kr/product/1025-독도-토너-200ml/22/"]);
+    },
+  );
+});
+
 test("discoverProductUrls falls back to default sitemap paths after a dead robots sitemap", async () => {
   const diagnostics = createDiagnostics("augustinusbader.com", "https://augustinusbader.com");
 

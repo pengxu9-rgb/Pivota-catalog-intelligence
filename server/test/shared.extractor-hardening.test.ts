@@ -521,6 +521,32 @@ test("extractShopifyBodyHtmlPdpTextFields parses Round Lab uppercase h3 labels w
   assert.doesNotMatch(fields.activeIngredientsRaw || "", /HOW TO USE|hook over each ear/i);
 });
 
+test("extractProductFromHtmlSnapshot normalizes CN yen price text to CNY", () => {
+  const product = extractProductFromHtmlSnapshot({
+    html: `
+      <html>
+        <head>
+          <title>帧颜淡纹修护精华水 - Pechoin</title>
+          <meta name="description" content="中国官方站商品页。">
+        </head>
+        <body>
+          <h1>帧颜淡纹修护精华水 - Pechoin</h1>
+          <div class="price">价格：¥298 / 100ml</div>
+          <img src="/images/pechoin-serum-water.jpg" alt="帧颜淡纹修护精华水">
+          <h2>Details</h2>
+          <p>Peptide-focused essence water for daily facial care.</p>
+        </body>
+      </html>
+    `,
+    url: "https://www.pechoin.com/products/peptide-essence-water/",
+    baseUrl: "https://www.pechoin.com",
+    marketId: "CN",
+  });
+
+  assert.equal(product?.variants[0]?.price, "298.00");
+  assert.equal(product?.variants[0]?.currency, "CNY");
+});
+
 test("extractShopifyBodyHtmlPdpTextFields does not promote active-only sections to full INCI", () => {
   const fields = extractShopifyBodyHtmlPdpTextFields(`
     <p><strong>Active Ingredients</strong></p>

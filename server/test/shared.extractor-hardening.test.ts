@@ -817,6 +817,34 @@ test("discoverProductUrls filters Korean legal and company sitemap pages before 
   );
 });
 
+test("discoverProductUrls treats Kao item SKU pages as direct PDPs", async () => {
+  const diagnostics = createDiagnostics("www.kao-kirei.com", "https://www.kao-kirei.com");
+
+  await withMockFetch(
+    {
+      "https://www.kao-kirei.com/ja/item/khg/bioresarasarauv/4901301413246/": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: readFixture("direct-product-page.html"),
+      },
+    },
+    async () => {
+      const discovered = await discoverProductUrls({
+        baseUrl: "https://www.kao-kirei.com",
+        seedUrl: "https://www.kao-kirei.com/ja/item/khg/bioresarasarauv/4901301413246/",
+        maxProducts: 5,
+        context: {},
+        diagnostics,
+      });
+
+      assert.equal(diagnostics.discovery_strategy, "seed_page");
+      assert.deepEqual(discovered.productUrls, [
+        "https://www.kao-kirei.com/ja/item/khg/bioresarasarauv/4901301413246/",
+      ]);
+    },
+  );
+});
+
 test("discoverProductUrls falls back to default sitemap paths after a dead robots sitemap", async () => {
   const diagnostics = createDiagnostics("augustinusbader.com", "https://augustinusbader.com");
 

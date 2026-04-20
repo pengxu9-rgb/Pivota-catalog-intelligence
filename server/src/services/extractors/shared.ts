@@ -15,7 +15,7 @@ const LOCALE_PATH_SEGMENT_RE = /^[a-z]{2}(?:-|_)[a-z]{2}$/i;
 const STATIC_ASSET_EXT_RE =
   /\.(?:css|js|mjs|map|png|jpe?g|gif|webp|svg|ico|pdf|xml|txt|woff2?|ttf|eot|otf|mp3|wav|mp4|webm|zip|gz|tar|json)(?:$|[?#])/i;
 const NEGATIVE_PATH_RE =
-  /(?:^|\/)(?:c|collections?|collection|category|catalogsearch|search|cart|account|customer|member|shopinfo|company|agreement|blog|blogs|pages?|faq|privacy|terms|wishlist|gift(?:ing)?|store-locator|customer-service|all-products|appointments?|booking|online-booking|locations?|404|content)(?:[./]|$)/i;
+  /(?:^|\/)(?:c|collections?|collection|category|catalogsearch|search|cart|account|customer|member|shopinfo|company|agreement|blog|blogs|pages?|faq|privacy|terms|terms-of-subscription|transaction-law|shopping-guide|wishlist|gift(?:ing)?|store-locator|customer-service|all-products|appointments?|booking|online-booking|locations?|404|content)(?:[./]|$)/i;
 const PRODUCT_SIGNAL_RE =
   /"@type"\s*:\s*(?:"Product"|\[[^\]]*"Product")|application\/ld\+json|add to cart|buy now|quick shop|price(?:currency)?|itemprop=["']price["']/i;
 const PRICE_SIGNAL_RE = /[$€£¥₩]\s?\d|\d[\d,.\s]*원|price(?:currency)?|sale price|from\s+[$€£¥₩]/i;
@@ -421,6 +421,7 @@ export function scoreProductCandidateUrl(rawUrl: string, baseUrl: string): numbe
 
   let score = 0;
   if (/\/products?\/[^/]+/.test(path)) score += 6;
+  if (/\/item\/(?:[^/]+\/){2,}[^/]+/.test(path)) score += 6;
   if (/\/p\/[^/]+$/.test(path)) score += 6;
   if (/[-_]\d{4,}\.html$/.test(path) || /\.html$/.test(path)) score += 6;
 

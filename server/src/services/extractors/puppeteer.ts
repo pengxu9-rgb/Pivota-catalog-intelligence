@@ -12,6 +12,7 @@ import type {
   ExtractedVariant,
   ExtractedVariantRow,
   Extractor,
+  MarketId,
   StockStatus,
 } from "./types";
 import {
@@ -189,6 +190,7 @@ export class PuppeteerExtractor implements Extractor {
             url,
             baseUrl,
             diagnostics,
+            marketId,
             verbose,
             log,
           });
@@ -250,6 +252,7 @@ export class PuppeteerExtractor implements Extractor {
                   url,
                   baseUrl,
                   navigationTimeoutMs,
+                  marketId,
                   verbose,
                   log,
                   diagnostics,
@@ -1230,6 +1233,7 @@ export function extractProductFromHtmlSnapshot(params: {
   html: string;
   url: string;
   baseUrl: string;
+  marketId?: MarketId;
   verbose?: boolean;
   log?: Logger;
 }): ExtractedProduct | null {
@@ -1326,7 +1330,9 @@ export function extractProductFromHtmlSnapshot(params: {
       [
         extractMetaTagContent(html, { property: "og:price:amount" }),
         extractMetaTagContent(html, { property: "product:price:amount" }),
-        ...Array.from(html.matchAll(/\$\s*\d+(?:\.\d{2})?/g)).slice(0, 6).map((match) => match[0] || ""),
+        ...Array.from(html.matchAll(/(?:[$€£¥￥]\s*|价格\s*[:：]?\s*)\d[\d,]*(?:\.\d+)?(?:\s*\/\s*\d+\s*(?:ml|g))?/gi))
+          .slice(0, 6)
+          .map((match) => match[0] || ""),
       ].map((value) => cleanHtmlText(value)),
     ),
     imageCandidates: extractHtmlImageCandidates(html, params.baseUrl),
@@ -1354,6 +1360,7 @@ export function extractProductFromHtmlSnapshot(params: {
     pageLooksLikeProduct,
     sourceUrl: params.url,
     baseUrl: params.baseUrl,
+    marketId: params.marketId,
     verbose: Boolean(params.verbose),
     log: params.log || (() => undefined),
   });
@@ -3259,6 +3266,7 @@ export async function enrichDirectShopifyPdpResponse(params: {
       html: htmlSnapshot.body,
       url: htmlSnapshot.finalUrl || enrichmentUrl,
       baseUrl: params.baseUrl,
+      marketId: undefined,
       log: params.log,
     });
     if (htmlProduct) {
@@ -3345,6 +3353,7 @@ export async function enrichDirectShopifyPdpResponse(params: {
             html: htmlSnapshot.body,
             url: params.seedUrl,
             baseUrl: params.baseUrl,
+            marketId: undefined,
             log: params.log,
           })
         : null;
@@ -4291,8 +4300,37 @@ function stripProductTitlePrefix(productTitle: string, variantTitle: string): st
 
 function normalizePrice(raw: unknown) {
   if (typeof raw === "number" && Number.isFinite(raw)) return raw.toFixed(2);
-  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  if (typeof raw === "string" && raw.trim()) {
+    const trimmed = raw.trim();
+    const symbolPrice = trimmed.match(/(?:[$€£¥￥]|价格\s*[:：]?\s*)\s*([0-9][\d,]*(?:\.\d+)?)/i)?.[1];
+    if (symbolPrice) {
+      const parsed = Number(symbolPrice.replace(/,/g, ""));
+      if (Number.isFinite(parsed)) return parsed.toFixed(2);
+    }
+    return trimmed;
+  }
   return "0.00";
+}
+
+function inferCurrencyFromPriceTexts(
+  priceTexts: string[] | undefined,
+  marketId?: MarketId,
+): ExtractedVariant["currency"] | null {
+  const text = (Array.isArray(priceTexts) ? priceTexts : []).join(" ");
+  if (!text) return null;
+
+  const normalizedMarket = normalizeMarketId(marketId);
+  if (/\b(?:CNY|RMB)\b|人民币|￥/i.test(text)) return "CNY";
+  if (/¥/.test(text)) {
+    if (normalizedMarket === "CN") return "CNY";
+    if (normalizedMarket === "JP") return "JPY";
+    return null;
+  }
+  if (/\bJPY\b|円/.test(text)) return "JPY";
+  if (/\bSGD\b|S\$/i.test(text)) return "SGD";
+  if (/\bEUR\b|€/.test(text)) return "EUR";
+  if (/\bUSD\b|\$/i.test(text)) return normalizedMarket === "SG" ? "SGD" : "USD";
+  return null;
 }
 
 function stockFromAvailability(raw: unknown): StockStatus {
@@ -5349,6 +5387,7 @@ function buildProductFromPageSignals(params: {
   pageLooksLikeProduct: boolean;
   sourceUrl: string;
   baseUrl: string;
+  marketId?: MarketId;
   verbose: boolean;
   log: Logger;
 }): ExtractedProduct | null {
@@ -5544,6 +5583,7 @@ function buildProductFromPageSignals(params: {
       faq_items: faqItems.length > 0 ? ["page_faq_section"] : [],
     },
   });
+  const pageCurrency = inferCurrencyFromPriceTexts(extracted.priceTexts, params.marketId) || "USD";
 
   const variants: ExtractedVariant[] =
     variantProducts.length > 1
@@ -5595,7 +5635,7 @@ function buildProductFromPageSignals(params: {
             option_name: domMeta?.option_name || "Variant",
             option_value: optionValue,
             price,
-            currency: "USD",
+            currency: normalizeCurrencyCode((variantOffer as { priceCurrency?: unknown } | undefined)?.priceCurrency) || pageCurrency,
             stock,
             description: getMergedDescription({
               title: productTitle,
@@ -5664,7 +5704,7 @@ function buildProductFromPageSignals(params: {
             option_name: optionName,
             option_value: optionValue,
             price,
-            currency: "USD",
+            currency: normalizeCurrencyCode((offer as { priceCurrency?: unknown }).priceCurrency) || pageCurrency,
             stock,
             description,
             image_url: offerImageUrl,
@@ -5680,7 +5720,7 @@ function buildProductFromPageSignals(params: {
             option_name: "Offer",
             option_value: "Default",
             price: normalizePrice(extracted.priceTexts[0]),
-            currency: "USD",
+            currency: pageCurrency,
             stock: "In Stock",
             description: getMergedDescription({
               title: productTitle,
@@ -5730,6 +5770,7 @@ async function scrapeProductPage(params: {
   context: {};
   diagnostics: ExtractResponse["diagnostics"];
   navigationTimeoutMs: number;
+  marketId?: MarketId;
   verbose: boolean;
   log: Logger;
 }): Promise<ExtractedProduct | null> {
@@ -5834,6 +5875,7 @@ async function scrapeProductPage(params: {
         pageLooksLikeProduct: prefetchedLooksLikeProduct,
         sourceUrl: prefetchedSourceUrl,
         baseUrl: params.baseUrl,
+        marketId: params.marketId,
         verbose: params.verbose,
         log: params.log,
       });
@@ -5866,6 +5908,7 @@ async function scrapeProductPage(params: {
       pageLooksLikeProduct: liveLooksLikeProduct,
       sourceUrl: params.url,
       baseUrl: params.baseUrl,
+      marketId: params.marketId,
       verbose: params.verbose,
       log: params.log,
     });
@@ -5876,6 +5919,7 @@ async function scrapeProductPage(params: {
           html: renderedHtml,
           url: params.url,
           baseUrl: params.baseUrl,
+          marketId: params.marketId,
           verbose: params.verbose,
           log: params.log,
         })
@@ -5911,6 +5955,7 @@ async function scrapeProductPageViaHtml(params: {
   url: string;
   baseUrl: string;
   diagnostics: ExtractResponse["diagnostics"];
+  marketId?: MarketId;
   verbose: boolean;
   log: Logger;
 }) {
@@ -5921,6 +5966,7 @@ async function scrapeProductPageViaHtml(params: {
     html: snapshot.body,
     url: snapshot.finalUrl || params.url,
     baseUrl: params.baseUrl,
+    marketId: params.marketId,
     verbose: params.verbose,
     log: params.log,
   });

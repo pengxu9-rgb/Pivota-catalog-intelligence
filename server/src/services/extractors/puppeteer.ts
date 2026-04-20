@@ -552,7 +552,7 @@ function generateMockAdCopy(title: string, variantValue: string, price: string) 
 function cleanText(text?: string) {
   if (!text) return "";
   const withNewlines = text
-    .replace(/\u00a0/g, " ")
+    .replace(/[\u00a0\u202f\u2007]/g, " ")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p\s*>/gi, "\n")
     .replace(/<\/div\s*>/gi, "\n")
@@ -1686,8 +1686,8 @@ function extractStandaloneGenericIngredientSectionText(text: string | undefined,
   const escapedStopLabels = stopLabels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
   const labelSeparator = "(?::|\\n|\\r\\n|\\s{2,}|\\s+-\\s+)?";
   const pattern = escapedStopLabels
-    ? new RegExp(`(?:^|\\n|\\b)Ingredients\\s*${labelSeparator}\\s*([\\s\\S]+?)(?=(?:\\n|\\b)(?:${escapedStopLabels})\\s*${labelSeparator}|$)`, "gi")
-    : new RegExp(`(?:^|\\n|\\b)Ingredients\\s*${labelSeparator}\\s*([\\s\\S]+)$`, "gi");
+    ? new RegExp(`(?:^|\\n)Ingredients\\s*${labelSeparator}\\s*([\\s\\S]+?)(?=(?:\\n|\\b)(?:${escapedStopLabels})\\s*${labelSeparator}|$)`, "gi")
+    : new RegExp(`(?:^|\\n)Ingredients\\s*${labelSeparator}\\s*([\\s\\S]+)$`, "gi");
   for (const match of normalized.matchAll(pattern)) {
     const prefix = normalized.slice(Math.max(0, match.index - 32), match.index);
     if (/\b(?:active|key|hero)\s+$/i.test(prefix)) continue;
@@ -1696,7 +1696,16 @@ function extractStandaloneGenericIngredientSectionText(text: string | undefined,
   return "";
 }
 
+function stripSingleLeadingListMarker(text: string | undefined) {
+  const normalized = cleanText(text).replace(/(^|\n)-\s*\n\s*/g, "$1- ");
+  if (!normalized) return "";
+  const lines = normalized.split("\n").map((line) => cleanText(line)).filter(Boolean);
+  if (lines.length === 1) return cleanText(lines[0].replace(/^[-•]\s+/, ""));
+  return normalized;
+}
+
 export function extractShopifyBodyHtmlPdpTextFields(html: string | undefined) {
+  const normalizedHtmlText = cleanHtmlText(html);
   const fullIngredientStopLabels = [
     "How to use",
     "How to Use",
@@ -1743,32 +1752,33 @@ export function extractShopifyBodyHtmlPdpTextFields(html: string | undefined) {
     "Key Benefits",
     "Benefits",
     "About",
+    "Size",
     "FAQ",
     "Frequently Asked Questions",
   ];
   const fullIngredientsRaw =
     extractDelimitedLabeledSectionText(
-      html,
+      normalizedHtmlText,
       ["Full INCI", "Full Ingredients", "Full Ingredient List", "Ingredient List", "INCI"],
       fullIngredientStopLabels,
     ) || "";
   const genericIngredientsRaw =
     extractDelimitedLabeledSectionText(
-      html,
+      normalizedHtmlText,
       ["Ingredients and Safety"],
       ["Active Ingredients", ...fullIngredientStopLabels],
     ) ||
-    extractStandaloneGenericIngredientSectionText(html, ["Active Ingredients", ...fullIngredientStopLabels]) ||
+    extractStandaloneGenericIngredientSectionText(normalizedHtmlText, ["Active Ingredients", ...fullIngredientStopLabels]) ||
     "";
   const activeIngredientsRaw =
     extractDelimitedLabeledSectionText(
-      html,
+      normalizedHtmlText,
       ["Active Ingredients", "Active Ingredient"],
       activeIngredientStopLabels,
     ) || "";
   const howToUseRaw =
     extractDelimitedLabeledSectionText(
-      html,
+      normalizedHtmlText,
       ["How to use", "How to Use", "How To Apply", "Directions", "Suggested Usage"],
       howToUseStopLabels,
     ) || "";
@@ -1786,7 +1796,7 @@ export function extractShopifyBodyHtmlPdpTextFields(html: string | undefined) {
   return {
     ingredientsRaw: stripIngredientPackageDisclaimer(fullIngredientsRaw || safeGenericIngredientsRaw),
     activeIngredientsRaw,
-    howToUseRaw,
+    howToUseRaw: stripSingleLeadingListMarker(howToUseRaw),
   };
 }
 
@@ -1941,12 +1951,10 @@ function extractEmbeddedProductPayloadImageUrls(payloads: ShopifyEmbeddedProduct
 
 export function extractShopifyEmbeddedProductPayloadPdpFields(scriptTexts: string[]) {
   const payloads = extractShopifyEmbeddedProductPayloadsFromScripts(scriptTexts);
-  const mergedHtml = cleanText(
-    payloads
-      .flatMap((payload) => [payload.content, payload.description, payload.body_html])
-      .filter((value): value is string => Boolean(value && value.trim()))
-      .join("\n\n"),
-  );
+  const mergedHtml = payloads
+    .flatMap((payload) => [payload.content, payload.description, payload.body_html])
+    .filter((value): value is string => Boolean(value && value.trim()))
+    .join("\n\n");
   const mergedText = cleanHtmlText(mergedHtml);
   const detailsSections = dedupeDetailSections([
     ...extractStrongLedHtmlSections(mergedHtml, "embedded_shopify_product_payload"),
@@ -1958,7 +1966,7 @@ export function extractShopifyEmbeddedProductPayloadPdpFields(scriptTexts: strin
     ["Ingredients", "Active Ingredients", "Full Ingredients", "Full Ingredient List", "How to use", "How to Use", "Directions", "FAQ"],
   );
   if (benefitsRaw) {
-    detailsSections.push({
+    detailsSections.unshift({
       heading: "Benefits",
       body: benefitsRaw,
       source_kind: "embedded_shopify_product_payload",
@@ -3481,7 +3489,7 @@ function buildShopifyResponse(params: {
     const optionName = treatAsPseudoVariant
       ? "Variant"
       : product.options?.map((o) => o.name).filter((n): n is string => Boolean(n && n.trim())).join(" / ") || "Variant";
-    const officialText = product.body_html;
+    const officialText = product.body_html || product.description || "";
     const currency = params.currencyHint || "USD";
     const officialDetailsSections = extractStrongLedHtmlSections(officialText || "", "shopify_body_html_section");
     const officialPdpTextFields = extractShopifyBodyHtmlPdpTextFields(officialText);

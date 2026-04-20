@@ -498,6 +498,29 @@ test("extractShopifyBodyHtmlPdpTextFields splits Round Lab-style How to Use, Goo
   assert.doesNotMatch(fields.howToUseRaw || "", /Full INCI|Camellia Japonica Flower Extract/i);
 });
 
+test("extractShopifyBodyHtmlPdpTextFields parses Round Lab uppercase h3 labels with narrow spaces", () => {
+  const fields = extractShopifyBodyHtmlPdpTextFields(`
+    <p><strong>Sculpt, cool, and revive—one mask does it all.</strong></p>
+    <hr>
+    <h3>ACTIVE INGREDIENTS</h3>
+    <p>Jeju Camellia Flower Extract • Multi‑Weight Collagen • 8‑Peptide Complex • Caffeine • Niacinamide</p>
+    <hr>
+    <h3>HOW TO USE</h3>
+    <ol>
+      <li>After cleansing and toning, stretch the mask and hook over each ear.</li>
+      <li>Smooth upward along the jawline for a snug fit.</li>
+      <li>Relax for 20-30 minutes.</li>
+    </ol>
+    <p><strong>Size:</strong> 1 lifting hydrogel mask</p>
+  `);
+
+  assert.match(fields.activeIngredientsRaw || "", /Jeju Camellia Flower Extract/i);
+  assert.match(fields.howToUseRaw || "", /hook over each ear/i);
+  assert.match(fields.howToUseRaw || "", /Relax for 20-30 minutes/i);
+  assert.doesNotMatch(fields.howToUseRaw || "", /Size|hydrogel mask/i);
+  assert.doesNotMatch(fields.activeIngredientsRaw || "", /HOW TO USE|hook over each ear/i);
+});
+
 test("extractShopifyBodyHtmlPdpTextFields does not promote active-only sections to full INCI", () => {
   const fields = extractShopifyBodyHtmlPdpTextFields(`
     <p><strong>Active Ingredients</strong></p>
@@ -509,6 +532,20 @@ test("extractShopifyBodyHtmlPdpTextFields does not promote active-only sections 
   assert.equal(fields.ingredientsRaw, "");
   assert.match(fields.activeIngredientsRaw || "", /Hippophae Rhamnoides Water/i);
   assert.equal(fields.howToUseRaw, "Apply a moderate amount after cleansing and toning.");
+});
+
+test("extractShopifyBodyHtmlPdpTextFields does not treat ingredient mentions as INCI labels", () => {
+  const fields = extractShopifyBodyHtmlPdpTextFields(`
+    <h3>HOW IT WORKS</h3>
+    <ul>
+      <li>Hypoallergenic formula is free from 19 flagged ingredients and certified gentle for sensitive skin.</li>
+    </ul>
+    <h3>ACTIVE INGREDIENTS</h3>
+    <p>Jeju Camellia Flower Extract • Multi-Weight Collagen • Caffeine</p>
+  `);
+
+  assert.equal(fields.ingredientsRaw, "");
+  assert.match(fields.activeIngredientsRaw || "", /Jeju Camellia Flower Extract/i);
 });
 
 test("extractProductFromHtmlSnapshot parses Shopify collapsible PDP ingredients and how-to tabs", () => {

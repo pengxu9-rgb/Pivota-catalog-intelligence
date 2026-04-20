@@ -1,11 +1,14 @@
 import { Router } from "express";
 
 import { extractCatalog } from "../services/extractors";
+import { getSupportedMarketIds } from "../services/extractors/marketProfiles";
 import type { ExtractRequestBody, ExtractResponse, MarketId } from "../services/extractors/types";
 
 export const extractRouter = Router();
 
-const SUPPORTED_MARKETS = new Set<MarketId>(["US", "EU-DE", "SG", "JP"]);
+const SUPPORTED_MARKET_IDS = getSupportedMarketIds();
+const SUPPORTED_MARKETS = new Set<MarketId>(SUPPORTED_MARKET_IDS as MarketId[]);
+const SUPPORTED_MARKETS_LABEL = SUPPORTED_MARKET_IDS.join(", ");
 
 extractRouter.post("/extract", async (req, res) => {
   const body = (req.body || {}) as Partial<ExtractRequestBody>;
@@ -27,7 +30,7 @@ extractRouter.post("/extract", async (req, res) => {
   }
   if (!market) {
     return res.status(400).json({
-      error: "Invalid market. Supported values: US, EU-DE, SG, JP.",
+      error: `Invalid market. Supported values: ${SUPPORTED_MARKETS_LABEL}.`,
     });
   }
 

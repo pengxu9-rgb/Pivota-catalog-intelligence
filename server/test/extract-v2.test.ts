@@ -9,6 +9,7 @@ import {
   resolveCurrency,
   resolveMarketSwitchStatus,
 } from "../src/services/extractors/extractV2";
+import { getMarketProfile, getSupportedMarketIds } from "../src/services/extractors/marketProfiles";
 import type { MarketProfile, OfferV2 } from "../src/services/extractors/types";
 
 test("resolveCurrency prefers structured priceCurrency with high confidence", () => {
@@ -69,6 +70,30 @@ test("symbol fallback maps ¥ to JPY under JP market and remains low confidence"
 
   assert.equal(out.code, "JPY");
   assert.equal(out.confidence, "low");
+});
+
+test("symbol fallback maps ¥ to CNY under CN market and remains low confidence", () => {
+  const out = resolveCurrency({
+    structuredCurrency: null,
+    metaCurrencyCandidates: [],
+    priceDisplayRaw: "￥128",
+    marketId: "CN",
+  });
+
+  assert.equal(out.code, "CNY");
+  assert.equal(out.confidence, "low");
+});
+
+test("CN market profile is exposed with CNY authority context", () => {
+  const profile = getMarketProfile("CN");
+
+  assert.equal(profile.market_id, "CN");
+  assert.equal(profile.country, "CN");
+  assert.equal(profile.currency_target, "CNY");
+  assert.equal(profile.locale, "zh-CN");
+  assert.equal(profile.cookies.cart_currency, "CNY");
+  assert.equal(profile.url_params.currency, "CNY");
+  assert.equal(getSupportedMarketIds().includes("CN"), true);
 });
 
 test("computeCounters aggregates by site+market dimensions", () => {

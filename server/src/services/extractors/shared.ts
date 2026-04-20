@@ -38,6 +38,7 @@ const MARKET_KEYWORDS: Record<MarketId, string[]> = {
   "EU-DE": ["germany", "deutschland", "de"],
   SG: ["singapore", "sg"],
   JP: ["japan", "jp", "日本"],
+  CN: ["china", "mainland china", "cn", "中国", "zh-cn"],
 };
 
 export type FetchContext = {
@@ -162,7 +163,7 @@ export async function mapWithConcurrency<T, R>(
 
 export function normalizeMarketId(value: string | undefined): MarketId {
   const normalized = String(value || "US").trim().toUpperCase();
-  if (normalized === "EU-DE" || normalized === "US" || normalized === "SG" || normalized === "JP") {
+  if (normalized === "EU-DE" || normalized === "US" || normalized === "SG" || normalized === "JP" || normalized === "CN") {
     return normalized;
   }
   return "US";

@@ -1,4 +1,4 @@
-export type CurrencyCode = "USD" | "EUR" | "SGD" | "JPY";
+export type CurrencyCode = "USD" | "EUR" | "SGD" | "JPY" | "CNY";
 
 export type LogLine = {
   at: string;

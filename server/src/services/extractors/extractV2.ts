@@ -990,6 +990,7 @@ export function inferCurrencyFromSymbol(rawPrice: string | null, marketId: Marke
   }
 
   if (/[¥￥]/.test(rawPrice)) {
+    if (upperMarket === "CN") return "CNY";
     if (upperMarket === "JP") return "JPY";
     return null;
   }
@@ -1002,6 +1003,7 @@ function fallbackCurrencyByMarket(marketId: string): string | null {
   if (marketId === "EU-DE") return "EUR";
   if (marketId === "SG") return "SGD";
   if (marketId === "JP") return "JPY";
+  if (marketId === "CN") return "CNY";
   return null;
 }
 

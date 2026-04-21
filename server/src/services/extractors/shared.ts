@@ -1,4 +1,4 @@
-import puppeteer, { type Browser, type HTTPResponse, type Page } from "puppeteer";
+import puppeteer, { type Browser, type HTTPResponse, type LaunchOptions, type Page } from "puppeteer";
 
 import { getMarketProfile } from "./marketProfiles";
 import type {
@@ -887,6 +887,29 @@ function localBrowserLaunchArgs(): string[] {
   ];
 }
 
+type LocalBrowserConfig = {
+  headless: NonNullable<LaunchOptions["headless"]>;
+  executablePath?: string;
+  launchBrowser?: Extract<NonNullable<LaunchOptions["browser"]>, "chrome">;
+};
+
+export function resolveLocalBrowserConfig(
+  platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): LocalBrowserConfig {
+  const requestedBrowser = String(env.PUPPETEER_BROWSER || "").trim().toLowerCase();
+  const executablePath = String(env.PUPPETEER_EXECUTABLE_PATH || "").trim() || undefined;
+  const useHeadlessShell =
+    requestedBrowser === "chrome-headless-shell" ||
+    (!requestedBrowser && platform === "linux");
+
+  return {
+    headless: useHeadlessShell ? "shell" : true,
+    ...(!useHeadlessShell ? { launchBrowser: "chrome" as const } : {}),
+    ...(executablePath ? { executablePath } : {}),
+  };
+}
+
 async function openBrowser(mode: BrowserRuntimeMode): Promise<Browser> {
   if (mode === "managed") {
     const endpoint = remoteBrowserEndpoint();
@@ -896,9 +919,11 @@ async function openBrowser(mode: BrowserRuntimeMode): Promise<Browser> {
     return puppeteer.connect({ browserWSEndpoint: endpoint });
   }
 
+  const localBrowserConfig = resolveLocalBrowserConfig();
   return puppeteer.launch({
-    headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    browser: localBrowserConfig.launchBrowser,
+    headless: localBrowserConfig.headless,
+    executablePath: localBrowserConfig.executablePath,
     args: localBrowserLaunchArgs(),
   });
 }

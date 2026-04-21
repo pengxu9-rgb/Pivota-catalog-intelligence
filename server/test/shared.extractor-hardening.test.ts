@@ -14,6 +14,7 @@ import {
   looksLikeStorefrontPasswordPage,
   looksLikeProductPageHtml,
   parseTarget,
+  resolveLocalBrowserConfig,
   resolveStorefrontFromHtml,
   resolveStorefrontTarget,
   runBrowserTaskWithFallback,
@@ -919,6 +920,30 @@ test("isCookieActionLabel does not confuse 'Book' CTAs with cookie consent butto
   assert.equal(isCookieActionLabel("Book a Spa Treatment"), false);
   assert.equal(isCookieActionLabel("OK"), true);
   assert.equal(isCookieActionLabel("Accept all cookies"), true);
+});
+
+test("resolveLocalBrowserConfig defaults Linux runtimes to chrome-headless-shell", () => {
+  const config = resolveLocalBrowserConfig("linux", {});
+  assert.equal(config.launchBrowser, undefined);
+  assert.equal(config.headless, "shell");
+});
+
+test("resolveLocalBrowserConfig respects explicit chrome override", () => {
+  const config = resolveLocalBrowserConfig("linux", {
+    PUPPETEER_BROWSER: "chrome",
+    PUPPETEER_EXECUTABLE_PATH: "/tmp/custom-chrome",
+  });
+  assert.equal(config.launchBrowser, "chrome");
+  assert.equal(config.headless, true);
+  assert.equal(config.executablePath, "/tmp/custom-chrome");
+});
+
+test("resolveLocalBrowserConfig respects explicit chrome-headless-shell override", () => {
+  const config = resolveLocalBrowserConfig("darwin", {
+    PUPPETEER_BROWSER: "chrome-headless-shell",
+  });
+  assert.equal(config.launchBrowser, undefined);
+  assert.equal(config.headless, "shell");
 });
 
 test("detectBlockProvider classifies Cloudflare challenge pages", () => {

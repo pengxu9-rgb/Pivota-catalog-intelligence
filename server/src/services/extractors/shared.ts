@@ -876,8 +876,8 @@ function remoteBrowserEndpoint(): string | null {
   return endpoint || null;
 }
 
-function localBrowserLaunchArgs(): string[] {
-  return [
+function localBrowserLaunchArgs(platform = process.platform): string[] {
+  const args = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
@@ -885,6 +885,12 @@ function localBrowserLaunchArgs(): string[] {
     "--disable-crash-reporter",
     "--no-zygote",
   ];
+
+  if (platform === "linux") {
+    args.push("--single-process", "--disable-gpu");
+  }
+
+  return args;
 }
 
 type LocalBrowserConfig = {
@@ -928,6 +934,28 @@ async function openBrowser(mode: BrowserRuntimeMode): Promise<Browser> {
   });
 }
 
+function summarizeLocalBrowserConfig(config: LocalBrowserConfig): string {
+  const parts = [`headless=${String(config.headless)}`];
+  if (config.launchBrowser) parts.push(`browser=${config.launchBrowser}`);
+  if (config.executablePath) parts.push(`executable_path=custom`);
+  return parts.join(", ");
+}
+
+function isRetriableLocalBrowserLaunchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("failed to launch the browser process") ||
+    normalized.includes("resource temporarily unavailable") ||
+    normalized.includes("chrome_crashpad_handler") ||
+    normalized.includes("failed to create a child process")
+  );
+}
+
+async function delayMs(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function closeBrowser(browser: Browser, mode: BrowserRuntimeMode): Promise<void> {
   if (mode === "managed") {
     browser.disconnect();
@@ -940,13 +968,25 @@ export async function runBrowserTaskWithFallback<T>(
   task: (browser: Browser, mode: BrowserRuntimeMode) => Promise<T>,
   options: BrowserTaskOptions,
 ): Promise<{ result: T; mode: BrowserRuntimeMode }> {
-  let browser = await openBrowser("local");
+  const localBrowserConfig = resolveLocalBrowserConfig();
+  options.log?.("info", `Launching local browser runtime: ${summarizeLocalBrowserConfig(localBrowserConfig)}`);
+  let browser: Browser | undefined;
+
+  try {
+    browser = await openBrowser("local");
+  } catch (error) {
+    if (!isRetriableLocalBrowserLaunchError(error)) throw error;
+    const message = error instanceof Error ? error.message : String(error || "unknown_error");
+    options.log?.("warn", `Local browser launch failed; retrying once: ${message}`);
+    await delayMs(250);
+    browser = await openBrowser("local");
+  }
 
   try {
     return { result: await task(browser, "local"), mode: "local" };
   } catch (error) {
     await closeBrowser(browser, "local");
-    browser = undefined as never;
+    browser = undefined;
 
     if (error instanceof BotChallengeError && remoteBrowserEndpoint()) {
       options.log?.("warn", `Bot challenge detected locally at ${error.url}. Retrying with managed browser.`);

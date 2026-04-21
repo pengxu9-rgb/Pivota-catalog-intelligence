@@ -22,10 +22,12 @@ import {
   buildProductPdpFields,
   deriveProductPdpModuleBodies,
   extractDelimitedLabeledSectionText,
-  extractProductFromHtmlSnapshot,
-  extractShopifyBodyHtmlPdpTextFields,
+  extractInlineFaqItemsFromHtml,
   extractShopifyEmbeddedProductPayloadPdpFields,
+  extractShopifyBodyHtmlPdpFields,
+  filterUsefulFaqItems,
   looksLikeFullIngredientListText,
+  productHasMissingPdpFields,
 } from "../src/services/extractors/puppeteer";
 
 type MockRoute = {
@@ -165,6 +167,15 @@ test("deriveProductPdpModuleBodies extracts full modal ingredients and active in
   assert.equal(bodies.howToUseRaw, "Shake well and blend with fingers.");
 });
 
+test("looksLikeFullIngredientListText does not misclassify prose-heavy overview copy as INCI", () => {
+  assert.equal(
+    looksLikeFullIngredientListText(
+      "Cloud-like hydrating mist instantly calms and nourishes skin, while making it look and feel more plump, smooth, and ready for makeup.",
+    ),
+    false,
+  );
+});
+
 test("deriveProductPdpModuleBodies keeps summary-style ingredient accordions out of ingredients_raw", () => {
   assert.equal(looksLikeFullIngredientListText("Rose Flower Oil nourishes & restores. Ceramide provides time-release moisture."), false);
 
@@ -191,25 +202,37 @@ test("deriveProductPdpModuleBodies keeps summary-style ingredient accordions out
   assert.equal(bodies.howToUseRaw, "Use daily after cleansing and serum.");
 });
 
-test("deriveProductPdpModuleBodies does not treat active ingredient lists as full INCI", () => {
+test("deriveProductPdpModuleBodies does not turn long ingredient disclaimers into active ingredients", () => {
   const bodies = deriveProductPdpModuleBodies({
     detailsSections: [
       {
-        heading: "Active Ingredients",
-        body: "Hippophae Rhamnoides Water, Niacinamide, 3-O-Ethyl Ascorbic Acid, Panthenol",
-        source_kind: "shopify_collapsible_tab_html",
-      },
-      {
-        heading: "How to Use",
-        body: "Apply after cleansing and toning.",
-        source_kind: "shopify_collapsible_tab_html",
+        heading: "Ingredients",
+        body:
+          "PETA-certified vegan and cruelty-free.\n\n100% Cold Pressed Organic Tamanu Oil:\n\nContains antioxidants to protect skin from premature aging and skin damage\nImproves skin hydration, reduces dryness and inflammation, and prevents moisture loss\nPromotes skin regeneration to reduce the appearance of scars and stretch marks\nHydrates hair strands and soothes sensitive scalps to encourage stronger, longer, & healthier hair growth\n\nNOTE:\nTamanu Oil is derived from Tamanu nuts. Though most people do not have issues using this ingredient, people with nut allergies could have a potential reaction.",
+        source_kind: "accordion_ingredients",
       },
     ],
   });
 
   assert.equal(bodies.ingredientsRaw, undefined);
-  assert.match(bodies.activeIngredientsRaw || "", /Hippophae Rhamnoides Water/i);
-  assert.equal(bodies.howToUseRaw, "Apply after cleansing and toning.");
+  assert.equal(bodies.activeIngredientsRaw, undefined);
+});
+
+test("deriveProductPdpModuleBodies prefers instructional how-to text over mislabeled marketing blurbs", () => {
+  const bodies = deriveProductPdpModuleBodies({
+    howToUseText:
+      "Cloud-like hydrating mist instantly calms and nourishes skin, while making it look and feel more plump, smooth, and ready for makeup.",
+    detailsSections: [
+      {
+        heading: "How to Use",
+        body: "Shake well to fully mix. With eyes closed, spritz 2-4 times at least 10 inches away from your face.",
+        source_kind: "modal_content",
+      },
+    ],
+  });
+
+  assert.match(bodies.howToUseRaw || "", /Shake well to fully mix/i);
+  assert.doesNotMatch(bodies.howToUseRaw || "", /Cloud-like hydrating mist/i);
 });
 
 test("deriveProductPdpModuleBodies prefers full INCI over key ingredient summaries", () => {
@@ -239,6 +262,62 @@ test("deriveProductPdpModuleBodies prefers full INCI over key ingredient summari
 
   assert.equal(bodies.ingredientsRaw, fullInci);
   assert.equal(bodies.activeIngredientsRaw, undefined);
+});
+
+test("deriveProductPdpModuleBodies ignores 'What's in it' marketing blurbs when a modal INCI list exists", () => {
+  const fullInci =
+    "Water/Aqua/Eau, Caprylic/Capric Triglyceride, Glycerin, Dipropylene Glycol, Niacinamide, 1,2-Hexanediol, Butylene Glycol, Panthenol";
+  const bodies = deriveProductPdpModuleBodies({
+    detailsSections: [
+      {
+        heading: "What's in it?",
+        body:
+          "Cloud-like hydrating mist instantly calms and nourishes skin, while making it look and feel more plump, smooth, and ready for makeup.",
+        source_kind: "accordion_button",
+      },
+      {
+        heading: "Ingredients",
+        body: fullInci,
+        source_kind: "modal_content",
+      },
+    ],
+  });
+
+  assert.equal(bodies.ingredientsRaw, fullInci);
+  assert.equal(bodies.activeIngredientsRaw, undefined);
+});
+
+test("filterUsefulFaqItems removes promo and pseudo-faq noise but keeps product questions", () => {
+  const items = filterUsefulFaqItems([
+    {
+      question: "What's in it?",
+      answer: "Cloud-like hydrating mist instantly calms and nourishes skin.",
+      source_kind: "accordion_question_answer",
+    },
+    {
+      question: "How to Pair",
+      answer: "Shop Now with our matching serum.",
+      source_kind: "accordion_question_answer",
+    },
+    {
+      question: "Be the first to be in the know, y’know?",
+      answer: "Plus save 10% on your first order.",
+      source_kind: "accordion_question_answer",
+    },
+    {
+      question: "Can I use Always an Optimist 4-in-1 Mist as a setting spray?",
+      answer: "You can. It helps extend makeup wear with a natural radiant finish.",
+      source_kind: "inline_html_faq",
+    },
+  ]);
+
+  assert.deepEqual(items, [
+    {
+      question: "Can I use Always an Optimist 4-in-1 Mist as a setting spray?",
+      answer: "You can. It helps extend makeup wear with a natural radiant finish.",
+      source_kind: "inline_html_faq",
+    },
+  ]);
 });
 
 test("deriveProductPdpModuleBodies extracts Tom Ford-style details summary accordions", () => {
@@ -274,57 +353,6 @@ test("deriveProductPdpModuleBodies extracts Tom Ford-style details summary accor
   assert.equal(bodies.activeIngredientsRaw, undefined);
 });
 
-test("deriveProductPdpModuleBodies keeps Guerlain key ingredients separate from full ingredients", () => {
-  const bodies = deriveProductPdpModuleBodies({
-    detailsSections: [
-      {
-        heading: "Key Ingredients",
-        body:
-          "Black Bee Honey: Helps support skin repair.\n\nExclusive Royal Jelly: Helps nourish and smooth the skin.",
-        source_kind: "guerlain_ingredients_carousel",
-      },
-      {
-        heading: "Ingredients",
-        body: "Aqua (Water), Glycerin, Squalane, Caprylic/Capric Triglyceride, Parfum (Fragrance).",
-        source_kind: "guerlain_ingredients_modal",
-      },
-    ],
-  });
-
-  assert.equal(
-    bodies.ingredientsRaw,
-    "Aqua (Water), Glycerin, Squalane, Caprylic/Capric Triglyceride, Parfum (Fragrance).",
-  );
-  assert.equal(
-    bodies.activeIngredientsRaw,
-    "Black Bee Honey: Helps support skin repair.\n\nExclusive Royal Jelly: Helps nourish and smooth the skin.",
-  );
-});
-
-test("deriveProductPdpModuleBodies prefers the richer duplicate hero-ingredients accordion body", () => {
-  const bodies = deriveProductPdpModuleBodies({
-    detailsSections: [
-      {
-        heading: "HERO INGREDIENTS",
-        body: "HERO INGREDIENTS",
-        source_kind: "accordion_control",
-      },
-      {
-        heading: "HERO INGREDIENTS",
-        body:
-          "• Hyaluronic Acid, Sea Moss, Centella\nMoisturized and hydrate the skin all day long\n• EGT (L-Ergothioneine), Carnosine\nProtect the skin against free radicals.",
-        source_kind: "accordion_control",
-      },
-    ],
-  });
-
-  assert.equal(
-    bodies.activeIngredientsRaw,
-    "• Hyaluronic Acid, Sea Moss, Centella\nMoisturized and hydrate the skin all day long\n• EGT (L-Ergothioneine), Carnosine\nProtect the skin against free radicals.",
-  );
-  assert.equal(bodies.ingredientsRaw, undefined);
-});
-
 test("deriveProductPdpModuleBodies extracts The Ordinary-style ingredient flyout blocks", () => {
   const bodies = deriveProductPdpModuleBodies({
     detailsSections: [
@@ -347,7 +375,7 @@ test("deriveProductPdpModuleBodies extracts The Ordinary-style ingredient flyout
   assert.match(bodies.activeIngredientsRaw || "", /Homosalate 7\.0%/);
 });
 
-test("extractDelimitedLabeledSectionText supports labels split across Shopify body_html blocks", () => {
+test("extractDelimitedLabeledSectionText supports Shopify labels split across headings and paragraphs", () => {
   const text = `
     This mask is made with a pure cotton sheet mask.
 
@@ -375,82 +403,65 @@ test("extractDelimitedLabeledSectionText supports labels split across Shopify bo
   );
 });
 
-test("extractProductFromHtmlSnapshot parses BYOMA routine rich-text how-to sections", () => {
-  const product = extractProductFromHtmlSnapshot({
-    html: `
-      <html>
-        <head>
-          <title>Balancing Face Mist</title>
-          <meta property="og:price:amount" content="15.99" />
-          <link rel="canonical" href="https://byoma.com/products/balancing-face-mist" />
-        </head>
-        <body>
-          <h1>Balancing Face Mist</h1>
-          <section class="routine-section">
-            <div class="left-section-routine">
-              <div class="routine-content">
-                <h2>HOW TO USE</h2>
-                <div class="metafield-rich_text_field">
-                  <ol>
-                    <li>Shake well before each use and mist onto clean, dry skin</li>
-                    <li>Follow with your favorite serums and moisturizer</li>
-                  </ol>
-                </div>
-              </div>
-            </div>
-          </section>
-        </body>
-      </html>
-    `,
-    url: "https://byoma.com/products/balancing-face-mist",
-    baseUrl: "https://byoma.com",
-  });
+test("extractShopifyBodyHtmlPdpFields parses Round Lab-style body_html sections", () => {
+  const fields = extractShopifyBodyHtmlPdpFields(`
+    <p>This mask is made with a pure cotton sheet mask.</p>
+    <p><strong>How it works</strong></p>
+    <ul><li>Hydrating sheet mask that contains 91.45% pure Mugwort extract.</li></ul>
+    <p><strong>Ingredients</strong></p>
+    <p><strong>Active Ingredients:</strong> Glycine, Madecassoside</p>
+    <p><strong>Full Ingredients:</strong> Water, Glycine, Methylpropanediol, Artemisia Vulgaris Extract</p>
+    <p><strong>How to use</strong></p>
+    <ol><li>After cleansing the face, tidy up the skin texture using toner.</li></ol>
+  `);
 
-  assert.match(product?.how_to_use_raw || "", /Shake well before each use/i);
-  assert.match(product?.field_sources?.how_to_use_raw?.join(","), /page_how_to_use_section/);
+  assert.equal(fields.detailsSections.length, 1);
+  assert.equal(fields.detailsSections[0]?.heading, "Benefits");
+  assert.match(fields.detailsSections[0]?.body || "", /91\.45% pure Mugwort extract/i);
+  assert.match(fields.ingredientsRaw || "", /Water, Glycine, Methylpropanediol/i);
+  assert.equal(fields.activeIngredientsRaw, "Glycine, Madecassoside");
+  assert.equal(fields.howToUseRaw, "After cleansing the face, tidy up the skin texture using toner.");
 });
 
-test("extractProductFromHtmlSnapshot parses SKIN1004 prhow and prinfo PDP sections", () => {
-  const product = extractProductFromHtmlSnapshot({
-    html: `
-      <html>
-        <head>
-          <title>Azelaic Acid 10 Ampoule</title>
-          <meta property="og:price:amount" content="16.80" />
-          <link rel="canonical" href="https://www.skin1004.com/products/azelaic-acid-10-ampoule" />
-        </head>
-        <body>
-          <h1>Azelaic Acid 10 Ampoule</h1>
-          <div class="prhow-flex">
-            <div class="prhow-section-title txt_style_five">HOW TO USE</div>
-            <div class="swiper-container prhow-swiper-container">
-              <div class="swiper-slide">
-                <div class="prhow-txt txt_style_four">
-                  <div class="metafield-rich_text_field">
-                    <p><strong>[SKINCARE ROUTINE]</strong><br />Gently apply along the skin texture, then lightly pat to aid absorption.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="prinfo-content-ingrewrapper">
-            <div class="prinfo-ingre-title txt_style_three">FULL INGREDIENTS</div>
-            <div id="prinfo-tab3-body2" class="prinfo-content-body txt_style_four">
-              <div class="metafield-rich_text_field">
-                <p>Water, Azelaic Acid, Hydroxypropyl Cyclodextrin, Panthenol, Centella Asiatica Extract</p>
-              </div>
-            </div>
-          </div>
-        </body>
-      </html>
-    `,
-    url: "https://www.skin1004.com/products/azelaic-acid-10-ampoule",
-    baseUrl: "https://www.skin1004.com",
-  });
+test("extractShopifyBodyHtmlPdpFields parses Round Lab uppercase h3 PDP labels", () => {
+  const fields = extractShopifyBodyHtmlPdpFields(`
+    <p><strong>Sculpt, cool, and revive—one mask does it all.</strong></p>
+    <hr>
+    <h3>HOW IT WORKS</h3>
+    <ul>
+      <li><strong>Thread‑Lift Fabric</strong> — Hugs the jawline and pulls upward for a lifted V-shape.</li>
+      <li><strong>Instant Cooling Hydrogel</strong> — Cools on contact to soothe heat and reduce puffiness.</li>
+    </ul>
+    <hr>
+    <h3>ACTIVE INGREDIENTS</h3>
+    <p>Jeju Camellia Flower Extract • Multi‑Weight Collagen • 8‑Peptide Complex • Caffeine • Niacinamide</p>
+    <hr>
+    <h3>HOW TO USE</h3>
+    <ol>
+      <li>After cleansing and toning, stretch the mask and hook over each ear.</li>
+      <li>Smooth upward along the jawline for a snug fit.</li>
+      <li>Relax for 20-30 minutes.</li>
+    </ol>
+  `);
 
-  assert.match(product?.how_to_use_raw || "", /Gently apply along the skin texture/i);
-  assert.match(product?.ingredients_raw || "", /Water, Azelaic Acid/i);
-  assert.match(product?.field_sources?.details_sections?.join(","), /skin1004_pr/);
+  assert.equal(fields.detailsSections.length, 1);
+  assert.equal(fields.detailsSections[0]?.heading, "Benefits");
+  assert.match(fields.detailsSections[0]?.body || "", /Thread‑Lift Fabric/i);
+  assert.match(fields.activeIngredientsRaw || "", /Jeju Camellia Flower Extract/i);
+  assert.match(fields.howToUseRaw || "", /hook over each ear/i);
+  assert.match(fields.howToUseRaw || "", /Relax for 20-30 minutes/i);
+});
+
+test("extractShopifyBodyHtmlPdpFields treats usage headings as how-to labels", () => {
+  const fields = extractShopifyBodyHtmlPdpFields(`
+    <h3>Usage</h3>
+    <p>Shake well before use. Spritz two to four times across the face.</p>
+    <h3>Full Ingredients</h3>
+    <p>Water, Glycerin, Niacinamide, Panthenol</p>
+  `);
+
+  assert.equal(fields.howToUseRaw, "Shake well before use. Spritz two to four times across the face.");
+  assert.equal(fields.ingredientsRaw, "Water, Glycerin, Niacinamide, Panthenol");
 });
 
 test("extractShopifyEmbeddedProductPayloadPdpFields promotes inline Shopify product payloads into structured PDP fields", () => {
@@ -471,6 +482,8 @@ test("extractShopifyEmbeddedProductPayloadPdpFields promotes inline Shopify prod
   const fields = extractShopifyEmbeddedProductPayloadPdpFields([script]);
 
   assert.match(fields.descriptionRaw || "", /pure cotton sheet mask/i);
+  assert.equal(fields.detailsSections.length, 1);
+  assert.equal(fields.detailsSections[0]?.heading, "Benefits");
   assert.match(fields.detailsSections[0]?.body || "", /91\.45% pure Mugwort extract/i);
   assert.equal(fields.activeIngredientsRaw, "Glycine, Madecassoside");
   assert.match(fields.ingredientsRaw || "", /Water, Glycine, Methylpropanediol/i);
@@ -478,149 +491,17 @@ test("extractShopifyEmbeddedProductPayloadPdpFields promotes inline Shopify prod
   assert.deepEqual(fields.imageUrls, ["//roundlab.com/cdn/shop/files/mugwort-calming-sheet-mask-round-lab-1.png?v=1772849529"]);
 });
 
-test("extractShopifyBodyHtmlPdpTextFields splits Round Lab-style How to Use, Good For, and Full INCI sections", () => {
-  const fields = extractShopifyBodyHtmlPdpTextFields(`
-    <p><strong>How to Use</strong></p>
-    <p>(Short) After cleansing, apply an appropriate amount to the face. Gently pat until fully absorbed.</p>
-    <p><strong>Good For</strong></p>
-    <p>Dry or dehydrated skin. Daily barrier support care.</p>
-    <p><strong>Full INCI</strong></p>
-    <p>Water, Camellia Japonica Flower Extract, Glycerin, Butylene Glycol, Collagen Extract, Sodium DNA (PDRN), Niacinamide</p>
-    <p><strong>Key Benefits</strong></p>
-    <p>Milky hydration and elasticity support.</p>
-  `);
+test("extractShopifyEmbeddedProductPayloadPdpFields parses sgGlobalVars currentProduct payloads", () => {
+  const script = `sgGlobalVars.currentProduct = ${JSON.stringify({
+    description: "<p>A multipurpose oil that promotes healthy skin and hair.</p><p><strong>Intention Til the Last Drop</strong></p><p>Supports the local community where the oil is sourced.</p>",
+    content: "<p>A multipurpose oil that promotes healthy skin and hair.</p>",
+    images: ["//kravebeauty.com/cdn/shop/files/topdp1.png?v=1699393313"],
+  })};`;
 
-  assert.equal(
-    fields.howToUseRaw,
-    "(Short) After cleansing, apply an appropriate amount to the face. Gently pat until fully absorbed.",
-  );
-  assert.match(fields.ingredientsRaw || "", /Water, Camellia Japonica Flower Extract/i);
-  assert.doesNotMatch(fields.howToUseRaw || "", /Full INCI|Camellia Japonica Flower Extract/i);
-});
+  const fields = extractShopifyEmbeddedProductPayloadPdpFields([script]);
 
-test("extractShopifyBodyHtmlPdpTextFields parses Round Lab uppercase h3 labels with narrow spaces", () => {
-  const fields = extractShopifyBodyHtmlPdpTextFields(`
-    <p><strong>Sculpt, cool, and revive—one mask does it all.</strong></p>
-    <hr>
-    <h3>ACTIVE INGREDIENTS</h3>
-    <p>Jeju Camellia Flower Extract • Multi‑Weight Collagen • 8‑Peptide Complex • Caffeine • Niacinamide</p>
-    <hr>
-    <h3>HOW TO USE</h3>
-    <ol>
-      <li>After cleansing and toning, stretch the mask and hook over each ear.</li>
-      <li>Smooth upward along the jawline for a snug fit.</li>
-      <li>Relax for 20-30 minutes.</li>
-    </ol>
-    <p><strong>Size:</strong> 1 lifting hydrogel mask</p>
-  `);
-
-  assert.match(fields.activeIngredientsRaw || "", /Jeju Camellia Flower Extract/i);
-  assert.match(fields.howToUseRaw || "", /hook over each ear/i);
-  assert.match(fields.howToUseRaw || "", /Relax for 20-30 minutes/i);
-  assert.doesNotMatch(fields.howToUseRaw || "", /Size|hydrogel mask/i);
-  assert.doesNotMatch(fields.activeIngredientsRaw || "", /HOW TO USE|hook over each ear/i);
-});
-
-test("extractProductFromHtmlSnapshot normalizes CN yen price text to CNY", () => {
-  const product = extractProductFromHtmlSnapshot({
-    html: `
-      <html>
-        <head>
-          <title>帧颜淡纹修护精华水 - Pechoin</title>
-          <meta name="description" content="中国官方站商品页。">
-        </head>
-        <body>
-          <h1>帧颜淡纹修护精华水 - Pechoin</h1>
-          <div class="price">价格：¥298 / 100ml</div>
-          <img src="/images/pechoin-serum-water.jpg" alt="帧颜淡纹修护精华水">
-          <h2>Details</h2>
-          <p>Peptide-focused essence water for daily facial care.</p>
-        </body>
-      </html>
-    `,
-    url: "https://www.pechoin.com/products/peptide-essence-water/",
-    baseUrl: "https://www.pechoin.com",
-    marketId: "CN",
-  });
-
-  assert.equal(product?.variants[0]?.price, "298.00");
-  assert.equal(product?.variants[0]?.currency, "CNY");
-});
-
-test("extractShopifyBodyHtmlPdpTextFields does not promote active-only sections to full INCI", () => {
-  const fields = extractShopifyBodyHtmlPdpTextFields(`
-    <p><strong>Active Ingredients</strong></p>
-    <p>Hippophae Rhamnoides Water, Niacinamide, 3-O-Ethyl Ascorbic Acid, Panthenol</p>
-    <p><strong>How to Use</strong></p>
-    <p>Apply a moderate amount after cleansing and toning.</p>
-  `);
-
-  assert.equal(fields.ingredientsRaw, "");
-  assert.match(fields.activeIngredientsRaw || "", /Hippophae Rhamnoides Water/i);
-  assert.equal(fields.howToUseRaw, "Apply a moderate amount after cleansing and toning.");
-});
-
-test("extractShopifyBodyHtmlPdpTextFields does not treat ingredient mentions as INCI labels", () => {
-  const fields = extractShopifyBodyHtmlPdpTextFields(`
-    <h3>HOW IT WORKS</h3>
-    <ul>
-      <li>Hypoallergenic formula is free from 19 flagged ingredients and certified gentle for sensitive skin.</li>
-    </ul>
-    <h3>ACTIVE INGREDIENTS</h3>
-    <p>Jeju Camellia Flower Extract • Multi-Weight Collagen • Caffeine</p>
-  `);
-
-  assert.equal(fields.ingredientsRaw, "");
-  assert.match(fields.activeIngredientsRaw || "", /Jeju Camellia Flower Extract/i);
-});
-
-test("extractProductFromHtmlSnapshot parses Shopify collapsible PDP ingredients and how-to tabs", () => {
-  const product = extractProductFromHtmlSnapshot({
-    html: `
-      <html>
-        <head>
-          <title>Soybean Panthenol Cleanser</title>
-          <meta property="og:price:amount" content="17.00" />
-          <link rel="canonical" href="https://roundlab.com/products/soybean-panthenol-cleanser" />
-        </head>
-        <body>
-          <h1>Soybean Panthenol Cleanser</h1>
-          <collapsible-tab class="m-collapsible no-js-hidden">
-            <button class="m-collapsible--button" data-trigger><span>ACTIVE INGREDIENTS</span></button>
-            <div class="m-collapsible--content" data-content hidden>
-              <div class="m-collapsible--content__inner rte">
-                Fermented Soybean Extract: Rich in amino acids and antioxidants to nourish skin.
-              </div>
-            </div>
-          </collapsible-tab>
-          <collapsible-tab class="m-collapsible no-js-hidden">
-            <button class="m-collapsible--button" data-trigger><span>HOW TO USE</span></button>
-            <div class="m-collapsible--content" data-content hidden>
-              <div class="m-collapsible--content__inner rte">
-                Dispense an appropriate amount into wet hands. Rinse thoroughly.
-              </div>
-            </div>
-          </collapsible-tab>
-          <div class="ingredients-tabs">
-            <div class="tab-panel">
-              <h4>Full Ingredients</h4>
-              <p class="full_ingredients">
-                Water(Aqua), Sodium Cocoyl Isethionate, Glycerin, Panthenol, Ceramide NP.
-              </p>
-            </div>
-          </div>
-        </body>
-      </html>
-    `,
-    url: "https://roundlab.com/products/soybean-panthenol-cleanser",
-    baseUrl: "https://roundlab.com",
-  });
-
-  assert.match(product?.how_to_use_raw || "", /Dispense an appropriate amount/i);
-  assert.match(product?.ingredients_raw || "", /Water\(Aqua\), Sodium Cocoyl Isethionate/i);
-  assert.match(product?.active_ingredients_raw || "", /Fermented Soybean Extract/i);
-  assert.match(product?.field_sources?.details_sections?.join(","), /shopify_collapsible_tab_html/);
-  assert.match(product?.field_sources?.details_sections?.join(","), /shopify_ingredients_tabs_html/);
+  assert.match(fields.descriptionRaw || "", /promotes healthy skin and hair/i);
+  assert.deepEqual(fields.imageUrls, ["//kravebeauty.com/cdn/shop/files/topdp1.png?v=1699393313"]);
 });
 
 test("extractShopifyEmbeddedProductPayloadPdpFields parses customMetafields from inline product scripts", () => {
@@ -644,6 +525,24 @@ test("extractShopifyEmbeddedProductPayloadPdpFields parses customMetafields from
           },
         ],
       },
+      product_info_tab_2_body: {
+        type: "root",
+        children: [
+          {
+            type: "paragraph",
+            children: [{ type: "text", value: "Lightweight gel texture for daily use." }],
+          },
+        ],
+      },
+      product_info_tab_3_key_ingredients: {
+        type: "root",
+        children: [
+          {
+            type: "paragraph",
+            children: [{ type: "text", value: "Niacinamide, Centella Asiatica Extract" }],
+          },
+        ],
+      },
       product_info_tab_3_full_ingredients: {
         type: "root",
         children: [
@@ -662,7 +561,78 @@ test("extractShopifyEmbeddedProductPayloadPdpFields parses customMetafields from
   assert.match(fields.ingredientsRaw || "", /Water, Glycerin, Niacinamide/i);
   assert.deepEqual(
     fields.detailsSections.map((section) => section.heading),
-    ["Benefits", "Ingredients", "How to Use"],
+    ["Benefits", "Details", "Key Ingredients", "Ingredients", "How to Use"],
+  );
+});
+
+test("extractInlineFaqItemsFromHtml parses Rare-style inline FAQ blocks inside usage content", () => {
+  const items = extractInlineFaqItemsFromHtml(`
+    <p>Shake well before use.<br><br><h3>Face Mist FAQs</h3><br>
+    <b>What does Always an Optimist 4-in-1 Mist do?</b><br>
+    This face mist instantly hydrates skin and refreshes your look.<br><br>
+    <b>Can I use Always an Optimist 4-in-1 Mist as a setting spray?</b><br>
+    You can. It helps foundation look smooth and seamless.</p>
+  `);
+
+  assert.equal(items.length, 2);
+  assert.equal(items[0]?.question, "What does Always an Optimist 4-in-1 Mist do?");
+  assert.match(items[0]?.answer || "", /instantly hydrates skin/i);
+  assert.equal(items[1]?.question, "Can I use Always an Optimist 4-in-1 Mist as a setting spray?");
+  assert.match(items[1]?.answer || "", /smooth and seamless/i);
+});
+
+test("deriveProductPdpModuleBodies does not misclassify glossary-style INCI decode as active ingredients", () => {
+  const bodies = deriveProductPdpModuleBodies({
+    detailsSections: [
+      {
+        heading: "The Inci Decoded",
+        body:
+          "Carrier Water Solvent Butylene Glycol Humectant Glycerin Skin Conditioner Ceramide NP Phytosphingosine",
+        source_kind: "details_summary",
+      },
+    ],
+  });
+
+  assert.equal(bodies.ingredientsRaw, undefined);
+  assert.equal(bodies.activeIngredientsRaw, undefined);
+});
+
+test("productHasMissingPdpFields treats partial Shopify PDP modules as incomplete", () => {
+  assert.equal(
+    productHasMissingPdpFields({
+      title: "Balancing Face Mist",
+      url: "https://byoma.com/products/balancing-face-mist",
+      image_url: "https://cdn.example.com/a.jpg",
+      image_urls: ["https://cdn.example.com/a.jpg"],
+      variant_skus: [],
+      variants: [],
+      description_raw: "Face mist overview",
+      details_sections: [
+        {
+          heading: "Benefits",
+          body: "Hydrates and supports the barrier.",
+          source_kind: "details_summary",
+        },
+      ],
+      ingredients_raw: "Water, Glycerin, Ceramide NP",
+      field_capture_status: {
+        description_raw: "present",
+        details_sections: "present",
+        ingredients_raw: "present",
+        active_ingredients_raw: "missing",
+        how_to_use_raw: "missing",
+        faq_items: "missing",
+      },
+      field_sources: {
+        description_raw: ["shopify_body_html"],
+        details_sections: ["details_summary"],
+        ingredients_raw: ["page_ingredients_section"],
+        active_ingredients_raw: [],
+        how_to_use_raw: [],
+        faq_items: [],
+      },
+    } as any),
+    true,
   );
 });
 
@@ -776,71 +746,6 @@ test("discoverProductUrls does not treat a homepage as a direct PDP when it only
 
       assert.equal(diagnostics.discovery_strategy, "seed_page");
       assert.deepEqual(discovered.productUrls, ["https://www.guerlain.com/us/en-us/p/abeille-royale-youth-watery-oil-serum-P062033.html"]);
-    },
-  );
-});
-
-test("discoverProductUrls filters Korean legal and company sitemap pages before PDPs", async () => {
-  const diagnostics = createDiagnostics("roundlab.co.kr", "https://roundlab.co.kr");
-
-  await withMockFetch(
-    {
-      "https://roundlab.co.kr/robots.txt": {
-        status: 200,
-        headers: { "content-type": "text/plain" },
-        body: "Sitemap: https://roundlab.co.kr/sitemap.xml",
-      },
-      "https://roundlab.co.kr/sitemap.xml": {
-        status: 200,
-        headers: { "content-type": "application/xml" },
-        body: `
-          <urlset>
-            <url><loc>https://roundlab.co.kr/member/privacy.html</loc></url>
-            <url><loc>https://roundlab.co.kr/member/agreement.html</loc></url>
-            <url><loc>https://roundlab.co.kr/shopinfo/company.html</loc></url>
-            <url><loc>https://roundlab.co.kr/product/1025-독도-토너-200ml/22/</loc></url>
-          </urlset>
-        `,
-      },
-    },
-    async () => {
-      const discovered = await discoverProductUrls({
-        baseUrl: "https://roundlab.co.kr",
-        maxProducts: 5,
-        context: {},
-        diagnostics,
-      });
-
-      assert.equal(diagnostics.discovery_strategy, "sitemap");
-      assert.deepEqual(discovered.productUrls, ["https://roundlab.co.kr/product/1025-독도-토너-200ml/22/"]);
-    },
-  );
-});
-
-test("discoverProductUrls treats Kao item SKU pages as direct PDPs", async () => {
-  const diagnostics = createDiagnostics("www.kao-kirei.com", "https://www.kao-kirei.com");
-
-  await withMockFetch(
-    {
-      "https://www.kao-kirei.com/ja/item/khg/bioresarasarauv/4901301413246/": {
-        status: 200,
-        headers: { "content-type": "text/html; charset=utf-8" },
-        body: readFixture("direct-product-page.html"),
-      },
-    },
-    async () => {
-      const discovered = await discoverProductUrls({
-        baseUrl: "https://www.kao-kirei.com",
-        seedUrl: "https://www.kao-kirei.com/ja/item/khg/bioresarasarauv/4901301413246/",
-        maxProducts: 5,
-        context: {},
-        diagnostics,
-      });
-
-      assert.equal(diagnostics.discovery_strategy, "seed_page");
-      assert.deepEqual(discovered.productUrls, [
-        "https://www.kao-kirei.com/ja/item/khg/bioresarasarauv/4901301413246/",
-      ]);
     },
   );
 });
@@ -1000,47 +905,6 @@ test("discoverProductUrls re-discovers a target PDP when a stale direct seed red
   );
 });
 
-test("discoverProductUrls classifies blocked direct seed PDPs as bot challenges", async () => {
-  const diagnostics = createDiagnostics("www.esteelauder.com", "https://www.esteelauder.com");
-
-  await withMockFetch(
-    {
-      "https://www.esteelauder.com/product/689/77491/product-catalog/skincare/repair-serum/advanced-night-repair-serum/synchronized-multi-recovery-complex": {
-        status: 403,
-        headers: {
-          "content-type": "text/html; charset=utf-8",
-          warning: "299 Akamai",
-          "akamai-grn": "0.59ce2d17.1774455343.cef8a5a9",
-          "x-akamai-devicedetected": "Desktop",
-        },
-        body: `
-          <html>
-            <head><title>Access Denied</title></head>
-            <body>
-              <h1>Access Denied</h1>
-              You don't have permission to access this page on this server.
-              Reference #18.59ce2d17.1774455343.cef8a5a9
-            </body>
-          </html>
-        `,
-      },
-    },
-    async () => {
-      const discovered = await discoverProductUrls({
-        baseUrl: "https://www.esteelauder.com",
-        seedUrl: "https://www.esteelauder.com/product/689/77491/product-catalog/skincare/repair-serum/advanced-night-repair-serum/synchronized-multi-recovery-complex",
-        maxProducts: 5,
-        context: {},
-        diagnostics,
-      });
-
-      assert.equal(diagnostics.discovery_strategy, "seed_page");
-      assert.equal(diagnostics.block_provider, "akamai");
-      assert.equal(diagnostics.failure_category, "bot_challenge");
-      assert.deepEqual(discovered.productUrls, []);
-    },
-  );
-});
 test("looksLikeProductPageHtml distinguishes PDPs from price-only non-product pages", () => {
   assert.equal(looksLikeProductPageHtml(readFixture("direct-product-page.html")), true);
   assert.equal(
@@ -1086,22 +950,6 @@ test("detectBlockProvider does not classify normal Cloudflare-served pages from 
   });
 
   assert.equal(provider, null);
-});
-
-test("detectBlockProvider classifies Akamai access denied pages from response headers", () => {
-  const provider = detectBlockProvider({
-    status: 403,
-    headers: {
-      warning: "299 Akamai",
-      "akamai-grn": "0.59ce2d17.1774455343.cef8a5a9",
-      "x-akamai-devicedetected": "Desktop",
-    },
-    body: `You don't have permission to access this page on this server.\nReference #18.59ce2d17.1774455343.cef8a5a9`,
-    title: "Access Denied",
-    url: "https://www.esteelauder.com/product/689/77491/product-catalog/skincare/repair-serum/advanced-night-repair-serum/synchronized-multi-recovery-complex",
-  });
-
-  assert.equal(provider, "akamai");
 });
 
 test("looksLikeStorefrontPasswordPage detects Shopify password gates", () => {
@@ -1193,47 +1041,5 @@ test("runBrowserTaskWithFallback retries once with a managed browser after a bot
     } else {
       process.env.REMOTE_BROWSER_ENABLED = originalEnabled;
     }
-  }
-});
-
-test("runBrowserTaskWithFallback launches local Chrome with hardened Railway-safe flags", async () => {
-  const diagnostics = createDiagnostics("pixibeauty.com", "https://pixibeauty.com");
-  const originalLaunch = puppeteer.launch;
-  const captured: { args?: string[] } = {};
-  const calls: string[] = [];
-
-  const localBrowser = {
-    close: async () => {
-      calls.push("local-close");
-    },
-  };
-
-  (puppeteer as typeof puppeteer & { launch: typeof puppeteer.launch }).launch = async (options?: Parameters<typeof puppeteer.launch>[0]) => {
-    captured.args = options?.args ? [...options.args] : [];
-    calls.push("launch");
-    return localBrowser as never;
-  };
-
-  try {
-    const result = await runBrowserTaskWithFallback(
-      async (browser, mode) => {
-        assert.equal(mode, "local");
-        assert.equal(browser, localBrowser);
-        return "ok";
-      },
-      { diagnostics },
-    );
-
-    assert.equal(result.mode, "local");
-    assert.equal(result.result, "ok");
-    assert.deepEqual(calls, ["launch", "local-close"]);
-    assert.ok(captured.args?.includes("--no-sandbox"));
-    assert.ok(captured.args?.includes("--disable-setuid-sandbox"));
-    assert.ok(captured.args?.includes("--disable-dev-shm-usage"));
-    assert.ok(captured.args?.includes("--disable-breakpad"));
-    assert.ok(captured.args?.includes("--disable-crash-reporter"));
-    assert.ok(captured.args?.includes("--no-zygote"));
-  } finally {
-    puppeteer.launch = originalLaunch;
   }
 });

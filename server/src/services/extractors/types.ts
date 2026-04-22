@@ -3,6 +3,7 @@ export type MarketId = "US" | "EU-DE" | "SG" | "JP" | "CN" | "KR";
 export type DiscoveryStrategy =
   | "shopify_json"
   | "seed_page"
+  | "site_search"
   | "sitemap"
   | "browser_discovery"
   | "managed_browser";

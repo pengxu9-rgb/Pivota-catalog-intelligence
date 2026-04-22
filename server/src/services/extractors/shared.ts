@@ -484,6 +484,19 @@ function rankProductUrlsForSeed(productUrls: string[], seedUrl: string, baseUrl:
   });
 }
 
+function buildSiteSearchUrlsForSeed(seedUrl: string, baseUrl: string): string[] {
+  const seed = parseHttpUrl(seedUrl, baseUrl);
+  const base = parseHttpUrl(baseUrl, baseUrl);
+  if (!seed || !base) return [];
+
+  const lastSegment = seed.pathname.split("/").filter(Boolean).pop() || "";
+  const queryTokens = tokenizePathSegment(lastSegment);
+  if (queryTokens.length === 0) return [];
+
+  const query = encodeURIComponent(queryTokens.join(" "));
+  return dedupeUrls([`${base.origin}/search?q=${query}`, `${base.origin}/search?type=product&q=${query}`]);
+}
+
 export function isLikelyProductUrl(rawUrl: string, baseUrl: string): boolean {
   const mode = (process.env.PDP_DETECTION_MODE || "score").toLowerCase();
   if (mode !== "score") {
@@ -1243,6 +1256,7 @@ export async function discoverProductUrls(params: {
 }): Promise<DiscoveryResult> {
   let deadSitemapDetected = false;
   let challengeDetected = false;
+  let staleDirectSeedCandidate = false;
   const seedDiscoveryUrl = params.seedUrl || params.baseUrl;
   const directSeedCandidate = Boolean(params.seedUrl && scoreProductCandidateUrl(seedDiscoveryUrl, params.baseUrl) >= 4);
 
@@ -1309,6 +1323,7 @@ export async function discoverProductUrls(params: {
           challengeDetected,
         };
       }
+      if (directSeedCandidate && !seed.ok) staleDirectSeedCandidate = true;
     } else if (directSeedCandidate && !seed.blockedBy && seed.ok) {
       setDiscoveryStrategy(params.diagnostics, "seed_page");
       if (!params.diagnostics.failure_category) {
@@ -1317,6 +1332,31 @@ export async function discoverProductUrls(params: {
       return {
         sitemapUrl: undefined,
         productUrls: [],
+        deadSitemapDetected,
+        challengeDetected,
+      };
+    } else if (directSeedCandidate && !seed.blockedBy) {
+      staleDirectSeedCandidate = true;
+    }
+  }
+
+  if (staleDirectSeedCandidate && params.seedUrl) {
+    for (const searchUrl of buildSiteSearchUrlsForSeed(params.seedUrl, params.baseUrl)) {
+      const search = await fetchTextTracked(searchUrl, params.context, params.diagnostics);
+      if (search.blockedBy) challengeDetected = true;
+      if (!search.body || !search.ok) continue;
+
+      const rankedSearchUrls = rankProductUrlsForSeed(
+        extractProductUrlsFromHtml(search.body, params.baseUrl),
+        params.seedUrl,
+        params.baseUrl,
+      ).slice(0, params.maxProducts);
+      if (rankedSearchUrls.length === 0) continue;
+
+      setDiscoveryStrategy(params.diagnostics, "site_search");
+      return {
+        sitemapUrl: undefined,
+        productUrls: rankedSearchUrls,
         deadSitemapDetected,
         challengeDetected,
       };

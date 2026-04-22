@@ -914,6 +914,46 @@ test("discoverProductUrls falls through from a 404 direct PDP to sitemap and ran
   );
 });
 
+test("discoverProductUrls falls through from a 404 direct PDP to site search and ranks the closest replacement first", async () => {
+  const diagnostics = createDiagnostics("sigmabeauty.com", "https://sigmabeauty.com");
+
+  await withMockFetch(
+    {
+      "https://sigmabeauty.com/products/the-award-winning-brush-set": {
+        status: 404,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: "<html><body><h1>Not found</h1></body></html>",
+      },
+      "https://sigmabeauty.com/search?q=the%20award%20winning%20brush%20set": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `
+          <html>
+            <body>
+              <a href="/products/skincare-brush-set">Skincare Brush Set</a>
+              <a href="/products/the-award-winning-brush-set-1">The Award-Winning Brush Set</a>
+              <a href="/products/perfect-eyes-brush-set">Perfect Eyes Brush Set</a>
+            </body>
+          </html>
+        `,
+      },
+    },
+    async () => {
+      const discovered = await discoverProductUrls({
+        baseUrl: "https://sigmabeauty.com",
+        seedUrl: "https://sigmabeauty.com/products/the-award-winning-brush-set",
+        maxProducts: 5,
+        context: {},
+        diagnostics,
+      });
+
+      assert.equal(diagnostics.discovery_strategy, "site_search");
+      assert.equal(diagnostics.failure_category, null);
+      assert.equal(discovered.productUrls[0], "https://sigmabeauty.com/products/the-award-winning-brush-set-1");
+    },
+  );
+});
+
 test("discoverProductUrls re-discovers a target PDP when a stale direct seed redirects to a collection page", async () => {
   const diagnostics = createDiagnostics("www.tomfordbeauty.com", "https://www.tomfordbeauty.com");
 

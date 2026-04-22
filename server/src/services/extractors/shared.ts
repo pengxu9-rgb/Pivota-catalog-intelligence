@@ -1297,7 +1297,7 @@ export async function discoverProductUrls(params: {
         };
       }
 
-      if (directSeedCandidate) {
+      if (directSeedCandidate && seed.ok) {
         setDiscoveryStrategy(params.diagnostics, "seed_page");
         if (!params.diagnostics.failure_category) {
           setFailureCategory(params.diagnostics, seed.blockedBy ? "bot_challenge" : seed.ok ? "product_schema_missing" : "no_product_urls");
@@ -1309,7 +1309,7 @@ export async function discoverProductUrls(params: {
           challengeDetected,
         };
       }
-    } else if (directSeedCandidate && !seed.blockedBy) {
+    } else if (directSeedCandidate && !seed.blockedBy && seed.ok) {
       setDiscoveryStrategy(params.diagnostics, "seed_page");
       if (!params.diagnostics.failure_category) {
         setFailureCategory(params.diagnostics, "no_product_urls");
@@ -1371,12 +1371,29 @@ export async function discoverProductUrls(params: {
   const deduped = dedupeUrls(pageUrls).filter((url) => url.startsWith("http"));
   const nonAsset = deduped.filter((url) => !isStaticAssetUrl(url, params.baseUrl));
   const productLike = nonAsset.filter((url) => isLikelyProductUrl(url, params.baseUrl));
-  const selected = productLike.slice(0, params.maxProducts);
+  const rankedProductLike =
+    directSeedCandidate && params.seedUrl ? rankProductUrlsForSeed(productLike, params.seedUrl, params.baseUrl) : productLike;
+  const selected = rankedProductLike.slice(0, params.maxProducts);
   if (selected.length > 0) {
     setDiscoveryStrategy(params.diagnostics, "sitemap");
     return {
       sitemapUrl: chosenSitemap,
       productUrls: selected,
+      deadSitemapDetected,
+      challengeDetected,
+    };
+  }
+
+  if (directSeedCandidate && !challengeDetected) {
+    if (!params.diagnostics.failure_category) {
+      setFailureCategory(params.diagnostics, deadSitemapDetected ? "dead_sitemap" : "no_product_urls");
+    }
+    if (!params.diagnostics.discovery_strategy) {
+      setDiscoveryStrategy(params.diagnostics, "seed_page");
+    }
+    return {
+      sitemapUrl: chosenSitemap,
+      productUrls: [],
       deadSitemapDetected,
       challengeDetected,
     };
@@ -1428,6 +1445,9 @@ export async function discoverProductUrls(params: {
     } else {
       setFailureCategory(params.diagnostics, "no_product_urls");
     }
+  }
+  if (!params.diagnostics.discovery_strategy && directSeedCandidate) {
+    setDiscoveryStrategy(params.diagnostics, "seed_page");
   }
 
   return {

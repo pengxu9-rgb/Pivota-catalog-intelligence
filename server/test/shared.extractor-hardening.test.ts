@@ -866,6 +866,54 @@ test("discoverProductUrls does not fall through from an invalid direct PDP to un
   );
 });
 
+test("discoverProductUrls falls through from a 404 direct PDP to sitemap and ranks the closest replacement first", async () => {
+  const diagnostics = createDiagnostics("sigmabeauty.com", "https://sigmabeauty.com");
+
+  await withMockFetch(
+    {
+      "https://sigmabeauty.com/products/the-award-winning-brush-set": {
+        status: 404,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: "<html><body><h1>Not found</h1></body></html>",
+      },
+      "https://sigmabeauty.com/robots.txt": {
+        status: 200,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+        body: "Sitemap: https://sigmabeauty.com/sitemap_products_1.xml?from=1&to=9999999999\n",
+      },
+      "https://sigmabeauty.com/sitemap_products_1.xml?from=1&to=9999999999": {
+        status: 200,
+        headers: { "content-type": "application/xml; charset=utf-8" },
+        body: `
+          <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+            <url><loc>https://sigmabeauty.com/products/e33-detail-diffused-crease</loc></url>
+            <url><loc>https://sigmabeauty.com/products/the-award-winning-brush-set-1</loc></url>
+            <url><loc>https://sigmabeauty.com/products/f80-flat-kabuki-brush</loc></url>
+          </urlset>
+        `,
+      },
+    },
+    async () => {
+      const discovered = await discoverProductUrls({
+        baseUrl: "https://sigmabeauty.com",
+        seedUrl: "https://sigmabeauty.com/products/the-award-winning-brush-set",
+        maxProducts: 5,
+        context: {},
+        diagnostics,
+      });
+
+      assert.equal(diagnostics.discovery_strategy, "sitemap");
+      assert.equal(diagnostics.failure_category, null);
+      assert.equal(discovered.productUrls[0], "https://sigmabeauty.com/products/the-award-winning-brush-set-1");
+      assert.ok(
+        diagnostics.http_trace.some(
+          (entry) => entry.url === "https://sigmabeauty.com/products/the-award-winning-brush-set" && entry.status === 404,
+        ),
+      );
+    },
+  );
+});
+
 test("discoverProductUrls re-discovers a target PDP when a stale direct seed redirects to a collection page", async () => {
   const diagnostics = createDiagnostics("www.tomfordbeauty.com", "https://www.tomfordbeauty.com");
 

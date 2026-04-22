@@ -497,6 +497,63 @@ function buildSiteSearchUrlsForSeed(seedUrl: string, baseUrl: string): string[] 
   return dedupeUrls([`${base.origin}/search?q=${query}`, `${base.origin}/search?type=product&q=${query}`]);
 }
 
+function extractBalancedSegment(text: string, start: number, openChar: string, closeChar: string): string {
+  if (start < 0 || text[start] !== openChar) return "";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let idx = start; idx < text.length; idx += 1) {
+    const char = text[idx];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === openChar) depth += 1;
+    if (char === closeChar) {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, idx + 1);
+    }
+  }
+
+  return "";
+}
+
+function extractProductUrlsFromSearchAnalytics(html: string, baseUrl: string): string[] {
+  const searchEventIdx = html.indexOf("\"search_submitted\"");
+  if (searchEventIdx < 0) return [];
+
+  const variantsIdx = html.indexOf("\"productVariants\":[", searchEventIdx);
+  if (variantsIdx < 0) return [];
+
+  const arrayStart = html.indexOf("[", variantsIdx);
+  const arrayText = extractBalancedSegment(html, arrayStart, "[", "]");
+  if (!arrayText) return [];
+
+  try {
+    const parsed = JSON.parse(arrayText);
+    if (!Array.isArray(parsed)) return [];
+    return dedupeUrls(
+      parsed
+        .map((variant) => canonicalizeUrl(variant?.product?.url || "", baseUrl))
+        .filter((url) => scoreProductCandidateUrl(url, baseUrl) >= 4),
+    );
+  } catch {
+    return [];
+  }
+}
+
 export function isLikelyProductUrl(rawUrl: string, baseUrl: string): boolean {
   const mode = (process.env.PDP_DETECTION_MODE || "score").toLowerCase();
   if (mode !== "score") {
@@ -1346,11 +1403,12 @@ export async function discoverProductUrls(params: {
       if (search.blockedBy) challengeDetected = true;
       if (!search.body || !search.ok) continue;
 
-      const rankedSearchUrls = rankProductUrlsForSeed(
-        extractProductUrlsFromHtml(search.body, params.baseUrl),
-        params.seedUrl,
-        params.baseUrl,
-      ).slice(0, params.maxProducts);
+      const analyticsUrls = extractProductUrlsFromSearchAnalytics(search.body, params.baseUrl);
+      const candidateUrls = analyticsUrls.length > 0 ? analyticsUrls : extractProductUrlsFromHtml(search.body, params.baseUrl);
+      const rankedSearchUrls = rankProductUrlsForSeed(candidateUrls, params.seedUrl, params.baseUrl).slice(
+        0,
+        params.maxProducts,
+      );
       if (rankedSearchUrls.length === 0) continue;
 
       setDiscoveryStrategy(params.diagnostics, "site_search");

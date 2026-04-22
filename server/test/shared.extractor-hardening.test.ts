@@ -930,9 +930,27 @@ test("discoverProductUrls falls through from a 404 direct PDP to site search and
         body: `
           <html>
             <body>
-              <a href="/products/skincare-brush-set">Skincare Brush Set</a>
-              <a href="/products/the-award-winning-brush-set-1">The Award-Winning Brush Set</a>
-              <a href="/products/perfect-eyes-brush-set">Perfect Eyes Brush Set</a>
+              <script>
+                window.ShopifyAnalytics = window.ShopifyAnalytics || {};
+                window.ShopifyAnalytics.meta = window.ShopifyAnalytics.meta || {};
+                window.ShopifyAnalytics.search_payload = {
+                  "events": [
+                    [
+                      "search_submitted",
+                      {
+                        "searchResult": {
+                          "query": "the award winning brush set",
+                          "productVariants": [
+                            { "product": { "title": "Skincare Brush Set", "url": "/products/skincare-brush-set" } },
+                            { "product": { "title": "The Award-Winning Brush Set", "url": "/products/the-award-winning-brush-set-1" } },
+                            { "product": { "title": "Perfect Eyes Brush Set", "url": "/products/perfect-eyes-brush-set" } }
+                          ]
+                        }
+                      }
+                    ]
+                  ]
+                };
+              </script>
             </body>
           </html>
         `,

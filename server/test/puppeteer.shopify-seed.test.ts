@@ -244,6 +244,157 @@ test("enrichDirectShopifyPdpResponse preserves direct feed response when browser
   assert.match(logs.map((entry) => `${entry.type}:${entry.msg}`).join("\n"), /Browser enrichment failed for Shopify PDP/);
 });
 
+test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enrichment", async () => {
+  const logs: Array<{ type: string; msg: string }> = [];
+  const response = {
+    brand: "Pixi Beauty",
+    domain: "https://pixibeauty.com/products/clarity-tonic",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Clarity Tonic",
+        url: "https://pixibeauty.com/products/clarity-tonic",
+        image_url: "https://cdn.example.com/clarity-tonic.jpg",
+        image_urls: ["https://cdn.example.com/clarity-tonic.jpg"],
+        variant_skus: ["PIXI-CLARITY-001"],
+        variants: [
+          {
+            id: "9001",
+            sku: "PIXI-CLARITY-001",
+            url: "https://pixibeauty.com/products/clarity-tonic",
+            option_name: "Variant",
+            option_value: "Default",
+            price: "18.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "Clarity Tonic",
+            image_url: "https://cdn.example.com/clarity-tonic.jpg",
+            image_urls: ["https://cdn.example.com/clarity-tonic.jpg"],
+            ad_copy: "",
+          },
+        ],
+        description_raw: "A clarifying toner for breakout-prone skin.",
+        details_sections: [
+          {
+            heading: "Benefits",
+            body: "Helps visibly clarify and smooth.",
+            source_kind: "shopify_body_html_labeled_sections",
+          },
+        ],
+        ingredients_raw: "Water, Glycerin, Salicylic Acid",
+        how_to_use_raw: "Use AM and PM after cleansing.",
+        field_capture_status: {
+          description_raw: "present" as const,
+          details_sections: "present" as const,
+          ingredients_raw: "present" as const,
+          active_ingredients_raw: "missing" as const,
+          how_to_use_raw: "present" as const,
+          faq_items: "missing" as const,
+        },
+        field_sources: {
+          description_raw: ["shopify_body_html"],
+          details_sections: ["shopify_body_html_labeled_sections"],
+          ingredients_raw: ["shopify_body_html_labeled_ingredients"],
+          active_ingredients_raw: [],
+          how_to_use_raw: ["shopify_body_html_labeled_how_to_use"],
+          faq_items: [],
+        },
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 18, max: 18, avg: 18 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "pixibeauty.com",
+      resolved_base_url: "https://pixibeauty.com",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  await withMockFetch(
+    {
+      "https://pixibeauty.com/products/clarity-tonic": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `
+          <html>
+            <body>
+              <script data-oke-metafield-data type="application/json">
+                ${JSON.stringify({
+                  reviewAggregate: {
+                    subscriberId: "store-123",
+                    productId: "shopify-456",
+                    subscriberId_productId: "store-123:shopify-456",
+                  },
+                  questionCount: 1,
+                })}
+              </script>
+            </body>
+          </html>
+        `,
+      },
+      "https://api.okendo.io/v1/stores/store-123/products/shopify-456/questions?limit=1": {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          questions: [
+            {
+              body: "What percentage of salicylic acid does this product contain?",
+              status: "approved",
+              answers: [
+                {
+                  body: "<p>We don't disclose the percentage.</p>",
+                  status: "approved",
+                  isPrivate: false,
+                  isStoreAnswer: true,
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    },
+    async () => {
+      const result = await enrichDirectShopifyPdpResponse({
+        brand: "Pixi Beauty",
+        baseUrl: "https://pixibeauty.com",
+        seedUrl: "https://pixibeauty.com/products/clarity-tonic",
+        response,
+        diagnostics: response.diagnostics,
+        log: (type, msg) => logs.push({ type, msg }),
+        browserRunner: async () => {
+          throw new Error("browser should not run");
+        },
+      });
+
+      assert.equal(result.products[0]?.faq_items?.length, 1);
+      assert.deepEqual(result.products[0]?.faq_items, [
+        {
+          question: "What percentage of salicylic acid does this product contain?",
+          answer: "We don't disclose the percentage.",
+          source_kind: "okendo_questions_api",
+          source_url: "https://pixibeauty.com/products/clarity-tonic",
+          source_title: "Product Questions",
+        },
+      ]);
+      assert.deepEqual(result.products[0]?.field_sources?.faq_items, ["okendo_questions_api"]);
+      assert.equal(result.products[0]?.field_capture_status?.faq_items, "present");
+      assert.doesNotMatch(logs.map((entry) => entry.msg).join("\n"), /Attempting browser enrichment/);
+    },
+  );
+});
+
 test("extractShopifyEmbeddedProductPayloadPdpFields unwraps nested DCART product payloads", () => {
   const fields = extractShopifyEmbeddedProductPayloadPdpFields([
     `

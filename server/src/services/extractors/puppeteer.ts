@@ -301,6 +301,7 @@ type ScrapedPageSignals = {
   detailsSections: ExtractedProductDetailSection[];
   faqItems: ExtractedProductFaqItem[];
   faqHtmlSnippets: string[];
+  okendoMetafieldJson?: string;
 };
 
 function clampInt(value: string | undefined, fallback: number, min: number, max: number) {
@@ -588,6 +589,146 @@ function isLowQualityFaqItem(item: ExtractedProductFaqItem) {
 
 export function filterUsefulFaqItems(items: ExtractedProductFaqItem[]) {
   return dedupeFaqItems(items).filter((item) => !isLowQualityFaqItem(item));
+}
+
+type OkendoMetafieldSnapshot = {
+  subscriberId: string;
+  productId: string;
+  questionCount: number;
+};
+
+type OkendoQuestionAnswer = {
+  body?: string;
+  status?: string;
+  isPrivate?: boolean;
+  isStoreAnswer?: boolean;
+};
+
+type OkendoQuestion = {
+  body?: string;
+  status?: string;
+  answers?: OkendoQuestionAnswer[];
+};
+
+type OkendoQuestionsResponse = {
+  questions?: OkendoQuestion[];
+};
+
+function parseOkendoMetafieldSnapshot(raw: string | undefined): OkendoMetafieldSnapshot | null {
+  const normalized = cleanText(raw);
+  if (!normalized) return null;
+  try {
+    const parsed = JSON.parse(normalized) as Record<string, unknown>;
+    const reviewAggregate =
+      parsed.reviewAggregate && typeof parsed.reviewAggregate === "object"
+        ? (parsed.reviewAggregate as Record<string, unknown>)
+        : null;
+    const subscriberProductKey = cleanText(
+      typeof reviewAggregate?.subscriberId_productId === "string" ? reviewAggregate.subscriberId_productId : undefined,
+    );
+    const reviewsNextUrl = cleanText(typeof parsed.reviewsNextUrl === "string" ? parsed.reviewsNextUrl : undefined);
+    const subscriberIdFromKey = subscriberProductKey.split(":")[0] || "";
+    const productIdFromKey = subscriberProductKey.split(":").slice(1).join(":") || "";
+    const subscriberIdFromReviewsUrl =
+      reviewsNextUrl.match(/\/stores\/([^/]+)\/products\/([^/?#]+)/)?.[1] || "";
+    const productIdFromReviewsUrl =
+      reviewsNextUrl.match(/\/stores\/([^/]+)\/products\/([^/?#]+)/)?.[2] || "";
+    const subscriberId = cleanText(
+      typeof parsed.subscriberId === "string"
+        ? parsed.subscriberId
+        : typeof reviewAggregate?.subscriberId === "string"
+          ? reviewAggregate.subscriberId
+          : subscriberIdFromKey || subscriberIdFromReviewsUrl,
+    );
+    const productId = cleanText(
+      typeof parsed.productId === "string"
+        ? parsed.productId
+        : typeof reviewAggregate?.productId === "string"
+          ? reviewAggregate.productId
+          : productIdFromKey || productIdFromReviewsUrl,
+    );
+    const questionCountRaw = Number(parsed.questionCount);
+    if (!subscriberId || !productId || !Number.isFinite(questionCountRaw)) return null;
+    return {
+      subscriberId,
+      productId,
+      questionCount: Math.max(0, Math.floor(questionCountRaw)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function pickBestOkendoAnswer(answers: OkendoQuestionAnswer[] | undefined): OkendoQuestionAnswer | null {
+  const approvedAnswers = (Array.isArray(answers) ? answers : []).filter((answer) => {
+    const body = normalizeFaqAnswer(answer?.body);
+    const status = cleanText(answer?.status).toLowerCase();
+    if (!body) return false;
+    if (answer?.isPrivate) return false;
+    if (status && status !== "approved") return false;
+    return true;
+  });
+  if (approvedAnswers.length === 0) return null;
+  approvedAnswers.sort((left, right) => Number(Boolean(right?.isStoreAnswer)) - Number(Boolean(left?.isStoreAnswer)));
+  return approvedAnswers[0] || null;
+}
+
+function extractOkendoMetafieldJsonFromHtml(html: string | undefined) {
+  const normalized = typeof html === "string" ? html : "";
+  if (!normalized.trim()) return undefined;
+  const matches = Array.from(normalized.matchAll(/<script[^>]*data-oke-metafield-data[^>]*>([\s\S]*?)<\/script>/gi));
+  for (const match of matches.reverse()) {
+    const raw = cleanText(match[1]);
+    if (!raw) continue;
+    if (parseOkendoMetafieldSnapshot(raw)) return raw;
+  }
+  return undefined;
+}
+
+export async function fetchOkendoFaqItemsFromMetafieldJson(raw: string | undefined, sourceUrl: string) {
+  const snapshot = parseOkendoMetafieldSnapshot(raw);
+  if (!snapshot || snapshot.questionCount <= 0) return [] as ExtractedProductFaqItem[];
+
+  const limit = Math.min(Math.max(snapshot.questionCount, 1), 12);
+  const endpoint = `https://api.okendo.io/v1/stores/${encodeURIComponent(snapshot.subscriberId)}/products/${encodeURIComponent(snapshot.productId)}/questions?limit=${limit}`;
+
+  try {
+    const response = await withTimeout(fetch(endpoint), 10000, "okendo_questions_fetch");
+    if (!response.ok) return [] as ExtractedProductFaqItem[];
+    const payload = (await response.json()) as OkendoQuestionsResponse;
+    const items: ExtractedProductFaqItem[] = [];
+
+    for (const questionRow of Array.isArray(payload.questions) ? payload.questions : []) {
+      const question = normalizeFaqQuestion(questionRow?.body);
+      const status = cleanText(questionRow?.status).toLowerCase();
+      if (!question) continue;
+      if (status && status !== "approved") continue;
+      if (!looksLikeFaqQuestionText(question)) continue;
+      const answerRow = pickBestOkendoAnswer(questionRow?.answers);
+      const answer = normalizeFaqAnswer(answerRow?.body);
+      if (!answer) continue;
+      items.push({
+        question,
+        answer,
+        source_kind: "okendo_questions_api",
+        source_url: sourceUrl,
+        source_title: "Product Questions",
+      });
+    }
+
+    return filterUsefulFaqItems(items);
+  } catch {
+    return [] as ExtractedProductFaqItem[];
+  }
+}
+
+async function enrichExtractedFaqItemsWithOkendoQuestions(extracted: ScrapedPageSignals, sourceUrl: string) {
+  const okendoFaqItems = await fetchOkendoFaqItemsFromMetafieldJson(extracted.okendoMetafieldJson, sourceUrl);
+  if (okendoFaqItems.length === 0) return extracted;
+  return {
+    ...extracted,
+    faqItems: dedupeFaqItems([...(extracted.faqItems || []), ...okendoFaqItems]),
+  };
 }
 
 function uniqueFieldSources(values: Array<string | undefined | null>) {
@@ -1642,6 +1783,7 @@ async function tryExtractShopify(params: {
         response,
         diagnostics: params.diagnostics,
         log,
+        context: shopifyContext,
       });
     }
     log("warn", `Shopify direct product feed not found for handle: ${directHandle}. Falling back to direct page discovery.`);
@@ -1694,20 +1836,40 @@ export async function enrichDirectShopifyPdpResponse(params: {
   response: Omit<ExtractResponse, "generated_at" | "logs">;
   diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
   log: Logger;
+  context?: FetchContext;
   browserRunner?: typeof runBrowserTaskWithFallback<ExtractedProduct | null>;
 }): Promise<Omit<ExtractResponse, "generated_at" | "logs">> {
   const product = params.response.products[0];
   if (!params.seedUrl || !product || params.response.products.length !== 1) return params.response;
   let response = params.response;
 
-  const productMissingImages = product.image_urls.length === 0;
-  const variantMissingImages = product.variants.some((variant) => variant.image_urls.length === 0);
-  const productMissingPdpFields = productHasMissingPdpFields(product);
+  const faqMissing = !Array.isArray(product.faq_items) || product.faq_items.length === 0;
+  if (faqMissing) {
+    try {
+      const pageOutcome = await fetchTextTracked(params.seedUrl, params.context || {}, params.diagnostics);
+      const faqItems = await fetchOkendoFaqItemsFromMetafieldJson(
+        extractOkendoMetafieldJsonFromHtml(pageOutcome.body),
+        params.seedUrl,
+      );
+      if (faqItems.length > 0) {
+        response = mergeShopifyDirectPdpFaqFallback(response, faqItems);
+        params.log("success", `Recovered ${faqItems.length} Shopify PDP FAQ items via Okendo questions: ${params.seedUrl}`);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error || "unknown_error");
+      params.log("warn", `Shopify direct PDP FAQ enrichment failed; continuing without FAQ recovery: ${msg}`);
+    }
+  }
+
+  const currentProduct = response.products[0];
+  const productMissingImages = currentProduct.image_urls.length === 0;
+  const variantMissingImages = currentProduct.variants.some((variant) => variant.image_urls.length === 0);
+  const productMissingPdpFields = productHasMissingPdpFields(currentProduct);
   if (!productMissingImages && !variantMissingImages && !productMissingPdpFields) return response;
 
   params.log(
     "info",
-    `Shopify direct PDP returned incomplete image/PDP fields. Attempting browser enrichment: ${params.seedUrl}`,
+      `Shopify direct PDP returned incomplete image/PDP fields. Attempting browser enrichment: ${params.seedUrl}`,
   );
 
   const navigationTimeoutMs = clampIntShared(
@@ -1732,7 +1894,7 @@ export async function enrichDirectShopifyPdpResponse(params: {
             verbose: false,
             log: params.log,
             diagnostics: params.diagnostics!,
-            context: {},
+            context: params.context || {},
           }),
           scrapeTimeoutMs,
           "Shopify direct PDP image enrichment",
@@ -1994,6 +2156,57 @@ function buildShopifyResponse(params: {
       discovered_urls: extractedProducts.length,
     },
     diagnostics: params.diagnostics,
+  };
+}
+
+function mergeShopifyDirectPdpFaqFallback(
+  response: Omit<ExtractResponse, "generated_at" | "logs">,
+  faqItems: ExtractedProductFaqItem[],
+): Omit<ExtractResponse, "generated_at" | "logs"> {
+  if (!response.products[0] || faqItems.length === 0) return response;
+
+  const mergedProducts = response.products.map((product, idx) => {
+    if (idx !== 0) return product;
+
+    const mergedProduct: ExtractedProduct = {
+      ...product,
+      image_urls: [...product.image_urls],
+      variant_skus: [...product.variant_skus],
+      variants: product.variants.map((variant) => ({
+        ...variant,
+        image_urls: [...variant.image_urls],
+      })),
+    };
+
+    Object.assign(
+      mergedProduct,
+      buildProductPdpFields({
+        descriptionRaw: product.description_raw,
+        detailsSections: product.details_sections,
+        ingredientsRaw: product.ingredients_raw,
+        activeIngredientsRaw: product.active_ingredients_raw,
+        howToUseRaw: product.how_to_use_raw,
+        faqItems: dedupeFaqItems([...(product.faq_items || []), ...faqItems]),
+        fieldSources: {
+          description_raw: product.field_sources?.description_raw || [],
+          details_sections: product.field_sources?.details_sections || [],
+          ingredients_raw: product.field_sources?.ingredients_raw || [],
+          active_ingredients_raw: product.field_sources?.active_ingredients_raw || [],
+          how_to_use_raw: product.field_sources?.how_to_use_raw || [],
+          faq_items: [
+            ...(product.field_sources?.faq_items || []),
+            ...faqItems.map((item) => item.source_kind || "okendo_questions_api"),
+          ],
+        },
+      }),
+    );
+
+    return mergedProduct;
+  });
+
+  return {
+    ...response,
+    products: mergedProducts,
   };
 }
 
@@ -2739,6 +2952,22 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
     const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
       .map((s) => s.textContent || "")
       .filter(Boolean);
+    const okendoMetafieldJson = (() => {
+      const scripts = Array.from(document.querySelectorAll("script[data-oke-metafield-data]"));
+      for (const script of scripts.reverse()) {
+        const raw = script.textContent?.trim() || "";
+        if (!raw) continue;
+        try {
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
+          if (typeof parsed.productId === "string" && parsed.productId.trim()) {
+            return raw;
+          }
+        } catch {
+          // ignore non-product metadata payloads
+        }
+      }
+      return undefined;
+    })();
     const embeddedProductScripts = Array.from(document.querySelectorAll("script"))
       .map((script) => script.textContent || "")
       .filter((text) =>
@@ -3456,6 +3685,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       detailsSections,
       faqItems,
       faqHtmlSnippets,
+      okendoMetafieldJson,
     };
   });
 }
@@ -3958,7 +4188,13 @@ async function scrapeProductPage(params: {
       await enablePrefetchRequestBlocking();
       await page.setContent(injectBaseHref(prefetched.body, params.url), { waitUntil: "domcontentloaded" });
       await ensureBrowserEvalHelpers();
-      const prefetchedExtracted = await extractPageSignals(page);
+      const prefetchedExtracted = await enrichExtractedFaqItemsWithOkendoQuestions(
+        {
+          ...(await extractPageSignals(page)),
+          okendoMetafieldJson: extractOkendoMetafieldJsonFromHtml(prefetched.body),
+        },
+        params.url,
+      );
       await disablePrefetchRequestBlocking();
       const prefetchedLooksLikeProduct =
         looksLikeProductPageHtml(prefetched.body) ||
@@ -3990,7 +4226,13 @@ async function scrapeProductPage(params: {
 
     await expandRelevantPdpModules();
 
-    const extracted = await extractPageSignals(page);
+    const extracted = await enrichExtractedFaqItemsWithOkendoQuestions(
+      {
+        ...(await extractPageSignals(page)),
+        okendoMetafieldJson: extractOkendoMetafieldJsonFromHtml(visit.content),
+      },
+      params.url,
+    );
     const liveLooksLikeProduct =
       looksLikeProductPageHtml(visit.content) ||
       (isLikelyProductUrlShared(params.url, params.baseUrl) &&

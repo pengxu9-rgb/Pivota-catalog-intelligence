@@ -23,6 +23,7 @@ import {
   buildProductPdpFields,
   deriveProductPdpModuleBodies,
   extractDelimitedLabeledSectionText,
+  fetchOkendoFaqItemsFromMetafieldJson,
   extractInlineFaqItemsFromHtml,
   extractShopifyEmbeddedProductPayloadPdpFields,
   extractShopifyBodyHtmlPdpFields,
@@ -141,6 +142,66 @@ test("buildProductPdpFields does not fabricate ingredient fields from generic co
   assert.equal(fields.faq_items, undefined);
   assert.equal(fields.field_capture_status?.ingredients_raw, "missing");
   assert.equal(fields.field_capture_status?.faq_items, "missing");
+});
+
+test("fetchOkendoFaqItemsFromMetafieldJson returns approved store-answered product questions", async () => {
+  const raw = JSON.stringify({
+    questionCount: 1,
+    reviewAggregate: {
+      subscriberId: "store-123",
+      productId: "shopify-456",
+      subscriberId_productId: "store-123:shopify-456",
+    },
+    reviewsNextUrl: "https://api.okendo.io/v1/stores/store-123/products/shopify-456/reviews?limit=5",
+  });
+
+  await withMockFetch(
+    {
+      "https://api.okendo.io/v1/stores/store-123/products/shopify-456/questions?limit=1": {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          questions: [
+            {
+              body: "What percentage of salicylic acid does this product contain?",
+              status: "approved",
+              answers: [
+                {
+                  body: "<p>Hello Madison,</p><p>We don't disclose the percentage.</p>",
+                  status: "approved",
+                  isPrivate: false,
+                  isStoreAnswer: true,
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    },
+    async () => {
+      const items = await fetchOkendoFaqItemsFromMetafieldJson(raw, "https://pixibeauty.com/products/clarity-tonic");
+      assert.deepEqual(items, [
+        {
+          question: "What percentage of salicylic acid does this product contain?",
+          answer: "Hello Madison, We don't disclose the percentage.",
+          source_kind: "okendo_questions_api",
+          source_url: "https://pixibeauty.com/products/clarity-tonic",
+          source_title: "Product Questions",
+        },
+      ]);
+    },
+  );
+});
+
+test("fetchOkendoFaqItemsFromMetafieldJson skips empty Okendo question pools", async () => {
+  const raw = JSON.stringify({
+    subscriberId: "store-123",
+    productId: "shopify-456",
+    questionCount: 0,
+  });
+
+  const items = await fetchOkendoFaqItemsFromMetafieldJson(raw, "https://pixibeauty.com/products/lash-booster-mascara");
+  assert.deepEqual(items, []);
 });
 
 test("deriveProductPdpModuleBodies extracts full modal ingredients and active ingredients separately", () => {

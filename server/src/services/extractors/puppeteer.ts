@@ -576,7 +576,7 @@ function isLowQualityFaqItem(item: ExtractedProductFaqItem) {
   const answer = normalizeFaqAnswer(item.answer).toLowerCase();
   if (!question || !answer) return true;
   if (/\bloading questions\b/.test(answer)) return true;
-  if (/^(?:what(?:'|’)s in it|how to use)\??$/.test(question)) return true;
+  if (/^(?:what(?:'|’)s in it|what else[!?]*|how to(?: use| apply)?)\??$/.test(question)) return true;
   if (/^why .+ loves it$/.test(question)) return true;
   if (/^how to pair$/.test(question)) return true;
   if (/be the first to be in the know/.test(question)) return true;

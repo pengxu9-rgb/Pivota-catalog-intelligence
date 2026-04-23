@@ -362,6 +362,16 @@ test("filterUsefulFaqItems removes promo and pseudo-faq noise but keeps product 
       source_kind: "accordion_question_answer",
     },
     {
+      question: "How To",
+      answer: "Apply all over body once a day.",
+      source_kind: "accordion_question_answer",
+    },
+    {
+      question: "WHAT ELSE?!",
+      answer: "For all skin types. Vegan, gluten-free, & earth-conscious.",
+      source_kind: "accordion_question_answer",
+    },
+    {
       question: "Be the first to be in the know, y’know?",
       answer: "Plus save 10% on your first order.",
       source_kind: "accordion_question_answer",

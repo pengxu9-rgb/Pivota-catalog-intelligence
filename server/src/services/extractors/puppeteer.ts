@@ -1848,7 +1848,7 @@ export async function enrichDirectShopifyPdpResponse(params: {
     try {
       const pageOutcome = await fetchTextTracked(params.seedUrl, params.context || {}, params.diagnostics);
       const faqItems = await fetchOkendoFaqItemsFromMetafieldJson(
-        extractOkendoMetafieldJsonFromHtml(pageOutcome.body),
+        extractOkendoMetafieldJsonFromHtml(pageOutcome.body || undefined),
         params.seedUrl,
       );
       if (faqItems.length > 0) {

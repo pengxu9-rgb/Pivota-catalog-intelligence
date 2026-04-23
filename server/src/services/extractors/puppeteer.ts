@@ -838,6 +838,7 @@ type ShopifyEmbeddedProductPayload = {
   images?: unknown;
   media?: unknown;
   customMetafields?: Record<string, unknown>;
+  product?: unknown;
 };
 
 function extractEmbeddedJsonObject(scriptText: string, anchorPattern: RegExp) {
@@ -919,10 +920,35 @@ function extractShopifyEmbeddedProductPayloadsFromScripts(scriptTexts: string[])
     /_RSConfig\.product\s*=/i,
     /window\.corner\.sessionData\.product\s*=/i,
     /corner\.sessionData\.product\s*=/i,
+    /window\.DCART\s*=/i,
     /sgGlobalVars\.currentProduct\s*=/i,
     /window\.theme\.product\s*=/i,
     /theme\.product\s*=/i,
   ];
+
+  const unwrapPayload = (value: unknown): ShopifyEmbeddedProductPayload | null => {
+    if (!value || typeof value !== "object") return null;
+
+    const looksLikePayload = (candidate: Record<string, unknown>) =>
+      typeof candidate.description === "string" ||
+      typeof candidate.content === "string" ||
+      typeof candidate.body_html === "string" ||
+      Boolean(candidate.featured_image) ||
+      Boolean(candidate.image) ||
+      Boolean(candidate.images) ||
+      Boolean(candidate.media);
+
+    const record = value as Record<string, unknown>;
+    if (looksLikePayload(record)) return record as ShopifyEmbeddedProductPayload;
+
+    const nestedProduct =
+      record.product && typeof record.product === "object" ? (record.product as Record<string, unknown>) : null;
+    if (nestedProduct && looksLikePayload(nestedProduct)) {
+      return nestedProduct as ShopifyEmbeddedProductPayload;
+    }
+
+    return null;
+  };
 
   for (const scriptText of scriptTexts) {
     if (!scriptText) continue;
@@ -930,7 +956,8 @@ function extractShopifyEmbeddedProductPayloadsFromScripts(scriptTexts: string[])
       const raw = extractEmbeddedJsonObject(scriptText, pattern);
       if (!raw) continue;
       try {
-        const parsed = JSON.parse(raw) as ShopifyEmbeddedProductPayload;
+        const parsed = unwrapPayload(JSON.parse(raw));
+        if (!parsed) continue;
         const key = JSON.stringify([
           typeof parsed.description === "string" ? parsed.description.slice(0, 200) : "",
           typeof parsed.content === "string" ? parsed.content.slice(0, 200) : "",
@@ -1062,6 +1089,29 @@ export function looksLikeFullIngredientListText(text: string | undefined) {
   );
 }
 
+export function extractLikelyFullIngredientListText(text: string | undefined) {
+  const normalized = cleanText(text);
+  if (!normalized) return undefined;
+  if (looksLikeFullIngredientListText(normalized)) return normalized;
+
+  const blocks = normalized
+    .split(/\n{2,}/)
+    .map((block) => cleanText(block))
+    .filter(Boolean);
+  const exactMatch = blocks
+    .filter((block) => looksLikeFullIngredientListText(block))
+    .sort((left, right) => right.length - left.length)[0];
+  if (exactMatch) return exactMatch;
+
+  const commaDenseFallback = blocks
+    .filter((block) => {
+      const commaCount = (block.match(/,/g) || []).length;
+      return commaCount >= 6 && /\b(?:water\/aqua|aqua\b|ci\s*\d{5}|phenoxyethanol|butylene glycol)\b/i.test(block);
+    })
+    .sort((left, right) => right.length - left.length)[0];
+  return commaDenseFallback || undefined;
+}
+
 function looksLikeIngredientSummaryText(text: string | undefined) {
   const normalized = cleanText(text);
   if (!normalized) return false;
@@ -1129,7 +1179,7 @@ export function deriveProductPdpModuleBodies(params: {
   );
   const fullIngredientSection = pickBestDetailSection(
     ingredientSections,
-    (section) => looksLikeFullIngredientListText(section.body),
+    (section) => !!extractLikelyFullIngredientListText(section.body),
   );
   const ingredientSummarySection = pickBestDetailSection(
     ingredientSections,
@@ -1138,14 +1188,11 @@ export function deriveProductPdpModuleBodies(params: {
   );
   const ingredientSectionBody = cleanText(ingredientSummarySection?.body);
   const explicitIngredients = cleanText(params.ingredientsMarkdownText);
-  const explicitFullIngredients = looksLikeFullIngredientListText(explicitIngredients)
-    ? stripIngredientPackageDisclaimer(explicitIngredients)
-    : "";
+  const explicitFullIngredients = stripIngredientPackageDisclaimer(extractLikelyFullIngredientListText(explicitIngredients));
+  const sectionFullIngredients = stripIngredientPackageDisclaimer(extractLikelyFullIngredientListText(fullIngredientSection?.body));
   const activeIngredients = cleanText(params.activeIngredientsText);
   const ingredientsRaw =
-    explicitFullIngredients ||
-    stripIngredientPackageDisclaimer(fullIngredientSection?.body) ||
-    undefined;
+    explicitFullIngredients || sectionFullIngredients || undefined;
   const ingredientSummaryBody = !explicitFullIngredients && explicitIngredients ? explicitIngredients : ingredientSectionBody;
   const activeIngredientsRaw =
     activeIngredients ||
@@ -2620,9 +2667,11 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
         ".markdown",
         ".metafield-rich_text_field",
         ".rte",
+        ".wysiwyg",
         "[class*='rich_text']",
         "[class*='rich-text']",
         ".accordion__content",
+        ".accordion__content-container",
         ".accordion-content",
         ".accordion-content-wrap",
         ".accordion-content-wrap-inner",
@@ -2859,6 +2908,102 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
 
     let howToUseContent = document.getElementById("accordion-toggle-How to Use");
     let ingredientsContent = document.getElementById("accordion-toggle-Ingredients and Safety");
+    const howToUseAccordion = ((patterns: RegExp[]) => {
+      const controls = Array.from(
+        document.querySelectorAll("button, summary, .accordion__toggle, .accordion-title, .acc__btn"),
+      ) as HTMLElement[];
+      for (const control of controls.slice(0, 120)) {
+        const label = normalizeSectionText(
+          control.getAttribute("title") || control.getAttribute("aria-label") || control.textContent || "",
+        );
+        if (!label || !patterns.some((pattern) => pattern.test(label))) continue;
+        const targetId = control.getAttribute("aria-controls") || "";
+        const target = targetId ? document.getElementById(targetId) : null;
+        const accordionItem =
+          control.closest(".accordion__item") ||
+          control.closest("accordion-wrap") ||
+          control.closest(".pv-extra-details__accordion") ||
+          control.closest(".acc") ||
+          control.parentElement;
+        const content =
+          target ||
+          accordionItem?.querySelector?.(
+            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .wysiwyg, .faq-answer, .faq__answer",
+          ) ||
+          control.nextElementSibling;
+        const text = readSectionContainerText(content as Element | null) || readSectionContainerText(accordionItem);
+        if (!text) continue;
+        return {
+          container: accordionItem || content || control.parentElement || control,
+          text,
+        };
+      }
+      return { container: null, text: undefined };
+    })([/\bhow to use\b/i, /\bhow to layer\b/i, /\busage\b/i, /\bdirections?\b/i]);
+    const ingredientsAccordion = ((patterns: RegExp[]) => {
+      const controls = Array.from(
+        document.querySelectorAll("button, summary, .accordion__toggle, .accordion-title, .acc__btn"),
+      ) as HTMLElement[];
+      for (const control of controls.slice(0, 120)) {
+        const label = normalizeSectionText(
+          control.getAttribute("title") || control.getAttribute("aria-label") || control.textContent || "",
+        );
+        if (!label || !patterns.some((pattern) => pattern.test(label))) continue;
+        const targetId = control.getAttribute("aria-controls") || "";
+        const target = targetId ? document.getElementById(targetId) : null;
+        const accordionItem =
+          control.closest(".accordion__item") ||
+          control.closest("accordion-wrap") ||
+          control.closest(".pv-extra-details__accordion") ||
+          control.closest(".acc") ||
+          control.parentElement;
+        const content =
+          target ||
+          accordionItem?.querySelector?.(
+            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .wysiwyg, .faq-answer, .faq__answer",
+          ) ||
+          control.nextElementSibling;
+        const text = readSectionContainerText(content as Element | null) || readSectionContainerText(accordionItem);
+        if (!text) continue;
+        return {
+          container: accordionItem || content || control.parentElement || control,
+          text,
+        };
+      }
+      return { container: null, text: undefined };
+    })([/\bingredients?(?: and safety)?\b/i]);
+    const faqAccordion = ((patterns: RegExp[]) => {
+      const controls = Array.from(
+        document.querySelectorAll("button, summary, .accordion__toggle, .accordion-title, .acc__btn"),
+      ) as HTMLElement[];
+      for (const control of controls.slice(0, 120)) {
+        const label = normalizeSectionText(
+          control.getAttribute("title") || control.getAttribute("aria-label") || control.textContent || "",
+        );
+        if (!label || !patterns.some((pattern) => pattern.test(label))) continue;
+        const targetId = control.getAttribute("aria-controls") || "";
+        const target = targetId ? document.getElementById(targetId) : null;
+        const accordionItem =
+          control.closest(".accordion__item") ||
+          control.closest("accordion-wrap") ||
+          control.closest(".pv-extra-details__accordion") ||
+          control.closest(".acc") ||
+          control.parentElement;
+        const content =
+          target ||
+          accordionItem?.querySelector?.(
+            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .wysiwyg, .faq-answer, .faq__answer",
+          ) ||
+          control.nextElementSibling;
+        const text = readSectionContainerText(content as Element | null) || readSectionContainerText(accordionItem);
+        if (!text) continue;
+        return {
+          container: accordionItem || content || control.parentElement || control,
+          text,
+        };
+      }
+      return { container: null, text: undefined };
+    })([/\b(?:faqs?|frequently asked questions?)\b/i]);
 
     if (!howToUseContent || !ingredientsContent) {
       const buttons = Array.from(document.querySelectorAll("button[aria-controls]")) as HTMLButtonElement[];
@@ -2882,9 +3027,10 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       }
     }
 
-    const howToUseText = readSectionContainerText(howToUseContent) || customMetafieldHowToText || undefined;
+    const howToUseText =
+      readSectionContainerText(howToUseContent) || howToUseAccordion.text || customMetafieldHowToText || undefined;
     const ingredientsMarkdownText =
-      readSectionContainerText(ingredientsContent) || customMetafieldFullIngredientsText || undefined;
+      readSectionContainerText(ingredientsContent) || ingredientsAccordion.text || customMetafieldFullIngredientsText || undefined;
     const ingredientsDisclaimerText =
       ingredientsContent?.querySelector(".product-details-accordions-ingredients-disclaimer")?.textContent?.trim() || undefined;
     const ingredientFlyoutText = (() => {
@@ -2979,13 +3125,14 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
         }
 
         const wrapper =
+          control.closest(".accordion__item") ||
           control.closest("accordion-wrap") ||
           control.closest(".pv-extra-details__accordion") ||
           control.closest(".acc") ||
           control.parentElement;
         const content =
           wrapper?.querySelector?.(
-            ".accordion-content-wrap-inner, .accordion-content-wrap, .acc__menu, .pv-extra-details__accordion-body, .faq-answer, .faq__answer",
+            ".accordion__content, .accordion__content-container, .wysiwyg, .accordion-content-wrap-inner, .accordion-content-wrap, .acc__menu, .pv-extra-details__accordion-body, .faq-answer, .faq__answer",
           ) || control.nextElementSibling;
         return normalizeSectionText((content as HTMLElement | null)?.innerText || content?.textContent || "");
       };
@@ -3028,6 +3175,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
         const target = targetId ? document.getElementById(targetId) : null;
         const container =
           target ||
+          node.closest(".accordion__item") ||
           node.closest("section, article, details") ||
           node.parentElement ||
           node;
@@ -3047,10 +3195,18 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       return items;
     })();
     const faqHtmlSnippets = Array.from(
-      document.querySelectorAll(".modal__content, .pv-extra-details__section-description, .pv-extra-details__accordion-body"),
+      document.querySelectorAll(
+        ".modal__content, .pv-extra-details__section-description, .pv-extra-details__accordion-body, .accordion__item, .accordion__content, .accordion__content-container",
+      ),
     )
       .map((node) => (node as HTMLElement).innerHTML || "")
       .filter((html) => /\b(?:faqs?|frequently asked questions?|q\s*&\s*a)\b/i.test(html))
+      .concat(
+        faqAccordion.container instanceof HTMLElement && faqAccordion.container.innerHTML
+          ? [faqAccordion.container.innerHTML]
+          : [],
+      )
+      .filter(Boolean)
       .slice(0, 24);
     const detailsSections = (() => {
       const sections: ExtractedProductDetailSection[] = [];
@@ -3181,7 +3337,9 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
         pushSection(heading, body, "accordion_control");
       }
 
-      const accordionButtons = Array.from(document.querySelectorAll("button.accordion-title, .acc__btn")) as HTMLElement[];
+      const accordionButtons = Array.from(
+        document.querySelectorAll("button.accordion-title, .accordion__toggle, .acc__btn"),
+      ) as HTMLElement[];
       for (const button of accordionButtons.filter((node) => looksRelevantHeading(node.textContent || "")).slice(0, 24)) {
         if (shouldSkipSectionNode(button)) continue;
         const heading =
@@ -3441,11 +3599,13 @@ function buildProductFromPageSignals(params: {
     embeddedShopifyPayloadFields.howToUseRaw ||
     officialTextPdpFields.howToUseRaw ||
     undefined;
-  const ingredientsMarkdownText =
+  const rawIngredientsMarkdownText =
     (typeof extracted.ingredientsMarkdownText === "string" ? extracted.ingredientsMarkdownText.trim() : "") ||
     embeddedShopifyPayloadFields.ingredientsRaw ||
     officialTextPdpFields.ingredientsRaw ||
     undefined;
+  const ingredientsMarkdownText =
+    extractLikelyFullIngredientListText(rawIngredientsMarkdownText) || rawIngredientsMarkdownText || undefined;
   const ingredientsDisclaimerText =
     typeof extracted.ingredientsDisclaimerText === "string" ? extracted.ingredientsDisclaimerText.trim() : undefined;
   const activeIngredientsText =
@@ -3475,7 +3635,8 @@ function buildProductFromPageSignals(params: {
       ],
       details_sections: mergedDetailsSections.map((section) => section.source_kind),
       ingredients_raw: [
-        extracted.ingredientsMarkdownText && looksLikeFullIngredientListText(extracted.ingredientsMarkdownText)
+        typeof extracted.ingredientsMarkdownText === "string" &&
+        !!extractLikelyFullIngredientListText(extracted.ingredientsMarkdownText)
           ? "page_ingredients_section"
           : "",
         !extracted.ingredientsMarkdownText && embeddedShopifyPayloadFields.ingredientsRaw
@@ -3484,7 +3645,11 @@ function buildProductFromPageSignals(params: {
         !extracted.ingredientsMarkdownText && officialTextPdpFields.ingredientsRaw
           ? "structured_overview_labeled_ingredients"
           : "",
-        !ingredientsMarkdownText && derivedPdpBodies.ingredientsRaw
+        !(typeof extracted.ingredientsMarkdownText === "string" &&
+          !!extractLikelyFullIngredientListText(extracted.ingredientsMarkdownText)) &&
+        !embeddedShopifyPayloadFields.ingredientsRaw &&
+        !officialTextPdpFields.ingredientsRaw &&
+        derivedPdpBodies.ingredientsRaw
           ? "details_section_ingredients"
           : "",
       ],
@@ -3708,6 +3873,21 @@ async function scrapeProductPage(params: {
 }): Promise<ExtractedProduct | null> {
   const page = await params.browser.newPage();
   let prefetchRequestHandler: ((request: HTTPRequest) => void) | null = null;
+  await page.evaluateOnNewDocument(() => {
+    if (typeof (globalThis as any).__name !== "function") {
+      (globalThis as any).__name = <T>(value: T) => value;
+    }
+  });
+  const ensureBrowserEvalHelpers = async () => {
+    await page
+      .evaluate(() => {
+        if (typeof (globalThis as any).__name !== "function") {
+          (globalThis as any).__name = <T>(value: T) => value;
+        }
+      })
+      .catch(() => undefined);
+  };
+  await ensureBrowserEvalHelpers();
 
   const expandRelevantPdpModules = async () => {
     await page.evaluate(() => {
@@ -3727,7 +3907,9 @@ async function scrapeProductPage(params: {
       }
 
       const controls = Array.from(
-        document.querySelectorAll("button[aria-controls], [role='tab'][aria-controls], button.accordion-title, .acc__btn"),
+        document.querySelectorAll(
+          "button[aria-controls], [role='tab'][aria-controls], button.accordion-title, .accordion__toggle, .acc__btn",
+        ),
       ) as HTMLElement[];
       for (const control of controls.filter((node) => relevantHeadingRe.test(node.textContent || "")).slice(0, 24)) {
         const heading =
@@ -3775,6 +3957,7 @@ async function scrapeProductPage(params: {
     if (prefetched.body) {
       await enablePrefetchRequestBlocking();
       await page.setContent(injectBaseHref(prefetched.body, params.url), { waitUntil: "domcontentloaded" });
+      await ensureBrowserEvalHelpers();
       const prefetchedExtracted = await extractPageSignals(page);
       await disablePrefetchRequestBlocking();
       const prefetchedLooksLikeProduct =
@@ -3803,6 +3986,7 @@ async function scrapeProductPage(params: {
       context: params.context,
       diagnostics: params.diagnostics!,
     });
+    await ensureBrowserEvalHelpers();
 
     await expandRelevantPdpModules();
 

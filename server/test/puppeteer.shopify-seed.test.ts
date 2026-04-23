@@ -5,6 +5,8 @@ import {
   PuppeteerExtractor,
   choosePreferredProductOverview,
   enrichDirectShopifyPdpResponse,
+  extractLikelyFullIngredientListText,
+  extractShopifyEmbeddedProductPayloadPdpFields,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
 } from "../src/services/extractors/puppeteer";
@@ -240,6 +242,52 @@ test("enrichDirectShopifyPdpResponse preserves direct feed response when browser
   assert.equal(result.products.length, 1);
   assert.equal(result.products[0]?.title, "Fucking Fabulous Parfum");
   assert.match(logs.map((entry) => `${entry.type}:${entry.msg}`).join("\n"), /Browser enrichment failed for Shopify PDP/);
+});
+
+test("extractShopifyEmbeddedProductPayloadPdpFields unwraps nested DCART product payloads", () => {
+  const fields = extractShopifyEmbeddedProductPayloadPdpFields([
+    `
+      window.DCART = ${JSON.stringify({
+        product: {
+          title: "Tranexamic Acid Serum",
+          description: "<p>Brightening serum with tranexamic acid.</p>",
+          featured_image: "//www.theinkeylist.com/cdn/shop/files/tranexamic-main.png?v=1",
+          images: [
+            "//www.theinkeylist.com/cdn/shop/files/tranexamic-main.png?v=1",
+            "//www.theinkeylist.com/cdn/shop/files/tranexamic-side.png?v=1",
+          ],
+          media: [
+            {
+              src: "//www.theinkeylist.com/cdn/shop/files/tranexamic-how-to-use.png?v=1",
+              alt: "How to use Tranexamic Acid Serum",
+            },
+          ],
+        },
+      })};
+    `,
+  ]);
+
+  assert.equal(fields.descriptionRaw, "Brightening serum with tranexamic acid.");
+  assert.deepEqual(fields.imageUrls, [
+    "//www.theinkeylist.com/cdn/shop/files/tranexamic-main.png?v=1",
+    "//www.theinkeylist.com/cdn/shop/files/tranexamic-side.png?v=1",
+    "//www.theinkeylist.com/cdn/shop/files/tranexamic-how-to-use.png?v=1",
+  ]);
+});
+
+test("extractLikelyFullIngredientListText isolates full INCI from mixed accordion copy", () => {
+  const text = `
+    2% Tranexamic Acid helps reduce the appearance of hyperpigmentation and dark spots.
+
+    2% Acai Berry Extract helps soothe skin and visibly improve uneven tone.
+
+    Aqua (Water), Propanediol, Tranexamic Acid, Glycerin, Butylene Glycol, Acai Fruit Extract, Phenoxyethanol, Xanthan Gum, Sodium Hydroxide
+  `;
+
+  assert.equal(
+    extractLikelyFullIngredientListText(text),
+    "Aqua (Water), Propanediol, Tranexamic Acid, Glycerin, Butylene Glycol, Acai Fruit Extract, Phenoxyethanol, Xanthan Gum, Sodium Hydroxide",
+  );
 });
 
 test("PuppeteerExtractor honors locale-prefixed Shopify direct PDP seed URLs", async () => {

@@ -740,6 +740,22 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
   assert.equal(
     classifyExtractedProductKind(
       makeProduct({
+        title: "Build Your Own 5-Piece Lip Gloss Vault",
+        url: "https://fentybeauty.com/products/build-your-own-5-piece-lip-gloss-vault",
+        details_sections: [
+          {
+            heading: "Product Type",
+            body: "Bundle Builder",
+            source_kind: "shopify_product_tags",
+          },
+        ],
+      }),
+    ),
+    "bundle",
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
         title: "Kylie's Vacay Look",
         url: "https://kyliecosmetics.com/products/vacay-glam-look",
       }),
@@ -770,6 +786,38 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
       }),
     ).map((component) => component.name),
     ["Vanilla Milk Toner", "Hyaluronic Acid Serum", "Face Cream"],
+  );
+  assert.deepEqual(
+    extractBundleComponents(
+      makeProduct({
+        title: "Bold Eye Essentials Bundle: Eyeshadow Stick, Gel Eyeliner + Mascara",
+        url: "https://fentybeauty.com/products/bold-eye-essentials-bundle-eyeshadow-stick-gel-eyeliner-mascara",
+        details_sections: [
+          {
+            heading: "Product Type",
+            body: "Bundle",
+            source_kind: "shopify_product_tags",
+          },
+        ],
+      }),
+    ).map((component) => component.name),
+    ["Eyeshadow Stick", "Gel Eyeliner", "Mascara"],
+  );
+  assert.deepEqual(
+    extractBundleComponents(
+      makeProduct({
+        title: "Build Your Own SPF Moisturizer + Foundation Bundle",
+        url: "https://fentybeauty.com/products/build-your-own-spf-moisturizer-foundation-bundle",
+        details_sections: [
+          {
+            heading: "Product Type",
+            body: "Bundle",
+            source_kind: "shopify_product_tags",
+          },
+        ],
+      }),
+    ).map((component) => component.name),
+    ["SPF Moisturizer", "Foundation"],
   );
 });
 

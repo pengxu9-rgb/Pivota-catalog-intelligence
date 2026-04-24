@@ -1748,7 +1748,7 @@ export function buildProductPdpFields(params: {
 const PDP_COMPLETENESS_ACCESSORY_RE =
   /\b(brush|sponge|puff|applicator|sharpener|tweezer|curler|scissors|comb|mirror|case|bag|pouch|holder|spatula|tool|tools|gua sha|roller|loofah|headband|scrunchie|scarf|hat|cap|tote|clip|clips|pin|pins|keychain|key chain|tray|lash curler|refill case)\b/i;
 const PDP_COMPLETENESS_BUNDLE_RE =
-  /\b(bundle|set|kit|duo|trio|routine|calendar|advent calendar|mini set|travel set|starter set|value set|gift set|combo|show look|look set|collection set|collection kit|collection bundle)\b/i;
+  /\b(build your own|bundle|set|kit|duo|trio|routine|vault|calendar|advent calendar|mini set|travel set|starter set|value set|gift set|combo|show look|look set|collection set|collection kit|collection bundle)\b/i;
 const PDP_COMPLETENESS_LOOK_BUNDLE_RE =
   /\b(?:kylie'?s|vacay|vogue|on-the-go|inspired)\b.*(?:\blook\b|\bglam\b)/i;
 const PDP_COMPLETENESS_FRAGRANCE_RE =
@@ -1773,6 +1773,7 @@ function buildPdpCompletenessIdentityText(product: ExtractedProduct): string {
   return [
     product.title,
     product.url,
+    ...(product.details_sections || []).flatMap((section) => [section.heading, section.body]),
     ...(product.variants || []).flatMap((variant) => [
       variant.option_name,
       variant.option_value,
@@ -1822,11 +1823,18 @@ function normalizeBundleComponentCandidate(raw: string): ExtractedBundleComponen
   const rawText = cleanText(raw);
   if (!rawText || rawText.length < 3 || rawText.length > 120) return null;
   if (BUNDLE_COMPONENT_NOISE_RE.test(rawText)) return null;
-  if (/^(?:and|or|with|plus|includes?|contains?)$/i.test(rawText)) return null;
+  if (/^(?:and|or|with|plus|includes?|contains?|bundle|set|kit|duo|trio|routine|vault)$/i.test(rawText)) return null;
 
-  const quantityMatch = rawText.match(/^(?:(\d+\s*x|\d+-piece|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?(.+)$/i);
+  const quantityMatch = rawText.match(
+    /^(?:(\d+\s*x|\d+-piece|one|two|three|four|five|six|seven|eight|nine|ten|full-size|mini|travel-size|travel)\s+)?(.+)$/i,
+  );
   const quantity = cleanText(quantityMatch?.[1]);
-  const name = cleanText((quantityMatch?.[2] || rawText).replace(/^(?:a|an|the)\s+/i, "").replace(/[.。]+$/g, ""));
+  const name = cleanText(
+    (quantityMatch?.[2] || rawText)
+      .replace(/^(?:a|an|the)\s+/i, "")
+      .replace(/\b(?:bundle|set|kit|duo|trio|routine|vault)\b$/i, "")
+      .replace(/[.。]+$/g, ""),
+  );
   if (!name || name.length < 3 || name.length > 100) return null;
   if (/^(?:full size|mini|deluxe|travel size)$/i.test(name)) return null;
 
@@ -1836,6 +1844,33 @@ function normalizeBundleComponentCandidate(raw: string): ExtractedBundleComponen
     source_kind: "bundle_component_candidate",
     raw_text: rawText,
   };
+}
+
+function parseBundleComponentCandidatesFromTitle(title: string): ExtractedBundleComponent[] {
+  const rawTitle = cleanText(title);
+  if (!rawTitle || !PDP_COMPLETENESS_BUNDLE_RE.test(rawTitle)) return [];
+
+  const titleWithoutVariant = rawTitle.replace(/\s+[—–-]\s+(?:light|light medium|medium|medium deep|deep|dry skin edition|oily skin edition)$/i, "");
+  const componentText = cleanText(
+    (titleWithoutVariant.includes(":") ? titleWithoutVariant.split(":").slice(1).join(":") : titleWithoutVariant)
+      .replace(/^build your own\s+/i, "")
+      .replace(/\b(?:\d+-piece|full-size|mini|travel-size|travel)\b/gi, "")
+      .replace(/\b(?:bundle|set|kit|duo|trio|routine|vault)\b/gi, "")
+      .replace(/\s+/g, " "),
+  );
+  if (!componentText || componentText.toLowerCase() === rawTitle.toLowerCase()) return [];
+
+  const candidates = componentText
+    .replace(/\s+(?:and|plus)\s+/gi, " + ")
+    .split(/(?:\n|[•;,]|\s+[+&]\s+)/)
+    .map(normalizeBundleComponentCandidate)
+    .filter((item): item is ExtractedBundleComponent => Boolean(item))
+    .map((component) => ({
+      ...component,
+      source_kind: "bundle_component_title_candidate",
+    }));
+
+  return dedupeBy(candidates, (item) => item.name.toLowerCase()).slice(0, 12);
 }
 
 function parseBundleComponentCandidatesFromText(text: string): ExtractedBundleComponent[] {
@@ -1875,6 +1910,17 @@ export function extractBundleComponents(product: ExtractedProduct): ExtractedBun
     );
   if (sectionCandidates.length > 0) {
     return dedupeBy(sectionCandidates, (item) => item.name.toLowerCase()).slice(0, 12);
+  }
+
+  const titleCandidates = parseBundleComponentCandidatesFromTitle(product.title);
+  if (titleCandidates.length > 0) return titleCandidates;
+
+  const descriptionCandidates = parseBundleComponentCandidatesFromText(product.description_raw || "");
+  if (descriptionCandidates.length > 0) {
+    return descriptionCandidates.map((component) => ({
+      ...component,
+      source_kind: "bundle_component_description_candidate",
+    }));
   }
 
   return [];
@@ -2146,6 +2192,8 @@ type ShopifyProduct = {
   id: number;
   title: string;
   handle: string;
+  type?: string;
+  tags?: string[];
   body_html?: string;
   variants: ShopifyVariant[];
   options?: Array<{ name?: string }>;
@@ -2573,16 +2621,31 @@ function buildShopifyResponse(params: {
     const officialText = product.body_html;
     const currency = params.currencyHint || "USD";
     const bodyHtmlPdpFields = extractShopifyBodyHtmlPdpFields(officialText);
+    const tagDetailSections = extractPayloadTagDetailSections([
+      {
+        tags: [
+          ...(Array.isArray(product.tags) ? product.tags : []),
+          ...(typeof product.type === "string" && product.type.trim() ? [`Product Type:${product.type}`] : []),
+        ],
+      },
+    ]);
+    const directDetailsSections = dedupeDetailSections([
+      ...bodyHtmlPdpFields.detailsSections,
+      ...tagDetailSections,
+    ]);
     const productPdpFields = buildProductPdpFields({
       descriptionRaw: officialText,
-      detailsSections: bodyHtmlPdpFields.detailsSections,
+      detailsSections: directDetailsSections,
       ingredientsRaw: bodyHtmlPdpFields.ingredientsRaw,
       activeIngredientsRaw: bodyHtmlPdpFields.activeIngredientsRaw,
       howToUseRaw: bodyHtmlPdpFields.howToUseRaw,
       faqItems: [],
       fieldSources: {
         description_raw: officialText ? ["shopify_body_html"] : [],
-        details_sections: bodyHtmlPdpFields.detailsSections.length > 0 ? ["shopify_body_html_labeled_sections"] : [],
+        details_sections: [
+          ...(bodyHtmlPdpFields.detailsSections.length > 0 ? ["shopify_body_html_labeled_sections"] : []),
+          ...(tagDetailSections.length > 0 ? ["shopify_product_tags"] : []),
+        ],
         ingredients_raw: bodyHtmlPdpFields.ingredientsRaw ? ["shopify_body_html_labeled_ingredients"] : [],
         active_ingredients_raw: bodyHtmlPdpFields.activeIngredientsRaw ? ["shopify_body_html_labeled_active_ingredients"] : [],
         how_to_use_raw: bodyHtmlPdpFields.howToUseRaw ? ["shopify_body_html_labeled_how_to_use"] : [],

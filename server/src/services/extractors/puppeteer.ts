@@ -1782,7 +1782,7 @@ function buildPdpCompletenessIdentityText(product: ExtractedProduct): string {
   ]
     .map((value) => cleanText(value))
     .filter(Boolean)
-    .join(" ");
+    .join("\n");
 }
 
 function inferPdpCompletenessRequirements(product: ExtractedProduct) {

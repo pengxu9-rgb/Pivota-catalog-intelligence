@@ -686,6 +686,40 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
   assert.equal(
     classifyExtractedProductKind(
       makeProduct({
+        title: "Shadowstix Longwear Eyeshadow Stick — Sip & Sparkle",
+        url: "https://fentybeauty.com/products/shadowstix-longwear-eyeshadow-stick-sip-sparkle",
+        variants: [
+          {
+            id: "64844",
+            sku: "64844",
+            url: "https://fentybeauty.com/products/shadowstix-longwear-eyeshadow-stick-sip-sparkle",
+            option_name: "Color",
+            option_value: "Sip & Sparkle",
+            price: "20.80",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "https://cdn.example.com/product.jpg",
+            image_urls: ["https://cdn.example.com/product.jpg"],
+            ad_copy: "",
+          },
+        ],
+      }),
+    ),
+    "single_formula",
+  );
+  assert.deepEqual(
+    getMissingPdpFieldReasons(
+      makeProduct({
+        title: "Shadowstix Longwear Eyeshadow Stick — Sip & Sparkle",
+        url: "https://fentybeauty.com/products/shadowstix-longwear-eyeshadow-stick-sip-sparkle",
+      }),
+    ),
+    ["ingredients"],
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
         title: "Hair Pins",
         url: "https://kyliecosmetics.com/products/hair-pins",
         description_raw:

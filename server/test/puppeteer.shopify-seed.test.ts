@@ -537,6 +537,33 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
     ),
     "accessory",
   );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
+        title: "Match My Energy Gloss Drip & Iced Latte Lip Liner",
+        url: "https://kyliecosmetics.com/products/match-my-energy-gloss-drip-iced-latte-lip-liner",
+      }),
+    ),
+    "bundle",
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
+        title: "Kylie's Vacay Look",
+        url: "https://kyliecosmetics.com/products/vacay-glam-look",
+      }),
+    ),
+    "bundle",
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
+        title: "Compact Mirror & Pouch",
+        url: "https://kyliecosmetics.com/products/compact-mirror-and-pouch",
+      }),
+    ),
+    "accessory",
+  );
   assert.deepEqual(
     extractBundleComponents(
       makeProduct({

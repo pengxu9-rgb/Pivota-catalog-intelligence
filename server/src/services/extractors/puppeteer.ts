@@ -1419,12 +1419,16 @@ const PDP_COMPLETENESS_ACCESSORY_RE =
   /\b(brush|sponge|puff|applicator|sharpener|tweezer|curler|scissors|comb|mirror|case|bag|pouch|holder|spatula|tool|tools|gua sha|roller|loofah|headband|scrunchie|scarf|hat|cap|tote|clip|clips|pin|pins|keychain|key chain|tray|lash curler|refill case)\b/i;
 const PDP_COMPLETENESS_BUNDLE_RE =
   /\b(bundle|set|kit|duo|trio|routine|collection|calendar|advent calendar|mini set|travel set|starter set|value set|gift set|combo|show look|look set)\b/i;
+const PDP_COMPLETENESS_LOOK_BUNDLE_RE =
+  /\b(?:kylie'?s|vacay|vogue|on-the-go|inspired)\b.*(?:\blook\b|\bglam\b)/i;
 const PDP_COMPLETENESS_FRAGRANCE_RE =
   /\b(fragrance|perfume|parfum|eau de|edt|edp|cologne|body mist|pen spray|scent)\b/i;
 const PDP_COMPLETENESS_SKINCARE_RE =
   /\b(skincare|skin care|cleanser|toner|essence|serum|ampoule|moisturi[sz]er|cream|lotion|balm|mask|peel|exfoliant|treatment|oil|sunscreen|spf|face mist|facial mist|hydrating mist|retinol|vitamin c|niacinamide|acid|salicylic|benzoyl|azelaic|ceramide|hyaluronic)\b/i;
 const PDP_COMPLETENESS_MAKEUP_RE =
   /\b(makeup|foundation|concealer|mascara|lipstick|lip gloss|lip glaze|lip oil|lip liner|lip kit|blush|bronzer|powder|highlighter|eyeshadow|eyeliner|brow|primer|setting spray|skin tint|tint|shade|palette)\b/i;
+const PDP_COMPLETENESS_FORMULA_PAIR_RE =
+  /\b(foundation|concealer|mascara|lipstick|liquid lipstick|lip gloss|high gloss|gloss drip|lip glaze|lip oil|lip liner|lip kit|butter balm|tinted butter balm|blush|bronzer|powder|highlighter|eyeshadow|eye shadow|eyeliner|brow|primer|setting spray|skin tint|tint|palette|nail lacquer)\b.*(?:\s[&+]\s|\s+and\s+|\s+plus\s+).*\b(foundation|concealer|mascara|lipstick|liquid lipstick|lip gloss|high gloss|gloss drip|lip glaze|lip oil|lip liner|lip kit|butter balm|tinted butter balm|blush|bronzer|powder|highlighter|eyeshadow|eye shadow|eyeliner|brow|primer|setting spray|skin tint|tint|palette|nail lacquer)\b/i;
 const PDP_COMPLETENESS_HAIR_RE =
   /\b(haircare|hair care|shampoo|conditioner|scalp|leave-in|styling|curl|detangler)\b/i;
 const PDP_COMPLETENESS_MIN_OVERVIEW_CHARS = 80;
@@ -1454,7 +1458,10 @@ function buildPdpCompletenessIdentityText(product: ExtractedProduct): string {
 function inferPdpCompletenessRequirements(product: ExtractedProduct) {
   const text = buildPdpCompletenessIdentityText(product);
   const accessory = PDP_COMPLETENESS_ACCESSORY_RE.test(text);
-  const bundle = PDP_COMPLETENESS_BUNDLE_RE.test(text);
+  const bundle =
+    PDP_COMPLETENESS_BUNDLE_RE.test(text) ||
+    (!accessory && PDP_COMPLETENESS_FORMULA_PAIR_RE.test(text)) ||
+    PDP_COMPLETENESS_LOOK_BUNDLE_RE.test(text);
   const fragrance = PDP_COMPLETENESS_FRAGRANCE_RE.test(text);
   const skincare = PDP_COMPLETENESS_SKINCARE_RE.test(text);
   const makeup = PDP_COMPLETENESS_MAKEUP_RE.test(text);

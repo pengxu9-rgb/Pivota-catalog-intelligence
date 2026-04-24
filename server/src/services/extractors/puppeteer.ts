@@ -1544,9 +1544,7 @@ export function extractBundleComponents(product: ExtractedProduct): ExtractedBun
     return dedupeBy(sectionCandidates, (item) => item.name.toLowerCase()).slice(0, 12);
   }
 
-  const descriptionRaw = cleanText(product.description_raw);
-  if (!BUNDLE_INCLUDE_TEXT_RE.test(descriptionRaw)) return [];
-  return parseBundleComponentCandidatesFromText(descriptionRaw);
+  return [];
 }
 
 function withProductPdpProfile(product: ExtractedProduct): ExtractedProduct {

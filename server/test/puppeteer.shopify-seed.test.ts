@@ -9,6 +9,7 @@ import {
   extractBundleComponents,
   extractLikelyFullIngredientListText,
   extractShopifyEmbeddedProductPayloadPdpFields,
+  extractShopifyProductJsonAttributeScriptsFromHtml,
   getMissingPdpFieldReasons,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
@@ -767,6 +768,144 @@ test("extractShopifyEmbeddedProductPayloadPdpFields unwraps nested DCART product
     "//www.theinkeylist.com/cdn/shop/files/tranexamic-side.png?v=1",
     "//www.theinkeylist.com/cdn/shop/files/tranexamic-how-to-use.png?v=1",
   ]);
+});
+
+test("extractShopifyProductJsonAttributeScriptsFromHtml reads Fenty product hero payloads", () => {
+  const productJson = {
+    title: "Cherry Dub BHA Toner",
+    handle: "cherry-dub-bha-toner",
+    description:
+      "<p>This BHA-powered purifying toner helps unclog pores, brighten, hydrate and keep surface oil in check.</p>",
+    shortDescription: "Heavy-hitting salicylates and triple cherry complex help purify without leaving skin dull.",
+    tags: ["Benefits:Brightening", "Benefits:Hydrating", "Skin Type:Oily", "catalog-exclude"],
+    media: [
+      {
+        src: "//fentybeauty.com/cdn/shop/files/cherry-benefits.jpg?v=1",
+        alt: "Controls surface oil, brightens skin, unclogs pores without stripping.",
+      },
+      {
+        src: "//fentybeauty.com/cdn/shop/files/cherry-ingredients.jpg?v=1",
+        alt: "Made with triple cherry complex, BHAs, zinc PCA, aloe juice, and willow bark extract.",
+      },
+      {
+        src: "//fentybeauty.com/cdn/shop/files/cherry-results.jpg?v=1",
+        alt: "Improves skin clarity in 1 week in a 4-week clinical study on 52 people.",
+      },
+    ],
+  };
+  const scripts = extractShopifyProductJsonAttributeScriptsFromHtml(`
+    <section is="product-hero" product-json="${encodeURIComponent(JSON.stringify(productJson))}"></section>
+  `);
+  const fields = extractShopifyEmbeddedProductPayloadPdpFields(scripts);
+
+  assert.equal(scripts.length, 1);
+  assert.match(fields.descriptionRaw || "", /BHA-powered purifying toner/);
+  assert.deepEqual(
+    Array.from(new Set((fields.detailsSections || []).map((section) => section.heading))).sort(),
+    ["Benefits", "Clinical Results", "Key Ingredients", "Skin Type"].sort(),
+  );
+  assert.deepEqual(fields.imageUrls, [
+    "//fentybeauty.com/cdn/shop/files/cherry-benefits.jpg?v=1",
+    "//fentybeauty.com/cdn/shop/files/cherry-ingredients.jpg?v=1",
+    "//fentybeauty.com/cdn/shop/files/cherry-results.jpg?v=1",
+  ]);
+});
+
+test("enrichDirectShopifyPdpResponse merges embedded product-json before browser enrichment", async () => {
+  const logs: Array<{ type: string; msg: string }> = [];
+  const seedUrl = "https://fentybeauty.com/products/hydra-vizor";
+  const productJson = {
+    title: "Hydra Vizor",
+    handle: "hydra-vizor",
+    description:
+      "<p>A daily SPF moisturizer that hydrates and supports smoother-looking skin.</p><p>How to Use: Apply generously before sun exposure and reapply every two hours.</p><p>Full Ingredients: Water, Glycerin, Homosalate, Octisalate, Octocrylene, Avobenzone, Niacinamide, Dimethicone, Phenoxyethanol.</p>",
+    tags: ["Benefits:Hydrating", "Sun Protection:SPF 30"],
+    media: [
+      {
+        src: "//fentybeauty.com/cdn/shop/files/hydra.jpg?v=1",
+        alt: "Made with niacinamide and Kalahari melon for hydration support.",
+      },
+    ],
+  };
+  const response = {
+    brand: "Fenty Skin",
+    domain: "https://fentybeauty.com",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Hydra Vizor",
+        url: seedUrl,
+        image_url: "",
+        image_urls: [],
+        variant_skus: ["FS-HYDRA"],
+        variants: [
+          {
+            id: "1",
+            sku: "FS-HYDRA",
+            url: seedUrl,
+            option_name: "Title",
+            option_value: "Default Title",
+            price: "45.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "",
+            image_urls: [],
+            ad_copy: "",
+          },
+        ],
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 45, max: 45, avg: 45 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "fentybeauty.com",
+      resolved_base_url: "https://fentybeauty.com",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  await withMockFetch(
+    {
+      [seedUrl]: {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `<section is="product-hero" product-json="${encodeURIComponent(JSON.stringify(productJson))}"></section>`,
+      },
+    },
+    async () => {
+      const result = await enrichDirectShopifyPdpResponse({
+        brand: "Fenty Skin",
+        baseUrl: "https://fentybeauty.com",
+        seedUrl,
+        response,
+        diagnostics: response.diagnostics,
+        log: (type, msg) => logs.push({ type, msg }),
+        browserRunner: async () => {
+          throw new Error("browser should not run");
+        },
+      });
+
+      assert.match(result.products[0]?.description_raw || "", /daily SPF moisturizer/);
+      assert.equal(result.products[0]?.how_to_use_raw, "Apply generously before sun exposure and reapply every two hours.");
+      assert.match(result.products[0]?.ingredients_raw || "", /Homosalate/);
+      assert.deepEqual(result.products[0]?.image_urls, ["https://fentybeauty.com/cdn/shop/files/hydra.jpg?v=1"]);
+      assert.match(logs.map((entry) => `${entry.type}:${entry.msg}`).join("\n"), /Recovered Shopify PDP fields via embedded product-json/);
+      assert.doesNotMatch(logs.map((entry) => entry.msg).join("\n"), /requires browser enrichment/);
+    },
+  );
 });
 
 test("extractLikelyFullIngredientListText isolates full INCI from mixed accordion copy", () => {

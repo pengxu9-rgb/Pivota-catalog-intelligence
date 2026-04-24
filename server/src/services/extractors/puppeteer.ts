@@ -997,9 +997,15 @@ export function extractShopifyBodyHtmlPdpFields(text: string | undefined) {
 }
 
 type ShopifyEmbeddedProductPayload = {
+  title?: string;
+  handle?: string;
   description?: string;
   content?: string;
   body_html?: string;
+  shortDescription?: string;
+  collectionShortDescription?: string;
+  tags?: unknown;
+  categories?: unknown;
   featured_image?: unknown;
   image?: unknown;
   images?: unknown;
@@ -1049,6 +1055,91 @@ function extractEmbeddedJsonObject(scriptText: string, anchorPattern: RegExp) {
   return null;
 }
 
+function decodeHtmlAttributeEntities(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_match, hex) => {
+      const codePoint = Number.parseInt(hex, 16);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : _match;
+    })
+    .replace(/&#([0-9]+);/g, (_match, decimal) => {
+      const codePoint = Number.parseInt(decimal, 10);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : _match;
+    })
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&plus;/gi, "+")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function parseJsonObjectText(value: string): Record<string, unknown> | null {
+  const raw = value.trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeProductJsonAttributeValue(raw: string): Record<string, unknown> | null {
+  const htmlDecoded = decodeHtmlAttributeEntities(raw);
+  const formEncoded = raw.replace(/\+/g, " ");
+  const htmlDecodedFormEncoded = htmlDecoded.replace(/\+/g, " ");
+  const candidates = [
+    raw,
+    htmlDecoded,
+    safeDecodeURIComponent(raw),
+    safeDecodeURIComponent(htmlDecoded),
+    safeDecodeURIComponent(formEncoded),
+    safeDecodeURIComponent(htmlDecodedFormEncoded),
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    const parsed = parseJsonObjectText(candidate);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function readHtmlAttribute(tag: string, attrName: string): string {
+  const escapedAttr = attrName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const doubleMatch = tag.match(new RegExp(`\\b${escapedAttr}\\s*=\\s*"([\\s\\S]*?)"`, "i"));
+  if (doubleMatch?.[1]) return doubleMatch[1];
+  const singleMatch = tag.match(new RegExp(`\\b${escapedAttr}\\s*=\\s*'([\\s\\S]*?)'`, "i"));
+  return singleMatch?.[1] || "";
+}
+
+export function extractShopifyProductJsonAttributeScriptsFromHtml(html: string | undefined): string[] {
+  if (!html || !html.trim()) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const productHeroTagRe =
+    /<section\b(?=[^>]*\bis\s*=\s*(?:"product-hero"|'product-hero'))[^>]*\bproduct-json\s*=\s*(?:"[\s\S]*?"|'[\s\S]*?')[^>]*>/gi;
+  const tags = html.match(productHeroTagRe) || [];
+
+  for (const tag of tags.slice(0, 4)) {
+    const rawAttr = readHtmlAttribute(tag, "product-json");
+    const parsed = decodeProductJsonAttributeValue(rawAttr);
+    if (!parsed) continue;
+    const key = JSON.stringify([
+      typeof parsed.handle === "string" ? parsed.handle : "",
+      typeof parsed.title === "string" ? parsed.title : "",
+      typeof parsed.id === "string" || typeof parsed.id === "number" ? parsed.id : "",
+    ]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(`window.__PIVOTA_PRODUCT_JSON__ = ${JSON.stringify(parsed)};`);
+  }
+
+  return out;
+}
+
 function extractRichTextJsonToText(value: unknown): string {
   const walk = (node: unknown): string[] => {
     if (!node || typeof node !== "object") return [];
@@ -1091,6 +1182,7 @@ function extractShopifyEmbeddedProductPayloadsFromScripts(scriptTexts: string[])
     /sgGlobalVars\.currentProduct\s*=/i,
     /window\.theme\.product\s*=/i,
     /theme\.product\s*=/i,
+    /window\.__PIVOTA_PRODUCT_JSON__\s*=/i,
   ];
 
   const unwrapPayload = (value: unknown): ShopifyEmbeddedProductPayload | null => {
@@ -1181,12 +1273,154 @@ function extractEmbeddedProductPayloadImageUrls(payloads: ShopifyEmbeddedProduct
   return dedupeStringList(rawUrls);
 }
 
+function cleanMerchantPayloadString(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const normalized = cleanText(decodeHtmlAttributeEntities(value));
+  if (!normalized || /^(?:false|null|undefined)$/i.test(normalized)) return "";
+  return normalized;
+}
+
+function collectPayloadStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => cleanMerchantPayloadString(item)).filter(Boolean);
+}
+
+function extractPayloadTagDetailSections(payloads: ShopifyEmbeddedProductPayload[]): ExtractedProductDetailSection[] {
+  const grouped = new Map<string, string[]>();
+  const push = (heading: string, value: string) => {
+    const normalized = cleanMerchantPayloadString(value);
+    if (!normalized) return;
+    if (
+      /^(?:badge|catalog-exclude|cdp|ycrf_|ygroup_|bb::|is batch controlled|ordergroove|tax class id|color id|size id|show-size-selector|shipping-restricted|full-size|mini|status:hidden)$/i.test(
+        normalized,
+      )
+    ) {
+      return;
+    }
+    const items = grouped.get(heading) || [];
+    if (!items.some((item) => item.toLowerCase() === normalized.toLowerCase())) {
+      items.push(normalized);
+      grouped.set(heading, items);
+    }
+  };
+
+  for (const payload of payloads) {
+    for (const rawTag of [...collectPayloadStringArray(payload.tags), ...collectPayloadStringArray(payload.categories)]) {
+      const match = rawTag.match(/^([^:|]{2,40})[:|]\s*(.+)$/);
+      if (!match) continue;
+      const label = cleanMerchantPayloadString(match[1]);
+      const value = cleanMerchantPayloadString(match[2]);
+      if (!label || !value) continue;
+
+      if (/^benefits?$/i.test(label)) push("Benefits", value);
+      else if (/^concerns?$/i.test(label)) push("Concerns", value);
+      else if (/^skin type$/i.test(label)) push("Skin Type", value);
+      else if (/^finish$/i.test(label)) push("Finish", value);
+      else if (/^coverage$/i.test(label)) push("Coverage", value);
+      else if (/^formulation$/i.test(label)) push("Format", value);
+      else if (/^sun protection$/i.test(label)) push("Sun Protection", value);
+      else if (/^product type$/i.test(label)) push("Product Type", value);
+      else if (/^ingredient preferences?$/i.test(label)) push("Ingredient Preferences", value);
+    }
+  }
+
+  return Array.from(grouped.entries())
+    .filter(([, values]) => values.length > 0)
+    .map(([heading, values]) => ({
+      heading,
+      body: values.slice(0, 8).join(", "),
+      source_kind: "embedded_product_json_tags",
+    }));
+}
+
+function collectPayloadMediaAltTexts(payloads: ShopifyEmbeddedProductPayload[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const visit = (value: unknown) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (typeof value !== "object") return;
+    const record = value as Record<string, unknown>;
+    const alt = cleanMerchantPayloadString(record.alt);
+    if (alt && !seen.has(alt.toLowerCase())) {
+      seen.add(alt.toLowerCase());
+      out.push(alt);
+    }
+    visit(record.preview_image);
+  };
+
+  for (const payload of payloads) {
+    visit(payload.media);
+    visit(payload.images);
+  }
+  return out;
+}
+
+function extractPayloadMediaAltDetailSections(payloads: ShopifyEmbeddedProductPayload[]): ExtractedProductDetailSection[] {
+  const byHeading = new Map<string, string[]>();
+  const payloadTitles = new Set(
+    payloads
+      .map((payload) => cleanMerchantPayloadString(payload.title))
+      .filter(Boolean)
+      .map((title) => title.toLowerCase()),
+  );
+
+  const push = (heading: string, body: string) => {
+    const normalized = cleanMerchantPayloadString(body);
+    if (!normalized || normalized.length < 24) return;
+    if (payloadTitles.has(normalized.toLowerCase())) return;
+    if (/\b(?:product image|editorial image|on a .*background|on a .*backdrop|smear of|person applying|model)\b/i.test(normalized)) {
+      return;
+    }
+    const items = byHeading.get(heading) || [];
+    if (!items.some((item) => item.toLowerCase() === normalized.toLowerCase())) {
+      items.push(normalized);
+      byHeading.set(heading, items);
+    }
+  };
+
+  for (const alt of collectPayloadMediaAltTexts(payloads)) {
+    if (/\b(?:clinical study|before and after|agree\b|agreed\b|\d+%|after \d+ weeks?)\b/i.test(alt)) {
+      push("Clinical Results", alt);
+    } else if (
+      /\b(?:made with|key ingredients?|ingredients?:|niacinamide|hyaluronic|salicylic|zinc pca|aloe|cherry|willow bark|kalahari melon|barbados cherry)\b/i.test(
+        alt,
+      )
+    ) {
+      push("Key Ingredients", alt);
+    } else if (
+      /\b(?:controls?|brightens?|unclogs?|hydrates?|moisturi[sz]es?|pores?|shine|texture|spf|sunscreen|smooths?|plumps?)\b/i.test(
+        alt,
+      )
+    ) {
+      push("Benefits", alt);
+    }
+  }
+
+  return Array.from(byHeading.entries()).map(([heading, values]) => ({
+    heading,
+    body: values.slice(0, 4).join("\n"),
+    source_kind: "embedded_product_json_media_alt",
+  }));
+}
+
 export function extractShopifyEmbeddedProductPayloadPdpFields(scriptTexts: string[]) {
   const payloads = extractShopifyEmbeddedProductPayloadsFromScripts(scriptTexts);
   const mergedHtml = cleanText(
     payloads
-      .flatMap((payload) => [payload.content, payload.description, payload.body_html])
+      .flatMap((payload) => [
+        payload.content,
+        payload.description,
+        payload.body_html,
+        payload.shortDescription,
+        payload.collectionShortDescription,
+      ])
       .filter((value): value is string => Boolean(value && value.trim()))
+      .map((value) => cleanMerchantPayloadString(value))
+      .filter(Boolean)
       .join("\n\n"),
   );
   const bodyHtmlFields = mergedHtml
@@ -1235,7 +1469,12 @@ export function extractShopifyEmbeddedProductPayloadPdpFields(scriptTexts: strin
 
   return {
     descriptionRaw: mergedHtml || undefined,
-    detailsSections: dedupeDetailSections([...customMetafieldDetails, ...bodyHtmlFields.detailsSections]),
+    detailsSections: dedupeDetailSections([
+      ...customMetafieldDetails,
+      ...bodyHtmlFields.detailsSections,
+      ...extractPayloadTagDetailSections(payloads),
+      ...extractPayloadMediaAltDetailSections(payloads),
+    ]),
     ingredientsRaw: cleanText(bodyHtmlFields.ingredientsRaw || customMetafieldIngredients[0]) || undefined,
     activeIngredientsRaw: cleanText(bodyHtmlFields.activeIngredientsRaw) || undefined,
     howToUseRaw: cleanText(bodyHtmlFields.howToUseRaw || customMetafieldHowTo[0]) || undefined,
@@ -2061,13 +2300,28 @@ export async function enrichDirectShopifyPdpResponse(params: {
   const product = params.response.products[0];
   if (!params.seedUrl || !product || params.response.products.length !== 1) return params.response;
   let response = params.response;
+  let pageHtml: string | undefined;
+  let pageHtmlFetched = false;
+
+  const fetchSeedPageHtml = async () => {
+    if (pageHtmlFetched) return pageHtml;
+    pageHtmlFetched = true;
+    try {
+      const pageOutcome = await fetchTextTracked(params.seedUrl!, params.context || {}, params.diagnostics);
+      pageHtml = pageOutcome.body || undefined;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error || "unknown_error");
+      params.log("warn", `Shopify direct PDP HTML fetch failed; continuing without embedded PDP recovery: ${msg}`);
+    }
+    return pageHtml;
+  };
 
   const faqMissing = !Array.isArray(product.faq_items) || product.faq_items.length === 0;
   if (faqMissing) {
     try {
-      const pageOutcome = await fetchTextTracked(params.seedUrl, params.context || {}, params.diagnostics);
+      const html = await fetchSeedPageHtml();
       const faqItems = await fetchOkendoFaqItemsFromMetafieldJson(
-        extractOkendoMetafieldJsonFromHtml(pageOutcome.body || undefined),
+        extractOkendoMetafieldJsonFromHtml(html),
         params.seedUrl,
       );
       if (faqItems.length > 0) {
@@ -2080,7 +2334,41 @@ export async function enrichDirectShopifyPdpResponse(params: {
     }
   }
 
+  const productBeforeEmbeddedMerge = response.products[0];
+  if (productBeforeEmbeddedMerge) {
+    const missingBefore = getMissingPdpFieldReasons(productBeforeEmbeddedMerge);
+    const productMissingImagesBefore = productBeforeEmbeddedMerge.image_urls.length === 0;
+    const variantMissingImagesBefore = productBeforeEmbeddedMerge.variants.some((variant) => variant.image_urls.length === 0);
+    if (missingBefore.length > 0 || productMissingImagesBefore || variantMissingImagesBefore) {
+      const html = await fetchSeedPageHtml();
+      if (html) {
+        const merged = mergeShopifyDirectPdpEmbeddedProductJson(response, html);
+        const productAfter = merged.products[0];
+        const missingAfter = productAfter ? getMissingPdpFieldReasons(productAfter) : missingBefore;
+        const beforeSignal = [
+          productBeforeEmbeddedMerge.image_urls.length,
+          productBeforeEmbeddedMerge.details_sections?.length || 0,
+          productBeforeEmbeddedMerge.description_raw ? 1 : 0,
+          missingBefore.join(","),
+        ].join("|");
+        const afterSignal = productAfter
+          ? [
+              productAfter.image_urls.length,
+              productAfter.details_sections?.length || 0,
+              productAfter.description_raw ? 1 : 0,
+              missingAfter.join(","),
+            ].join("|")
+          : beforeSignal;
+        response = merged;
+        if (afterSignal !== beforeSignal) {
+          params.log("success", `Recovered Shopify PDP fields via embedded product-json: ${params.seedUrl}`);
+        }
+      }
+    }
+  }
+
   const currentProduct = response.products[0];
+  if (!currentProduct) return response;
   const productMissingImages = currentProduct.image_urls.length === 0;
   const variantMissingImages = currentProduct.variants.some((variant) => variant.image_urls.length === 0);
   const missingPdpFieldReasons = getMissingPdpFieldReasons(currentProduct);
@@ -2474,6 +2762,82 @@ function mergeShopifyDirectPdpFaqFallback(
             ...(product.field_sources?.faq_items || []),
             ...faqItems.map((item) => item.source_kind || "okendo_questions_api"),
           ],
+        },
+      }),
+    );
+
+    return withProductPdpProfile(mergedProduct);
+  });
+
+  return {
+    ...response,
+    products: mergedProducts,
+  };
+}
+
+function mergeShopifyDirectPdpEmbeddedProductJson(
+  response: Omit<ExtractResponse, "generated_at" | "logs">,
+  html: string | undefined,
+): Omit<ExtractResponse, "generated_at" | "logs"> {
+  if (!response.products[0] || !html) return response;
+
+  const embeddedScripts = extractShopifyProductJsonAttributeScriptsFromHtml(html);
+  if (embeddedScripts.length === 0) return response;
+  const embeddedFields = extractShopifyEmbeddedProductPayloadPdpFields(embeddedScripts);
+  const mergedImages = resolveStructuredImageUrls(response.domain, embeddedFields.imageUrls);
+
+  const mergedProducts = response.products.map((product, idx) => {
+    if (idx !== 0) return product;
+
+    const mergedProduct: ExtractedProduct = {
+      ...product,
+      image_urls: dedupeStringList([...product.image_urls, ...mergedImages]),
+      variant_skus: [...product.variant_skus],
+      variants: product.variants.map((variant) => {
+        const variantImages = variant.image_urls.length > 0 ? variant.image_urls : mergedImages;
+        return {
+          ...variant,
+          image_urls: dedupeStringList(variantImages),
+          image_url: variant.image_url || variantImages[0] || "",
+        };
+      }),
+    };
+    mergedProduct.image_url = mergedProduct.image_urls[0] || product.image_url || "";
+
+    Object.assign(
+      mergedProduct,
+      buildProductPdpFields({
+        descriptionRaw: product.description_raw || embeddedFields.descriptionRaw,
+        detailsSections: dedupeDetailSections([
+          ...(product.details_sections || []),
+          ...(embeddedFields.detailsSections || []),
+        ]),
+        ingredientsRaw: product.ingredients_raw || embeddedFields.ingredientsRaw,
+        activeIngredientsRaw: product.active_ingredients_raw || embeddedFields.activeIngredientsRaw,
+        howToUseRaw: product.how_to_use_raw || embeddedFields.howToUseRaw,
+        faqItems: product.faq_items || [],
+        fieldSources: {
+          description_raw: [
+            ...(product.field_sources?.description_raw || []),
+            embeddedFields.descriptionRaw ? "embedded_product_json" : "",
+          ],
+          details_sections: [
+            ...(product.field_sources?.details_sections || []),
+            ...(embeddedFields.detailsSections || []).map((section) => section.source_kind),
+          ],
+          ingredients_raw: [
+            ...(product.field_sources?.ingredients_raw || []),
+            embeddedFields.ingredientsRaw ? "embedded_product_json" : "",
+          ],
+          active_ingredients_raw: [
+            ...(product.field_sources?.active_ingredients_raw || []),
+            embeddedFields.activeIngredientsRaw ? "embedded_product_json" : "",
+          ],
+          how_to_use_raw: [
+            ...(product.field_sources?.how_to_use_raw || []),
+            embeddedFields.howToUseRaw ? "embedded_product_json" : "",
+          ],
+          faq_items: product.field_sources?.faq_items || [],
         },
       }),
     );

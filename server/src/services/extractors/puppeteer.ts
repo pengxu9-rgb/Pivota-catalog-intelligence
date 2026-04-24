@@ -2031,10 +2031,15 @@ export async function enrichDirectShopifyPdpResponse(params: {
   const variantMissingImages = currentProduct.variants.some((variant) => variant.image_urls.length === 0);
   const productMissingPdpFields = productHasMissingPdpFields(currentProduct);
   if (!productMissingImages && !variantMissingImages && !productMissingPdpFields) return response;
+  const enrichmentReasons = [
+    productMissingImages ? "product_images" : "",
+    variantMissingImages ? "variant_images" : "",
+    productMissingPdpFields ? "pdp_fields" : "",
+  ].filter(Boolean);
 
   params.log(
     "info",
-      `Shopify direct PDP returned incomplete image/PDP fields. Attempting browser enrichment: ${params.seedUrl}`,
+    `Shopify direct PDP requires browser enrichment for ${enrichmentReasons.join(", ")}: ${params.seedUrl}`,
   );
 
   const navigationTimeoutMs = clampIntShared(

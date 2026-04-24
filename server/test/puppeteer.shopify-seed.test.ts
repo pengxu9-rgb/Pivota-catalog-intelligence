@@ -264,6 +264,49 @@ test("PuppeteerExtractor fails fast when a Shopify direct PDP redirects to a col
   );
 });
 
+test("PuppeteerExtractor fails fast when a Shopify direct PDP redirects to the homepage", async () => {
+  const extractor = new PuppeteerExtractor();
+
+  await withMockFetch(
+    {
+      "https://fentybeauty.com/products/gloss-bomb-swirl-twisted-lip-luminizer-fu-y-chocolit.js": {
+        status: 404,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ status: 404, message: "Not Found" }),
+      },
+      "https://fentybeauty.com/products/gloss-bomb-swirl-twisted-lip-luminizer-fu-y-chocolit": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        responseUrl: "https://fentybeauty.com/",
+        body: `
+          <html>
+            <body>
+              <h1>Fenty Beauty</h1>
+              <a href="/products/gloss-bomb-universal-lip-luminizer-fuy">Gloss Bomb</a>
+            </body>
+          </html>
+        `,
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Fenty Beauty",
+        domain: "https://fentybeauty.com/products/gloss-bomb-swirl-twisted-lip-luminizer-fu-y-chocolit",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 0);
+      assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
+      assert.equal(result.diagnostics?.failure_category, "no_product_urls");
+      assert.ok(
+        result.logs.some((entry) => /seed status=non_product_redirect/.test(entry.msg)),
+        "expected homepage redirect to stop before generic discovery",
+      );
+    },
+  );
+});
+
 test("enrichDirectShopifyPdpResponse preserves direct feed response when browser enrichment throws", async () => {
   const logs: Array<{ type: string; msg: string }> = [];
   const response = {

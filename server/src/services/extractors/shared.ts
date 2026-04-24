@@ -400,7 +400,8 @@ export function isStaticAssetUrl(rawUrl: string, baseUrl: string): boolean {
 export function looksLikeKnownNonProductUrl(rawUrl: string, baseUrl: string): boolean {
   const parsed = parseHttpUrl(rawUrl, baseUrl);
   if (!parsed) return true;
-  return NEGATIVE_PATH_RE.test(parsed.pathname.toLowerCase());
+  const pathname = parsed.pathname.toLowerCase();
+  return pathname === "/" || pathname === "" || NEGATIVE_PATH_RE.test(pathname);
 }
 
 function parseHttpUrl(rawUrl: string, baseUrl: string): URL | null {

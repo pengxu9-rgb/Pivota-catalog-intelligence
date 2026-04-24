@@ -658,6 +658,15 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
   assert.equal(
     classifyExtractedProductKind(
       makeProduct({
+        title: "Gloss Bomb Ice Cooling Lip Luminizer — Melon Chillz",
+        url: "https://fentybeauty.com/products/gloss-bomb-ice-cooling-lip-luminizer-melon-chillz",
+      }),
+    ),
+    "single_formula",
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
         title: "Hair Pins",
         url: "https://kyliecosmetics.com/products/hair-pins",
         description_raw:

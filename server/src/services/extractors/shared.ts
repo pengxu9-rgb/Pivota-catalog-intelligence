@@ -397,6 +397,12 @@ export function isStaticAssetUrl(rawUrl: string, baseUrl: string): boolean {
   return STATIC_ASSET_EXT_RE.test(parsed.pathname);
 }
 
+export function looksLikeKnownNonProductUrl(rawUrl: string, baseUrl: string): boolean {
+  const parsed = parseHttpUrl(rawUrl, baseUrl);
+  if (!parsed) return true;
+  return NEGATIVE_PATH_RE.test(parsed.pathname.toLowerCase());
+}
+
 function parseHttpUrl(rawUrl: string, baseUrl: string): URL | null {
   try {
     const parsed = new URL(rawUrl, baseUrl);
@@ -1338,6 +1344,23 @@ export async function discoverProductUrls(params: {
       const requestedSeedUrl = canonicalizeUrl(seedDiscoveryUrl, params.baseUrl);
       const resolvedSeedUrl = canonicalizeUrl(seed.finalUrl || seedDiscoveryUrl, params.baseUrl);
       const resolvedSeedLooksProductLike = scoreProductCandidateUrl(resolvedSeedUrl, params.baseUrl) >= 4;
+      if (
+        directSeedCandidate &&
+        requestedSeedUrl !== resolvedSeedUrl &&
+        looksLikeKnownNonProductUrl(resolvedSeedUrl, params.baseUrl)
+      ) {
+        setDiscoveryStrategy(params.diagnostics, "seed_page");
+        if (!params.diagnostics.failure_category) {
+          setFailureCategory(params.diagnostics, "no_product_urls");
+        }
+        params.log?.("warn", `Direct PDP resolved to a non-product page; skipping rediscovery: ${resolvedSeedUrl}`);
+        return {
+          sitemapUrl: undefined,
+          productUrls: [],
+          deadSitemapDetected,
+          challengeDetected,
+        };
+      }
       const allowSeedHtmlRediscovery = !directSeedCandidate || (seed.ok && !resolvedSeedLooksProductLike);
       const directProductCandidate =
         /"@type"\s*:\s*(?:"Product"|\[[^\]]*"Product")/i.test(seed.body) ||

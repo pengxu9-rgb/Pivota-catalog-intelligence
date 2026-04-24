@@ -29,6 +29,7 @@ import {
   gotoPageOrThrow,
   isLikelyProductUrl as isLikelyProductUrlShared,
   isStaticAssetUrl as isStaticAssetUrlShared,
+  looksLikeKnownNonProductUrl,
   looksLikeProductPageHtml,
   mapWithConcurrency as mapWithConcurrencyShared,
   normalizeMarketId,
@@ -1961,6 +1962,24 @@ async function tryExtractShopify(params: {
         context: shopifyContext,
       });
     }
+    const directSeedStatus = await classifyMissingShopifyDirectSeed({
+      seedUrl: params.seedUrl,
+      baseUrl: params.baseUrl,
+      context: shopifyContext,
+      diagnostics: params.diagnostics,
+    });
+    if (directSeedStatus === "not_found" || directSeedStatus === "non_product_redirect") {
+      log(
+        "warn",
+        `Shopify direct product feed not found for handle: ${directHandle}; seed status=${directSeedStatus}. Skipping generic rediscovery.`,
+      );
+      setDiscoveryStrategy(params.diagnostics!, "shopify_json");
+      if (!params.diagnostics.failure_category) {
+        setFailureCategory(params.diagnostics, "no_product_urls");
+      }
+      return buildEmptyShopifyDirectPdpResponse(params, "Shopify (Direct PDP)");
+    }
+
     log("warn", `Shopify direct product feed not found for handle: ${directHandle}. Falling back to direct page discovery.`);
     return null;
   }
@@ -2335,6 +2354,58 @@ function buildShopifyResponse(params: {
       next_offset: hasMore ? nextOffset : null,
       has_more: hasMore,
       discovered_urls: extractedProducts.length,
+    },
+    diagnostics: params.diagnostics,
+  };
+}
+
+type MissingShopifyDirectSeedStatus = "product_page" | "not_found" | "non_product_redirect" | "unknown";
+
+async function classifyMissingShopifyDirectSeed(params: {
+  seedUrl?: string;
+  baseUrl: string;
+  context: FetchContext;
+  diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
+}): Promise<MissingShopifyDirectSeedStatus> {
+  if (!params.seedUrl) return "unknown";
+
+  const seed = await fetchTextTracked(params.seedUrl, params.context, params.diagnostics);
+  const requestedSeedUrl = canonicalizeUrlShared(params.seedUrl, params.baseUrl);
+  const resolvedSeedUrl = canonicalizeUrlShared(seed.finalUrl || params.seedUrl, params.baseUrl);
+
+  if (!seed.ok && !seed.blockedBy) return "not_found";
+  if (requestedSeedUrl !== resolvedSeedUrl && looksLikeKnownNonProductUrl(resolvedSeedUrl, params.baseUrl)) {
+    return "non_product_redirect";
+  }
+  if (seed.body && looksLikeProductPageHtml(seed.body)) return "product_page";
+  return "unknown";
+}
+
+function buildEmptyShopifyDirectPdpResponse(
+  params: {
+    brand: string;
+    domain: string;
+    offset: number;
+    limit: number;
+    diagnostics: ExtractResponse["diagnostics"];
+  },
+  platformLabel: string,
+): Omit<ExtractResponse, "generated_at" | "logs"> {
+  return {
+    brand: params.brand,
+    domain: params.domain,
+    mode: "puppeteer" as const,
+    platform: platformLabel,
+    products: [],
+    variants: [],
+    pricing: { currency: "USD", min: 0, max: 0, avg: 0 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: params.offset,
+      limit: params.limit,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 0,
     },
     diagnostics: params.diagnostics,
   };

@@ -1043,7 +1043,7 @@ test("discoverProductUrls falls through from a 404 direct PDP to site search and
   );
 });
 
-test("discoverProductUrls re-discovers a target PDP when a stale direct seed redirects to a collection page", async () => {
+test("discoverProductUrls fails fast when a direct PDP redirects to a collection page", async () => {
   const diagnostics = createDiagnostics("www.tomfordbeauty.com", "https://www.tomfordbeauty.com");
 
   await withMockFetch(
@@ -1074,11 +1074,8 @@ test("discoverProductUrls re-discovers a target PDP when a stale direct seed red
       });
 
       assert.equal(diagnostics.discovery_strategy, "seed_page");
-      assert.deepEqual(discovered.productUrls, [
-        "https://www.tomfordbeauty.com/products/shade-and-illuminate-soft-radiance-foundation-spf-50",
-        "https://www.tomfordbeauty.com/products/ombre-leather-parfum",
-      ]);
-      assert.equal(diagnostics.failure_category, null);
+      assert.deepEqual(discovered.productUrls, []);
+      assert.equal(diagnostics.failure_category, "no_product_urls");
     },
   );
 });

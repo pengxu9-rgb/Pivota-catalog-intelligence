@@ -19,13 +19,21 @@ type MockRoute = {
   status?: number;
   headers?: Record<string, string>;
   body?: string;
+  responseUrl?: string;
 };
 
 function createMockResponse(route: MockRoute): Response {
-  return new Response(route.body ?? "", {
+  const response = new Response(route.body ?? "", {
     status: route.status ?? 200,
     headers: route.headers,
   });
+  if (route.responseUrl) {
+    Object.defineProperty(response, "url", {
+      value: route.responseUrl,
+      configurable: true,
+    });
+  }
+  return response;
 }
 
 async function withMockFetch(routes: Record<string, MockRoute>, fn: () => Promise<void>): Promise<void> {
@@ -174,6 +182,84 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
         "https://cdn.example.com/banana-2.jpg",
       ]);
       assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
+    },
+  );
+});
+
+test("PuppeteerExtractor fails fast when a Shopify direct PDP is deleted", async () => {
+  const extractor = new PuppeteerExtractor();
+
+  await withMockFetch(
+    {
+      "https://fentybeauty.com/products/gloss-bomb-swirl-fu-y-chocolit.js": {
+        status: 404,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ status: 404, message: "Not Found" }),
+      },
+      "https://fentybeauty.com/products/gloss-bomb-swirl-fu-y-chocolit": {
+        status: 404,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: "<html><body><h1>404</h1></body></html>",
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Fenty Beauty",
+        domain: "https://fentybeauty.com/products/gloss-bomb-swirl-fu-y-chocolit",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 0);
+      assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
+      assert.equal(result.diagnostics?.failure_category, "no_product_urls");
+      assert.ok(
+        result.logs.some((entry) => /Skipping generic rediscovery/.test(entry.msg)),
+        "expected direct PDP failure to stop before generic discovery",
+      );
+    },
+  );
+});
+
+test("PuppeteerExtractor fails fast when a Shopify direct PDP redirects to a collection", async () => {
+  const extractor = new PuppeteerExtractor();
+
+  await withMockFetch(
+    {
+      "https://fentybeauty.com/products/melt-awf-jelly-oil-makeup-melting-cleanser.js": {
+        status: 404,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ status: 404, message: "Not Found" }),
+      },
+      "https://fentybeauty.com/products/melt-awf-jelly-oil-makeup-melting-cleanser": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        responseUrl: "https://fentybeauty.com/en-nl/collections/skincare-cleanser",
+        body: `
+          <html>
+            <body>
+              <h1>Cleanser</h1>
+              <a href="/products/total-cleansr-remove-it-all-cleanser">Total Cleans'r</a>
+            </body>
+          </html>
+        `,
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Fenty Beauty",
+        domain: "https://fentybeauty.com/products/melt-awf-jelly-oil-makeup-melting-cleanser",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 0);
+      assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
+      assert.equal(result.diagnostics?.failure_category, "no_product_urls");
+      assert.ok(
+        result.logs.some((entry) => /seed status=non_product_redirect/.test(entry.msg)),
+        "expected collection redirect to stop before generic discovery",
+      );
     },
   );
 });

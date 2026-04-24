@@ -27,6 +27,7 @@ import {
   extractInlineFaqItemsFromHtml,
   extractShopifyEmbeddedProductPayloadPdpFields,
   extractShopifyBodyHtmlPdpFields,
+  extractVariantScopedIngredientListText,
   filterUsefulFaqItems,
   looksLikeFullIngredientListText,
   productHasMissingPdpFields,
@@ -328,6 +329,23 @@ test("deriveProductPdpModuleBodies prefers instructional how-to text over mislab
   assert.doesNotMatch(bodies.howToUseRaw || "", /Cloud-like hydrating mist/i);
 });
 
+test("deriveProductPdpModuleBodies recognizes branded application accordions as how-to", () => {
+  const bodies = deriveProductPdpModuleBodies({
+    detailsSections: [
+      {
+        heading: "Get Rihanna's Everyday Eye",
+        body:
+          "Choose a matte shimmer and sparkle shade that’s best for your skin tone. Apply your matte shade to the crease of your eye and underneath your bottom lash line using the slanted pointed tip. Blend out edges with fingers or a brush. Pro Tip: create your look one eye at a time. Close LONGWEAR EYESHADOW STICK RP: CLEAR 2 RUE BRULLER 75014 PARIS, FRANCE KENDO HOLDINGS INC.",
+        source_kind: "accordion_control",
+      },
+    ],
+  });
+
+  assert.match(bodies.howToUseRaw || "", /Apply your matte shade/i);
+  assert.match(bodies.howToUseRaw || "", /Pro Tip/i);
+  assert.doesNotMatch(bodies.howToUseRaw || "", /KENDO HOLDINGS/i);
+});
+
 test("deriveProductPdpModuleBodies ignores consent banners as how-to text", () => {
   const bodies = deriveProductPdpModuleBodies({
     howToUseText:
@@ -372,6 +390,27 @@ test("deriveProductPdpModuleBodies prefers full INCI over key ingredient summari
 
   assert.equal(bodies.ingredientsRaw, fullInci);
   assert.equal(bodies.activeIngredientsRaw, undefined);
+});
+
+test("extractVariantScopedIngredientListText selects shade-specific INCI from full shade modal text", () => {
+  const modalText = `
+    FULL INGREDIENTS
+
+    CANDY RAPPER: TRISILOXANE, MICA, SILICA, IRON OXIDES (CI 77491), TITANIUM DIOXIDE (CI 77891), DIMETHICONE, POLYETHYLENE.
+
+    BROWNIE BADD’R: TRISILOXANE, MICA, TRIMETHYLSILOXYSILICATE, DIMETHICONE, PHENYLPROPYLDIMETHYLSILOXYSILICATE, POLYETHYLENE, SYNTHETIC WAX, IRON OXIDES (CI 77491, CI 77499).
+
+    GOLD HOOPZ: MICA, TRISILOXANE, DIMETHICONE, SILICA, LAUROYL LYSINE, IRON OXIDES (CI 77491), TITANIUM DIOXIDE (CI 77891).
+  `;
+
+  const scoped = extractVariantScopedIngredientListText(modalText, [
+    "shadowstix-longwear-eyeshadow-stick-brownie-baddr",
+  ]);
+
+  assert.match(scoped || "", /BROWNIE BADD/i);
+  assert.match(scoped || "", /TRIMETHYLSILOXYSILICATE/i);
+  assert.doesNotMatch(scoped || "", /CANDY RAPPER/i);
+  assert.doesNotMatch(scoped || "", /GOLD HOOPZ/i);
 });
 
 test("deriveProductPdpModuleBodies ignores 'What's in it' marketing blurbs when a modal INCI list exists", () => {

@@ -1476,6 +1476,13 @@ test("mergeShopifyDirectPdpFallback preserves fallback PDP fields even when no n
         image_url: "https://cdn.example.com/tomford-neroli-1.jpg",
         image_urls: ["https://cdn.example.com/tomford-neroli-1.jpg"],
         variant_skus: ["TF-NP-001"],
+        details_sections: [
+          {
+            heading: "Format",
+            body: "Body Moisturizer",
+            source_kind: "embedded_product_json_tags" as const,
+          },
+        ],
         variants: [
           {
             id: "v1",
@@ -1577,7 +1584,11 @@ test("mergeShopifyDirectPdpFallback preserves fallback PDP fields even when no n
 
   assert.equal(merged.products[0]?.ingredients_raw, "Ingredients: Water Aqua Eau, Glycerin, Panthenol.");
   assert.equal(merged.products[0]?.how_to_use_raw, "Smooth into skin as needed.");
-  assert.equal(merged.products[0]?.details_sections?.length, 2);
+  assert.equal(merged.products[0]?.details_sections?.length, 3);
+  assert.deepEqual(
+    merged.products[0]?.details_sections?.map((section) => section.heading),
+    ["Format", "Ingredients", "How to Use"],
+  );
   assert.deepEqual(merged.products[0]?.faq_items, [
     {
       question: "Can I use this every day?",

@@ -82,6 +82,20 @@ export type ExtractedProductFaqItem = {
   source_title?: string;
 };
 
+export type ExtractedProductKind =
+  | "single_formula"
+  | "bundle"
+  | "accessory"
+  | "fragrance"
+  | "general_merchandise";
+
+export type ExtractedBundleComponent = {
+  name: string;
+  quantity?: string;
+  source_kind: string;
+  raw_text?: string;
+};
+
 export type ExtractedProductFieldCaptureStatus = {
   description_raw: "present" | "missing";
   details_sections: "present" | "missing";
@@ -105,6 +119,8 @@ export type ExtractedProduct = {
   active_ingredients_raw?: string;
   how_to_use_raw?: string;
   faq_items?: ExtractedProductFaqItem[];
+  product_kind?: ExtractedProductKind;
+  bundle_components?: ExtractedBundleComponent[];
   field_capture_status?: ExtractedProductFieldCaptureStatus;
   field_sources?: Record<string, string[]>;
 };

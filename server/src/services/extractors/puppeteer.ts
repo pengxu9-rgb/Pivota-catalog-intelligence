@@ -4,9 +4,11 @@ import { type Browser, type HTTPRequest, type Page } from "puppeteer";
 import type {
   ExtractInput,
   ExtractResponse,
+  ExtractedBundleComponent,
   ExtractedProduct,
   ExtractedProductDetailSection,
   ExtractedProductFaqItem,
+  ExtractedProductKind,
   ExtractedVariant,
   ExtractedVariantRow,
   Extractor,
@@ -1074,6 +1076,7 @@ function extractShopifyEmbeddedProductPayloadsFromScripts(scriptTexts: string[])
       typeof candidate.description === "string" ||
       typeof candidate.content === "string" ||
       typeof candidate.body_html === "string" ||
+      Boolean(candidate.customMetafields && typeof candidate.customMetafields === "object") ||
       Boolean(candidate.featured_image) ||
       Boolean(candidate.image) ||
       Boolean(candidate.images) ||
@@ -1103,6 +1106,9 @@ function extractShopifyEmbeddedProductPayloadsFromScripts(scriptTexts: string[])
           typeof parsed.description === "string" ? parsed.description.slice(0, 200) : "",
           typeof parsed.content === "string" ? parsed.content.slice(0, 200) : "",
           typeof parsed.body_html === "string" ? parsed.body_html.slice(0, 200) : "",
+          parsed.customMetafields && typeof parsed.customMetafields === "object"
+            ? JSON.stringify(parsed.customMetafields).slice(0, 200)
+            : "",
           typeof parsed.featured_image === "string" ? parsed.featured_image : "",
         ]);
         if (seen.has(key)) continue;
@@ -1409,13 +1415,162 @@ export function buildProductPdpFields(params: {
   };
 }
 
+const PDP_COMPLETENESS_ACCESSORY_RE =
+  /\b(brush|sponge|puff|applicator|sharpener|tweezer|curler|scissors|comb|mirror|case|bag|pouch|holder|spatula|tool|tools|gua sha|roller|loofah|headband|scrunchie|scarf|hat|cap|tote|clip|clips|pin|pins|keychain|key chain|tray|lash curler|refill case)\b/i;
+const PDP_COMPLETENESS_BUNDLE_RE =
+  /\b(bundle|set|kit|duo|trio|routine|collection|calendar|advent calendar|mini set|travel set|starter set|value set|gift set|combo|show look|look set)\b/i;
+const PDP_COMPLETENESS_FRAGRANCE_RE =
+  /\b(fragrance|perfume|parfum|eau de|edt|edp|cologne|body mist|pen spray|scent)\b/i;
+const PDP_COMPLETENESS_SKINCARE_RE =
+  /\b(skincare|skin care|cleanser|toner|essence|serum|ampoule|moisturi[sz]er|cream|lotion|balm|mask|peel|exfoliant|treatment|oil|sunscreen|spf|face mist|facial mist|hydrating mist|retinol|vitamin c|niacinamide|acid|salicylic|benzoyl|azelaic|ceramide|hyaluronic)\b/i;
+const PDP_COMPLETENESS_MAKEUP_RE =
+  /\b(makeup|foundation|concealer|mascara|lipstick|lip gloss|lip oil|lip liner|blush|bronzer|powder|highlighter|eyeshadow|eyeliner|brow|primer|setting spray|skin tint|tint|shade|palette)\b/i;
+const PDP_COMPLETENESS_HAIR_RE =
+  /\b(haircare|hair care|shampoo|conditioner|scalp|leave-in|styling|curl|detangler)\b/i;
+const PDP_COMPLETENESS_MIN_OVERVIEW_CHARS = 80;
+const BUNDLE_COMPONENT_HEADING_RE =
+  /\b(included|includes|inside|contents|what'?s inside|in the (?:set|kit|bundle)|set contains|kit contains)\b/i;
+const BUNDLE_INCLUDE_TEXT_RE =
+  /\b(?:this\s+)?(?:set|kit|bundle|collection|calendar|combo)?\s*(?:includes?|contains?|comes with|features)\b/i;
+const BUNDLE_COMPONENT_NOISE_RE =
+  /\b(?:free shipping|limited edition|add to cart|shop now|complete routine|gift box|packaging|full size value|value of|worth|savings?)\b/i;
+
+function buildPdpCompletenessText(product: ExtractedProduct): string {
+  return [
+    product.title,
+    product.url,
+    product.description_raw,
+    ...(Array.isArray(product.details_sections)
+      ? product.details_sections.flatMap((section) => [section.heading, section.body])
+      : []),
+    ...(product.variants || []).flatMap((variant) => [
+      variant.option_name,
+      variant.option_value,
+      variant.description,
+      variant.sku,
+    ]),
+  ]
+    .map((value) => cleanText(value))
+    .filter(Boolean)
+    .join(" ");
+}
+
+function inferPdpCompletenessRequirements(product: ExtractedProduct) {
+  const text = buildPdpCompletenessText(product);
+  const accessory = PDP_COMPLETENESS_ACCESSORY_RE.test(text);
+  const bundle = PDP_COMPLETENESS_BUNDLE_RE.test(text);
+  const fragrance = PDP_COMPLETENESS_FRAGRANCE_RE.test(text);
+  const skincare = PDP_COMPLETENESS_SKINCARE_RE.test(text);
+  const makeup = PDP_COMPLETENESS_MAKEUP_RE.test(text);
+  const hair = PDP_COMPLETENESS_HAIR_RE.test(text);
+  const formula = !accessory && !bundle && (skincare || makeup || hair || fragrance);
+  const needsRoutineUse = !accessory && !bundle && !fragrance && (skincare || hair);
+  const needsIngredients = formula && !fragrance;
+  return {
+    accessory,
+    bundle,
+    fragrance,
+    formula,
+    needsRoutineUse,
+    needsIngredients,
+  };
+}
+
+export function classifyExtractedProductKind(product: ExtractedProduct): ExtractedProductKind {
+  const requirements = inferPdpCompletenessRequirements(product);
+  if (requirements.bundle) return "bundle";
+  if (requirements.accessory) return "accessory";
+  if (requirements.fragrance) return "fragrance";
+  if (requirements.formula) return "single_formula";
+  return "general_merchandise";
+}
+
+function normalizeBundleComponentCandidate(raw: string): ExtractedBundleComponent | null {
+  const rawText = cleanText(raw);
+  if (!rawText || rawText.length < 3 || rawText.length > 120) return null;
+  if (BUNDLE_COMPONENT_NOISE_RE.test(rawText)) return null;
+  if (/^(?:and|or|with|plus|includes?|contains?)$/i.test(rawText)) return null;
+
+  const quantityMatch = rawText.match(/^(?:(\d+\s*x|\d+-piece|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?(.+)$/i);
+  const quantity = cleanText(quantityMatch?.[1]);
+  const name = cleanText((quantityMatch?.[2] || rawText).replace(/^(?:a|an|the)\s+/i, "").replace(/[.。]+$/g, ""));
+  if (!name || name.length < 3 || name.length > 100) return null;
+  if (/^(?:full size|mini|deluxe|travel size)$/i.test(name)) return null;
+
+  return {
+    name,
+    ...(quantity ? { quantity } : {}),
+    source_kind: "bundle_component_candidate",
+    raw_text: rawText,
+  };
+}
+
+function parseBundleComponentCandidatesFromText(text: string): ExtractedBundleComponent[] {
+  const normalized = cleanText(
+    text
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(?:li|p|div|h\d)>/gi, "\n")
+      .replace(/<[^>]+>/g, " "),
+  );
+  if (!normalized) return [];
+
+  const includeMatch = normalized.match(BUNDLE_INCLUDE_TEXT_RE);
+  const componentText = includeMatch
+    ? normalized.slice(includeMatch.index! + includeMatch[0].length).replace(/^[:\s-]+/, "")
+    : normalized;
+  if (!componentText || componentText.length > 1_200) return [];
+
+  const candidates = componentText
+    .replace(/\s+(?:and|plus)\s+/gi, ", ")
+    .split(/(?:\n|[•;]|,\s+)/)
+    .map(normalizeBundleComponentCandidate)
+    .filter((item): item is ExtractedBundleComponent => Boolean(item));
+
+  return dedupeBy(candidates, (item) => item.name.toLowerCase()).slice(0, 12);
+}
+
+export function extractBundleComponents(product: ExtractedProduct): ExtractedBundleComponent[] {
+  if (classifyExtractedProductKind(product) !== "bundle") return [];
+
+  const sectionCandidates = (Array.isArray(product.details_sections) ? product.details_sections : [])
+    .filter((section) => BUNDLE_COMPONENT_HEADING_RE.test(cleanText(section.heading)))
+    .flatMap((section) =>
+      parseBundleComponentCandidatesFromText(section.body).map((component) => ({
+        ...component,
+        source_kind: section.source_kind || component.source_kind,
+      })),
+    );
+  if (sectionCandidates.length > 0) {
+    return dedupeBy(sectionCandidates, (item) => item.name.toLowerCase()).slice(0, 12);
+  }
+
+  const descriptionRaw = cleanText(product.description_raw);
+  if (!BUNDLE_INCLUDE_TEXT_RE.test(descriptionRaw)) return [];
+  return parseBundleComponentCandidatesFromText(descriptionRaw);
+}
+
+function withProductPdpProfile(product: ExtractedProduct): ExtractedProduct {
+  const productKind = classifyExtractedProductKind(product);
+  const bundleComponents = productKind === "bundle" ? extractBundleComponents(product) : [];
+  return {
+    ...product,
+    product_kind: productKind,
+    ...(bundleComponents.length > 0 ? { bundle_components: bundleComponents } : {}),
+  };
+}
+
 export function productHasMissingPdpFields(product: ExtractedProduct) {
   const detailsSections = Array.isArray(product?.details_sections) ? product.details_sections : [];
-  const missingStructuredContent =
-    detailsSections.length === 0 ||
-    !cleanText(product?.how_to_use_raw) ||
-    (!cleanText(product?.ingredients_raw) && !cleanText(product?.active_ingredients_raw));
-  return missingStructuredContent;
+  const descriptionRaw = cleanText(product?.description_raw);
+  const hasOverview = detailsSections.length > 0 || descriptionRaw.length >= PDP_COMPLETENESS_MIN_OVERVIEW_CHARS;
+  const hasHowToUse = Boolean(cleanText(product?.how_to_use_raw));
+  const hasIngredients = Boolean(cleanText(product?.ingredients_raw) || cleanText(product?.active_ingredients_raw));
+  const requirements = inferPdpCompletenessRequirements(product);
+
+  if (!hasOverview) return true;
+  if (requirements.needsRoutineUse && !hasHowToUse) return true;
+  if (requirements.needsIngredients && !hasIngredients) return true;
+  return false;
 }
 
 function getCollectionHandle(pathname: string): string | undefined {
@@ -1474,6 +1629,18 @@ function dedupeStringList(values: Array<string | undefined | null>) {
     const trimmed = String(value || "").trim();
     if (!trimmed || out.includes(trimmed)) continue;
     out.push(trimmed);
+  }
+  return out;
+}
+
+function dedupeBy<T>(values: T[], keyFn: (value: T) => string) {
+  const out: T[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const key = keyFn(value);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
   }
   return out;
 }
@@ -2116,7 +2283,7 @@ function buildShopifyResponse(params: {
     extractedByTitle.set(canonicalProductTitle, existing);
   }
 
-  const extractedProducts = Array.from(extractedByTitle.values());
+  const extractedProducts = Array.from(extractedByTitle.values()).map(withProductPdpProfile);
 
   const pagedProducts = extractedProducts.slice(params.offset, params.offset + params.limit);
   const { variants, adCopyById } = flattenVariants({
@@ -2201,7 +2368,7 @@ function mergeShopifyDirectPdpFaqFallback(
       }),
     );
 
-    return mergedProduct;
+    return withProductPdpProfile(mergedProduct);
   });
 
   return {
@@ -2287,7 +2454,7 @@ export function mergeShopifyDirectPdpFallback(
       rawFallbackProductImages,
     );
 
-    if (fallbackProductImages.length === 0) return mergedProduct;
+    if (fallbackProductImages.length === 0) return withProductPdpProfile(mergedProduct);
 
     const fallbackBySku = new Map(
       fallbackProduct.variants
@@ -2344,7 +2511,7 @@ export function mergeShopifyDirectPdpFallback(
       ...mergedProduct.variants.map((variant) => variant.sku),
     ]);
 
-    return mergedProduct;
+    return withProductPdpProfile(mergedProduct);
   });
 
   const { variants, adCopyById } = flattenVariants({
@@ -4080,7 +4247,7 @@ function buildProductFromPageSignals(params: {
     params.log("success", `> Extracted ${variants.length} offers/variants`);
   }
 
-  return {
+  return withProductPdpProfile({
     title: productTitle,
     url: productUrl,
     image_url: finalProductImageUrl,
@@ -4088,7 +4255,7 @@ function buildProductFromPageSignals(params: {
     variant_skus: dedupeStringList(variants.map((variant) => variant.sku)),
     variants,
     ...productPdpFields,
-  };
+  });
 }
 
 async function scrapeProductPage(params: {

@@ -667,6 +667,15 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
   assert.equal(
     classifyExtractedProductKind(
       makeProduct({
+        title: "Cherry Dub Triple Action AHA Body Scrub",
+        url: "https://fentybeauty.com/products/cherry-dub-triple-action-aha-body-scrub",
+      }),
+    ),
+    "single_formula",
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
         title: "Hair Pins",
         url: "https://kyliecosmetics.com/products/hair-pins",
         description_raw:

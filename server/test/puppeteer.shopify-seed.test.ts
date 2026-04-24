@@ -4,11 +4,14 @@ import test from "node:test";
 import {
   PuppeteerExtractor,
   choosePreferredProductOverview,
+  classifyExtractedProductKind,
   enrichDirectShopifyPdpResponse,
+  extractBundleComponents,
   extractLikelyFullIngredientListText,
   extractShopifyEmbeddedProductPayloadPdpFields,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
+  productHasMissingPdpFields,
 } from "../src/services/extractors/puppeteer";
 
 type MockRoute = {
@@ -392,6 +395,130 @@ test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enr
       assert.equal(result.products[0]?.field_capture_status?.faq_items, "present");
       assert.doesNotMatch(logs.map((entry) => entry.msg).join("\n"), /Attempting browser enrichment/);
     },
+  );
+});
+
+test("productHasMissingPdpFields uses product type before requiring browser enrichment", () => {
+  const makeProduct = (
+    overrides: Partial<Parameters<typeof productHasMissingPdpFields>[0]> = {},
+  ): Parameters<typeof productHasMissingPdpFields>[0] => ({
+    title: "Untitled",
+    url: "https://kyliecosmetics.com/products/untitled",
+    image_url: "https://cdn.example.com/product.jpg",
+    image_urls: ["https://cdn.example.com/product.jpg"],
+    variant_skus: ["SKU-1"],
+    variants: [
+      {
+        id: "1",
+        sku: "SKU-1",
+        url: "https://kyliecosmetics.com/products/untitled",
+        option_name: "Variant",
+        option_value: "Default",
+        price: "20.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "",
+        image_url: "https://cdn.example.com/product.jpg",
+        image_urls: ["https://cdn.example.com/product.jpg"],
+        ad_copy: "",
+      },
+    ],
+    description_raw:
+      "A concise merchant PDP description with enough product context to support a normalized listing without browser enrichment.",
+    ...overrides,
+  });
+
+  assert.equal(
+    productHasMissingPdpFields(
+      makeProduct({
+        title: "Chrome Makeup Bag",
+        url: "https://kyliecosmetics.com/products/chrome-makeup-bag",
+      }),
+    ),
+    false,
+  );
+  assert.equal(
+    productHasMissingPdpFields(
+      makeProduct({
+        title: "12 Days of Kylie Advent Calendar",
+        url: "https://kyliecosmetics.com/products/kylie-advent-calendar-2025",
+        details_sections: [
+          {
+            heading: "Details",
+            body: "A limited-edition seasonal set with multiple beauty surprises.",
+            source_kind: "shopify_body_html_labeled_sections",
+          },
+        ],
+        description_raw: "",
+      }),
+    ),
+    false,
+  );
+  assert.equal(
+    productHasMissingPdpFields(
+      makeProduct({
+        title: "Cosmic Kylie Jenner 2.0 Eau de Parfum Deluxe Sample 1.2 ml",
+        url: "https://kyliecosmetics.com/products/cosmic-kylie-jenner-2-0-eau-de-parfum-sample",
+      }),
+    ),
+    false,
+  );
+  assert.equal(
+    productHasMissingPdpFields(
+      makeProduct({
+        title: "Power Plush Longwear Foundation",
+        url: "https://kyliecosmetics.com/products/power-plush-longwear-foundation",
+        description_raw:
+          "A longwear liquid foundation with medium buildable coverage and a soft matte finish for everyday makeup routines.",
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    productHasMissingPdpFields(
+      makeProduct({
+        title: "Power Plush Longwear Foundation",
+        url: "https://kyliecosmetics.com/products/power-plush-longwear-foundation",
+        description_raw:
+          "A longwear liquid foundation with medium buildable coverage and a soft matte finish for everyday makeup routines.",
+        ingredients_raw: "Water, Dimethicone, Iron Oxides, Titanium Dioxide.",
+      }),
+    ),
+    false,
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
+        title: "12 Days of Kylie Advent Calendar",
+        url: "https://kyliecosmetics.com/products/kylie-advent-calendar-2025",
+      }),
+    ),
+    "bundle",
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
+        title: "Power Plush Longwear Foundation",
+        url: "https://kyliecosmetics.com/products/power-plush-longwear-foundation",
+      }),
+    ),
+    "single_formula",
+  );
+  assert.deepEqual(
+    extractBundleComponents(
+      makeProduct({
+        title: "Glow Routine Set",
+        url: "https://kyliecosmetics.com/products/glow-routine-set",
+        details_sections: [
+          {
+            heading: "What's Inside",
+            body: "Includes: Vanilla Milk Toner, Hyaluronic Acid Serum, Face Cream.",
+            source_kind: "shopify_body_html_labeled_sections",
+          },
+        ],
+      }),
+    ).map((component) => component.name),
+    ["Vanilla Milk Toner", "Hyaluronic Acid Serum", "Face Cream"],
   );
 });
 

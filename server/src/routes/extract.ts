@@ -15,6 +15,7 @@ extractRouter.post("/extract", async (req, res) => {
 
   const brand = typeof body.brand === "string" ? body.brand.trim() : "";
   const domain = typeof body.domain === "string" ? body.domain.trim() : "";
+  const productTitle = typeof body.product_title === "string" ? body.product_title.trim() : "";
   const rawMarket = typeof body.market === "string" ? body.market.trim().toUpperCase() : "US";
   const rawOffset = typeof body.offset === "number" ? body.offset : Number.NaN;
   const rawLimit = typeof body.limit === "number" ? body.limit : Number.NaN;
@@ -35,7 +36,14 @@ extractRouter.post("/extract", async (req, res) => {
   }
 
   try {
-    const result: ExtractResponse = await extractCatalog({ brand, domain, market, offset, limit });
+    const result: ExtractResponse = await extractCatalog({
+      brand,
+      domain,
+      market,
+      offset,
+      limit,
+      ...(productTitle ? { product_title: productTitle } : {}),
+    });
     return res.status(200).json(result);
   } catch (err) {
     // eslint-disable-next-line no-console

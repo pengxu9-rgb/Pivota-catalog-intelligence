@@ -42,6 +42,7 @@ export type ExtractLogEntry = {
 export type ExtractRequestBody = {
   brand: string;
   domain: string;
+  product_title?: string;
   market?: MarketId;
   offset?: number;
   limit?: number;

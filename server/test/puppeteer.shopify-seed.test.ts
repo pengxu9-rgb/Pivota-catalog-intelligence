@@ -187,6 +187,93 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
   );
 });
 
+test("PuppeteerExtractor repairs stale Shopify direct PDP handles via product-title search", async () => {
+  const extractor = new PuppeteerExtractor();
+  const recoveredProduct = {
+    id: 9070600847610,
+    title: "Rosewater Balancing Mist",
+    handle: "rosewater-balancing-mist-new-100ml",
+    type: "Essence and Toners",
+    tags: ["Face Care", "Hydrating", "Rose"],
+    body_html:
+      "<p>Create a sensory moment of self-care with rose extract.</p><p>How to Use: Mist over face as needed.</p><p>Ingredients: Water, Rosa Damascena Flower Water, Glycerin.</p>",
+    variants: [
+      {
+        id: 1001,
+        sku: "JQ-ROSE-MIST",
+        title: "Default Title",
+        option1: "Default Title",
+        price: 4800,
+        available: true,
+        inventory_quantity: 12,
+      },
+    ],
+    options: [{ name: "Title" }],
+    images: [{ src: "https://cdn.example.com/rose-mist.jpg" }],
+  };
+
+  await withMockFetch(
+    {
+      "https://jurlique.com/products/rosewater-balancing-mist-1.js": {
+        status: 404,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ status: 404, message: "Not Found" }),
+      },
+      "https://jurlique.com/products/rosewater-balancing-mist-1": {
+        status: 404,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: "<html><body><h1>404</h1></body></html>",
+      },
+      "https://jurlique.com/search/suggest.json?q=Rosewater%20Balancing%20Mist&resources[type]=product&resources[limit]=8": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          resources: {
+            results: {
+              products: [
+                {
+                  title: "Rosewater Balancing Mist",
+                  handle: "rosewater-balancing-mist-new-100ml",
+                  url: "/products/rosewater-balancing-mist-new-100ml",
+                  available: true,
+                },
+              ],
+            },
+          },
+        }),
+      },
+      "https://jurlique.com/products/rosewater-balancing-mist-new-100ml.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify(recoveredProduct),
+      },
+      "https://jurlique.com/products/rosewater-balancing-mist-new-100ml": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Jurlique",
+        domain: "https://jurlique.com/products/rosewater-balancing-mist-1",
+        product_title: "Rosewater Balancing Mist",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.url, "https://jurlique.com/products/rosewater-balancing-mist-new-100ml");
+      assert.equal(result.products[0]?.variants[0]?.sku, "JQ-ROSE-MIST");
+      assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
+      assert.ok(
+        result.logs.some((entry) => /Recovered stale Shopify PDP handle via title search/.test(entry.msg)),
+        "expected stale direct PDP to recover through structured Shopify search",
+      );
+    },
+  );
+});
+
 test("PuppeteerExtractor fails fast when a Shopify direct PDP is deleted", async () => {
   const extractor = new PuppeteerExtractor();
 

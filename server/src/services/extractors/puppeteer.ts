@@ -109,6 +109,7 @@ export class PuppeteerExtractor implements Extractor {
         baseUrl,
         marketId,
         seedUrl: target.seedUrl,
+        productTitle: input.product_title,
         collectionHandle: target.collectionHandle,
         maxProducts: maxProductsTotal,
         offset: batchOffset,
@@ -2188,6 +2189,21 @@ async function mapWithConcurrency<T, R>(
 
 type ShopifyProductsResponse = { products?: ShopifyProduct[] };
 
+type ShopifySearchSuggestResponse = {
+  resources?: {
+    results?: {
+      products?: ShopifySearchSuggestProduct[];
+    };
+  };
+};
+
+type ShopifySearchSuggestProduct = {
+  title?: string;
+  handle?: string;
+  url?: string;
+  available?: boolean;
+};
+
 type ShopifyProduct = {
   id: number;
   title: string;
@@ -2293,12 +2309,109 @@ function isDefaultShopifyVariant(variant: ShopifyVariant): boolean {
   return fields.length > 0 && fields.every((v) => v === "default title" || v === "default");
 }
 
+const SHOPIFY_SEARCH_STOP_TOKENS = new Set([
+  "a",
+  "an",
+  "and",
+  "by",
+  "for",
+  "in",
+  "of",
+  "the",
+  "to",
+  "with",
+]);
+
+function normalizeShopifySearchText(value: unknown): string {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/['’]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/\b(?:new|limited edition)\b/g, " ")
+    .replace(/\b\d+(?:\.\d+)?\s*(?:ml|oz|g|fl oz)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function shopifySearchTokens(value: unknown): string[] {
+  return normalizeShopifySearchText(value)
+    .split(" ")
+    .filter((token) => token.length > 1 && !SHOPIFY_SEARCH_STOP_TOKENS.has(token));
+}
+
+function scoreShopifySearchSuggestion(candidate: ShopifySearchSuggestProduct, expectedTitle: string): number {
+  const expectedNorm = normalizeShopifySearchText(expectedTitle);
+  const candidateNorm = normalizeShopifySearchText(candidate.title);
+  if (!expectedNorm || !candidateNorm) return 0;
+  if (candidateNorm === expectedNorm) return 1;
+  if (candidateNorm.includes(expectedNorm) || expectedNorm.includes(candidateNorm)) return 0.94;
+
+  const expectedTokens = new Set(shopifySearchTokens(expectedTitle));
+  const candidateTokens = new Set(shopifySearchTokens(candidate.title));
+  if (expectedTokens.size === 0 || candidateTokens.size === 0) return 0;
+  const overlap = Array.from(expectedTokens).filter((token) => candidateTokens.has(token)).length;
+  const recall = overlap / expectedTokens.size;
+  const precision = overlap / candidateTokens.size;
+  return Math.min(recall, precision);
+}
+
+function extractShopifySuggestHandle(candidate: ShopifySearchSuggestProduct, baseUrl: string): string | null {
+  const directHandle = String(candidate.handle || "").trim();
+  if (directHandle) return directHandle;
+  const candidateUrl = String(candidate.url || "").trim();
+  return extractShopifyProductHandle(candidateUrl, baseUrl);
+}
+
+async function recoverShopifyDirectProductViaSearch(params: {
+  baseUrl: string;
+  productTitle?: string;
+  context: FetchContext;
+  diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
+  log: Logger;
+}): Promise<ShopifyProduct | null> {
+  const productTitle = cleanText(params.productTitle);
+  if (!productTitle || productTitle.length < 3) return null;
+
+  const searchUrl = `${params.baseUrl}/search/suggest.json?q=${encodeURIComponent(productTitle)}&resources[type]=product&resources[limit]=8`;
+  params.log("info", `Searching Shopify products by title for stale direct PDP: ${productTitle}`);
+  const suggestions = await fetchJsonTracked<ShopifySearchSuggestResponse>(searchUrl, params.context, params.diagnostics);
+  const products = suggestions.data?.resources?.results?.products || [];
+  if (products.length === 0) return null;
+
+  const ranked = products
+    .map((candidate) => ({
+      candidate,
+      score: scoreShopifySearchSuggestion(candidate, productTitle),
+      handle: extractShopifySuggestHandle(candidate, params.baseUrl),
+    }))
+    .filter((entry) => entry.handle && entry.score >= 0.82)
+    .sort((left, right) => right.score - left.score);
+
+  const best = ranked[0];
+  if (!best?.handle) {
+    params.log("warn", `Shopify title search did not find a safe product match for: ${productTitle}`);
+    return null;
+  }
+
+  const recoveredUrl = `${params.baseUrl}/products/${best.handle}.js`;
+  params.log(
+    "success",
+    `Recovered stale Shopify PDP handle via title search: ${best.handle} (score=${best.score.toFixed(2)})`,
+  );
+  const recoveredProduct = await fetchJsonTracked<ShopifyProduct>(recoveredUrl, params.context, params.diagnostics);
+  if (recoveredProduct.data && typeof recoveredProduct.data.id === "number") return recoveredProduct.data;
+  return null;
+}
+
 async function tryExtractShopify(params: {
   brand: string;
   domain: string;
   baseUrl: string;
   marketId: ExtractInput["market"];
   seedUrl?: string;
+  productTitle?: string;
   collectionHandle?: string;
   maxProducts: number;
   offset: number;
@@ -2346,6 +2459,32 @@ async function tryExtractShopify(params: {
       diagnostics: params.diagnostics,
     });
     if (directSeedStatus === "not_found" || directSeedStatus === "non_product_redirect") {
+      const recoveredProduct = await recoverShopifyDirectProductViaSearch({
+        baseUrl: params.baseUrl,
+        productTitle: params.productTitle,
+        context: shopifyContext,
+        diagnostics: params.diagnostics,
+        log,
+      });
+      if (recoveredProduct) {
+        setDiscoveryStrategy(params.diagnostics!, "shopify_json");
+        const currencyHint = await fetchShopifyCurrencyHint(currencyHintUrls, params.diagnostics!, shopifyContext);
+        const response = buildShopifyResponse({
+          ...params,
+          currencyHint,
+          products: [recoveredProduct],
+          platformLabel: "Shopify (Direct PDP Search Repair)",
+        });
+        return enrichDirectShopifyPdpResponse({
+          brand: params.brand,
+          baseUrl: params.baseUrl,
+          seedUrl: `${params.baseUrl}/products/${recoveredProduct.handle}`,
+          response,
+          diagnostics: params.diagnostics,
+          log,
+          context: shopifyContext,
+        });
+      }
       log(
         "warn",
         `Shopify direct product feed not found for handle: ${directHandle}; seed status=${directSeedStatus}. Skipping generic rediscovery.`,

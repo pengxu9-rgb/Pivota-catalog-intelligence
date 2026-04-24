@@ -264,7 +264,7 @@ test("PuppeteerExtractor fails fast when a Shopify direct PDP redirects to a col
   );
 });
 
-test("PuppeteerExtractor fails fast when a Shopify direct PDP redirects to the homepage", async () => {
+test("PuppeteerExtractor fails fast when a Shopify direct PDP redirects to the locale homepage", async () => {
   const extractor = new PuppeteerExtractor();
 
   await withMockFetch(
@@ -277,7 +277,7 @@ test("PuppeteerExtractor fails fast when a Shopify direct PDP redirects to the h
       "https://fentybeauty.com/products/gloss-bomb-swirl-twisted-lip-luminizer-fu-y-chocolit": {
         status: 200,
         headers: { "content-type": "text/html; charset=utf-8" },
-        responseUrl: "https://fentybeauty.com/",
+        responseUrl: "https://fentybeauty.com/en-nl",
         body: `
           <html>
             <body>

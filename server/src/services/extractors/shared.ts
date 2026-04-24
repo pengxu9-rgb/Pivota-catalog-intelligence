@@ -401,7 +401,13 @@ export function looksLikeKnownNonProductUrl(rawUrl: string, baseUrl: string): bo
   const parsed = parseHttpUrl(rawUrl, baseUrl);
   if (!parsed) return true;
   const pathname = parsed.pathname.toLowerCase();
-  return pathname === "/" || pathname === "" || NEGATIVE_PATH_RE.test(pathname);
+  const segments = pathname.split("/").filter(Boolean);
+  return (
+    pathname === "/" ||
+    pathname === "" ||
+    (segments.length === 1 && LOCALE_PATH_SEGMENT_RE.test(segments[0] || "")) ||
+    NEGATIVE_PATH_RE.test(pathname)
+  );
 }
 
 function parseHttpUrl(rawUrl: string, baseUrl: string): URL | null {

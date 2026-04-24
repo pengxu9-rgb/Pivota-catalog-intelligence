@@ -1424,7 +1424,7 @@ const PDP_COMPLETENESS_FRAGRANCE_RE =
 const PDP_COMPLETENESS_SKINCARE_RE =
   /\b(skincare|skin care|cleanser|toner|essence|serum|ampoule|moisturi[sz]er|cream|lotion|balm|mask|peel|exfoliant|treatment|oil|sunscreen|spf|face mist|facial mist|hydrating mist|retinol|vitamin c|niacinamide|acid|salicylic|benzoyl|azelaic|ceramide|hyaluronic)\b/i;
 const PDP_COMPLETENESS_MAKEUP_RE =
-  /\b(makeup|foundation|concealer|mascara|lipstick|lip gloss|lip oil|lip liner|blush|bronzer|powder|highlighter|eyeshadow|eyeliner|brow|primer|setting spray|skin tint|tint|shade|palette)\b/i;
+  /\b(makeup|foundation|concealer|mascara|lipstick|lip gloss|lip glaze|lip oil|lip liner|lip kit|blush|bronzer|powder|highlighter|eyeshadow|eyeliner|brow|primer|setting spray|skin tint|tint|shade|palette)\b/i;
 const PDP_COMPLETENESS_HAIR_RE =
   /\b(haircare|hair care|shampoo|conditioner|scalp|leave-in|styling|curl|detangler)\b/i;
 const PDP_COMPLETENESS_MIN_OVERVIEW_CHARS = 80;
@@ -1435,19 +1435,15 @@ const BUNDLE_INCLUDE_TEXT_RE =
 const BUNDLE_COMPONENT_NOISE_RE =
   /\b(?:free shipping|limited edition|add to cart|shop now|complete routine|gift box|packaging|full size value|value of|worth|savings?)\b/i;
 
-function buildPdpCompletenessText(product: ExtractedProduct): string {
+function buildPdpCompletenessIdentityText(product: ExtractedProduct): string {
   return [
     product.title,
     product.url,
-    product.description_raw,
-    ...(Array.isArray(product.details_sections)
-      ? product.details_sections.flatMap((section) => [section.heading, section.body])
-      : []),
     ...(product.variants || []).flatMap((variant) => [
       variant.option_name,
       variant.option_value,
-      variant.description,
       variant.sku,
+      variant.url,
     ]),
   ]
     .map((value) => cleanText(value))
@@ -1456,7 +1452,7 @@ function buildPdpCompletenessText(product: ExtractedProduct): string {
 }
 
 function inferPdpCompletenessRequirements(product: ExtractedProduct) {
-  const text = buildPdpCompletenessText(product);
+  const text = buildPdpCompletenessIdentityText(product);
   const accessory = PDP_COMPLETENESS_ACCESSORY_RE.test(text);
   const bundle = PDP_COMPLETENESS_BUNDLE_RE.test(text);
   const fragrance = PDP_COMPLETENESS_FRAGRANCE_RE.test(text);

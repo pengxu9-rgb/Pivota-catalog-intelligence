@@ -515,6 +515,28 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
     ),
     "single_formula",
   );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
+        title: "Rose Bloom Supple Kiss Lip Glaze Deluxe Sample",
+        url: "https://kyliecosmetics.com/products/rose-bloom-supple-kiss-lip-glaze-deluxe-sample",
+        description_raw:
+          "Shop Kylie Cosmetics by Kylie Jenner, Kylie Jenner Fragrances and Kylie Skin featuring makeup, fragrance, and skincare.",
+      }),
+    ),
+    "single_formula",
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
+        title: "Hair Pins",
+        url: "https://kyliecosmetics.com/products/hair-pins",
+        description_raw:
+          "A set of polished hair pins packed in a seasonal cosmetics gift box.",
+      }),
+    ),
+    "accessory",
+  );
   assert.deepEqual(
     extractBundleComponents(
       makeProduct({

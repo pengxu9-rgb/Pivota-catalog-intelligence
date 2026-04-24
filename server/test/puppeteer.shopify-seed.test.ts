@@ -9,6 +9,7 @@ import {
   extractBundleComponents,
   extractLikelyFullIngredientListText,
   extractShopifyEmbeddedProductPayloadPdpFields,
+  getMissingPdpFieldReasons,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
   productHasMissingPdpFields,
@@ -436,6 +437,16 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
       }),
     ),
     false,
+  );
+  assert.deepEqual(
+    getMissingPdpFieldReasons(
+      makeProduct({
+        title: "12 Days of Kylie Advent Calendar",
+        url: "https://kyliecosmetics.com/products/kylie-advent-calendar-2025",
+        description_raw: "",
+      }),
+    ),
+    ["overview"],
   );
   assert.equal(
     productHasMissingPdpFields(

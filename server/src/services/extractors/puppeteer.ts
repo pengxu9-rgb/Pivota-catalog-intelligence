@@ -1557,18 +1557,25 @@ function withProductPdpProfile(product: ExtractedProduct): ExtractedProduct {
   };
 }
 
-export function productHasMissingPdpFields(product: ExtractedProduct) {
+export type MissingPdpFieldReason = "overview" | "how_to_use" | "ingredients";
+
+export function getMissingPdpFieldReasons(product: ExtractedProduct): MissingPdpFieldReason[] {
   const detailsSections = Array.isArray(product?.details_sections) ? product.details_sections : [];
   const descriptionRaw = cleanText(product?.description_raw);
   const hasOverview = detailsSections.length > 0 || descriptionRaw.length >= PDP_COMPLETENESS_MIN_OVERVIEW_CHARS;
   const hasHowToUse = Boolean(cleanText(product?.how_to_use_raw));
   const hasIngredients = Boolean(cleanText(product?.ingredients_raw) || cleanText(product?.active_ingredients_raw));
   const requirements = inferPdpCompletenessRequirements(product);
+  const reasons: MissingPdpFieldReason[] = [];
 
-  if (!hasOverview) return true;
-  if (requirements.needsRoutineUse && !hasHowToUse) return true;
-  if (requirements.needsIngredients && !hasIngredients) return true;
-  return false;
+  if (!hasOverview) reasons.push("overview");
+  if (requirements.needsRoutineUse && !hasHowToUse) reasons.push("how_to_use");
+  if (requirements.needsIngredients && !hasIngredients) reasons.push("ingredients");
+  return reasons;
+}
+
+export function productHasMissingPdpFields(product: ExtractedProduct) {
+  return getMissingPdpFieldReasons(product).length > 0;
 }
 
 function getCollectionHandle(pathname: string): string | undefined {
@@ -2029,17 +2036,18 @@ export async function enrichDirectShopifyPdpResponse(params: {
   const currentProduct = response.products[0];
   const productMissingImages = currentProduct.image_urls.length === 0;
   const variantMissingImages = currentProduct.variants.some((variant) => variant.image_urls.length === 0);
-  const productMissingPdpFields = productHasMissingPdpFields(currentProduct);
+  const missingPdpFieldReasons = getMissingPdpFieldReasons(currentProduct);
+  const productMissingPdpFields = missingPdpFieldReasons.length > 0;
   if (!productMissingImages && !variantMissingImages && !productMissingPdpFields) return response;
   const enrichmentReasons = [
     productMissingImages ? "product_images" : "",
     variantMissingImages ? "variant_images" : "",
-    productMissingPdpFields ? "pdp_fields" : "",
+    ...missingPdpFieldReasons.map((reason) => `pdp_${reason}`),
   ].filter(Boolean);
 
   params.log(
     "info",
-    `Shopify direct PDP requires browser enrichment for ${enrichmentReasons.join(", ")}: ${params.seedUrl}`,
+    `Shopify direct PDP requires browser enrichment for ${enrichmentReasons.join(", ")} (product_kind=${currentProduct.product_kind || classifyExtractedProductKind(currentProduct)}): ${params.seedUrl}`,
   );
 
   const navigationTimeoutMs = clampIntShared(

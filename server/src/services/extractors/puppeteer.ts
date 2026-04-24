@@ -1419,7 +1419,7 @@ export function buildProductPdpFields(params: {
 const PDP_COMPLETENESS_ACCESSORY_RE =
   /\b(brush|sponge|puff|applicator|sharpener|tweezer|curler|scissors|comb|mirror|case|bag|pouch|holder|spatula|tool|tools|gua sha|roller|loofah|headband|scrunchie|scarf|hat|cap|tote|clip|clips|pin|pins|keychain|key chain|tray|lash curler|refill case)\b/i;
 const PDP_COMPLETENESS_BUNDLE_RE =
-  /\b(bundle|set|kit|duo|trio|routine|collection|calendar|advent calendar|mini set|travel set|starter set|value set|gift set|combo|show look|look set)\b/i;
+  /\b(bundle|set|kit|duo|trio|routine|calendar|advent calendar|mini set|travel set|starter set|value set|gift set|combo|show look|look set|collection set|collection kit|collection bundle)\b/i;
 const PDP_COMPLETENESS_LOOK_BUNDLE_RE =
   /\b(?:kylie'?s|vacay|vogue|on-the-go|inspired)\b.*(?:\blook\b|\bglam\b)/i;
 const PDP_COMPLETENESS_FRAGRANCE_RE =

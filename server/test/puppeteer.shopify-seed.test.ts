@@ -676,6 +676,15 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
   assert.equal(
     classifyExtractedProductKind(
       makeProduct({
+        title: "Gloss Bomb Universal Lip Luminizer: Arcane Collection — Kaboom",
+        url: "https://fentybeauty.com/products/gloss-bomb-universal-lip-luminizer-kaboom",
+      }),
+    ),
+    "single_formula",
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
         title: "Hair Pins",
         url: "https://kyliecosmetics.com/products/hair-pins",
         description_raw:

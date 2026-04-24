@@ -144,6 +144,37 @@ test("buildProductPdpFields does not fabricate ingredient fields from generic co
   assert.equal(fields.field_capture_status?.faq_items, "missing");
 });
 
+test("buildProductPdpFields filters consent and review-form noise from PDP sections", () => {
+  const fields = buildProductPdpFields({
+    detailsSections: [
+      {
+        heading: "How to Use",
+        body:
+          "Some tracking technologies such as cookies are important for the correct functioning of our websites. By clicking Accept All, you are also directing us to use optional tracking technologies. Privacy Policy Privacy Settings",
+        source_kind: "accordion_how_to_use",
+      },
+      {
+        heading: "Tell us about yourself",
+        body:
+          "We'll never show your full name or email. Enter your name. Enter a valid email e.g. example@example.com. Please fill all of the required fields. Submit",
+        source_kind: "modal_content",
+      },
+      {
+        heading: "Benefits",
+        body: "Leaves skin feeling soft and hydrated.",
+        source_kind: "page_product_details",
+      },
+    ],
+    howToUseRaw:
+      "Some tracking technologies such as cookies are important for the correct functioning of our websites. Privacy Policy Privacy Settings",
+  });
+
+  assert.equal(fields.details_sections?.length, 1);
+  assert.equal(fields.details_sections?.[0]?.heading, "Benefits");
+  assert.equal(fields.how_to_use_raw, undefined);
+  assert.equal(fields.field_capture_status?.how_to_use_raw, "missing");
+});
+
 test("fetchOkendoFaqItemsFromMetafieldJson returns approved store-answered product questions", async () => {
   const raw = JSON.stringify({
     questionCount: 1,
@@ -295,6 +326,23 @@ test("deriveProductPdpModuleBodies prefers instructional how-to text over mislab
 
   assert.match(bodies.howToUseRaw || "", /Shake well to fully mix/i);
   assert.doesNotMatch(bodies.howToUseRaw || "", /Cloud-like hydrating mist/i);
+});
+
+test("deriveProductPdpModuleBodies ignores consent banners as how-to text", () => {
+  const bodies = deriveProductPdpModuleBodies({
+    howToUseText:
+      "Some tracking technologies such as cookies are important for the correct functioning of our websites. By clicking Accept All, you are also directing us to use optional tracking technologies. Privacy Policy Privacy Settings",
+    detailsSections: [
+      {
+        heading: "How to Use",
+        body:
+          "Some tracking technologies such as cookies are important for the correct functioning of our websites. Privacy Policy Privacy Settings",
+        source_kind: "accordion_button",
+      },
+    ],
+  });
+
+  assert.equal(bodies.howToUseRaw, undefined);
 });
 
 test("deriveProductPdpModuleBodies prefers full INCI over key ingredient summaries", () => {

@@ -452,6 +452,28 @@ function cleanText(text?: string) {
     .trim();
 }
 
+function isPdpContentNoiseText(text?: string) {
+  const normalized = cleanText(text).toLowerCase();
+  if (!normalized) return false;
+  if (/\bsome tracking technologies\b/.test(normalized)) return true;
+  if (/\b(?:accept all|privacy settings|cookie settings|privacy policy privacy settings)\b/.test(normalized)) {
+    return true;
+  }
+  if (/\bwe'?ll never show your full name\b/.test(normalized)) return true;
+  if (/\benter a valid email\b/.test(normalized)) return true;
+  if (/\bplease fill all of the required fields\b/.test(normalized)) return true;
+  if (/\b(?:submit your review|write a review|review submitted|loading reviews)\b/.test(normalized)) return true;
+  return false;
+}
+
+function isLowQualityDetailSectionText(heading?: string, body?: string) {
+  const normalizedHeading = cleanText(heading).toLowerCase();
+  if (/^(?:tell us about yourself|write a review|submit your review|privacy settings|cookie settings)$/.test(normalizedHeading)) {
+    return true;
+  }
+  return isPdpContentNoiseText(`${heading || ""}\n${body || ""}`);
+}
+
 function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
   const out: ExtractedProductDetailSection[] = [];
   const seen = new Set<string>();
@@ -460,6 +482,7 @@ function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
     const body = cleanText(section?.body);
     const sourceKind = cleanText(section?.source_kind) || "unknown";
     if (!heading || !body) continue;
+    if (isLowQualityDetailSectionText(heading, body)) continue;
     const key = `${heading.toLowerCase()}|${body.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -1352,6 +1375,7 @@ export function deriveProductPdpModuleBodies(params: {
     (!ingredientsRaw && looksLikeActiveIngredientSummaryText(ingredientSummaryBody) ? ingredientSummaryBody : "") ||
     undefined;
   const explicitHowTo = cleanText(params.howToUseText);
+  const usableExplicitHowTo = isPdpContentNoiseText(explicitHowTo) ? "" : explicitHowTo;
   const instructionalHowToSection = pickBestDetailSection(
     detailsSections,
     (section) =>
@@ -1362,7 +1386,7 @@ export function deriveProductPdpModuleBodies(params: {
     (section) => /\bhow to (?:use|apply)\b/i.test(section.heading),
   );
   const howToUseRaw =
-    (looksLikeHowToUseInstructionText(explicitHowTo) ? explicitHowTo : "") ||
+    (looksLikeHowToUseInstructionText(usableExplicitHowTo) ? usableExplicitHowTo : "") ||
     instructionalHowToSection?.body ||
     fallbackHowToSection?.body ||
     undefined;
@@ -1387,7 +1411,8 @@ export function buildProductPdpFields(params: {
   const detailsSections = dedupeDetailSections(params.detailsSections || []);
   const ingredientsRaw = cleanText(params.ingredientsRaw);
   const activeIngredientsRaw = cleanText(params.activeIngredientsRaw);
-  const howToUseRaw = cleanText(params.howToUseRaw);
+  const cleanedHowToUseRaw = cleanText(params.howToUseRaw);
+  const howToUseRaw = isPdpContentNoiseText(cleanedHowToUseRaw) ? "" : cleanedHowToUseRaw;
   const faqItems = dedupeFaqItems(params.faqItems || []);
 
   return {

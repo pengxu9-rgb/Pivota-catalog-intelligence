@@ -938,6 +938,22 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
     ),
     "bundle",
   );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
+        title: "PLAY Lip Shield SPF 30 Coconut",
+        url: "https://supergoop.com/products/play-lip-shield-spf-30-coconut-1",
+        details_sections: [
+          {
+            heading: "How to Use",
+            body: "Use PLAY Lip Shield as part of your daily beauty routine. Apply generously and evenly.",
+            source_kind: "accordion_control",
+          },
+        ],
+      }),
+    ),
+    "single_formula",
+  );
   assert.deepEqual(
     extractBundleComponents(
       makeProduct({

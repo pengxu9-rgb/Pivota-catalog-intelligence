@@ -1750,7 +1750,9 @@ export function buildProductPdpFields(params: {
 const PDP_COMPLETENESS_ACCESSORY_RE =
   /\b(brush|sponge|puff|applicator|sharpener|tweezer|curler|scissors|comb|mirror|case|bag|pouch|holder|spatula|tool|tools|gua sha|roller|loofah|headband|scrunchie|scarf|hat|cap|tote|clip|clips|pin|pins|keychain|key chain|tray|lash curler|refill case)\b/i;
 const PDP_COMPLETENESS_BUNDLE_RE =
-  /\b(build your own|bundle|set|kit|duo|trio|routine|program|programme|regimen|protocol|coffret|vault|calendar|advent calendar|mini set|travel set|starter set|value set|gift set|combo|show look|look set|collection set|collection kit|collection bundle)\b/i;
+  /\b(build your own|bundle|set|kit|duo|trio|coffret|vault|calendar|advent calendar|mini set|travel set|starter set|value set|gift set|combo|show look|look set|collection set|collection kit|collection bundle)\b/i;
+const PDP_COMPLETENESS_WEAK_BUNDLE_RE =
+  /\b(routine|program|programme|regimen|protocol)\b/i;
 const PDP_COMPLETENESS_LOOK_BUNDLE_RE =
   /\b(?:kylie'?s|vacay|vogue|on-the-go|inspired)\b.*(?:\blook\b|\bglam\b)/i;
 const PDP_COMPLETENESS_FRAGRANCE_RE =
@@ -1788,11 +1790,24 @@ function buildPdpCompletenessIdentityText(product: ExtractedProduct): string {
     .join("\n");
 }
 
+function buildPdpCompletenessTitleText(product: ExtractedProduct): string {
+  return [
+    product.title,
+    product.url,
+    ...(product.variants || []).flatMap((variant) => [variant.option_name, variant.option_value, variant.sku, variant.url]),
+  ]
+    .map((value) => cleanText(value))
+    .filter(Boolean)
+    .join("\n");
+}
+
 function inferPdpCompletenessRequirements(product: ExtractedProduct) {
   const text = buildPdpCompletenessIdentityText(product);
+  const titleText = buildPdpCompletenessTitleText(product);
   const accessory = PDP_COMPLETENESS_ACCESSORY_RE.test(text);
   const bundle =
     PDP_COMPLETENESS_BUNDLE_RE.test(text) ||
+    PDP_COMPLETENESS_WEAK_BUNDLE_RE.test(titleText) ||
     (!accessory && PDP_COMPLETENESS_FORMULA_PAIR_RE.test(text)) ||
     PDP_COMPLETENESS_LOOK_BUNDLE_RE.test(text);
   const fragrance = PDP_COMPLETENESS_FRAGRANCE_RE.test(text);

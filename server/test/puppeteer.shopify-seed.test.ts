@@ -896,6 +896,24 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
   assert.equal(
     classifyExtractedProductKind(
       makeProduct({
+        title: "Acne Healing Dots",
+        url: "https://peaceoutskincare.com/products/peace-out-acne-dots",
+      }),
+    ),
+    "single_formula",
+  );
+  assert.deepEqual(
+    getMissingPdpFieldReasons(
+      makeProduct({
+        title: "Acne Healing Dots",
+        url: "https://peaceoutskincare.com/products/peace-out-acne-dots",
+      }),
+    ),
+    ["how_to_use", "ingredients"],
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
         title: "Hair Pins",
         url: "https://kyliecosmetics.com/products/hair-pins",
         description_raw:

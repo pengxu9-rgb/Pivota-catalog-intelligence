@@ -1220,10 +1220,11 @@ export async function gotoPageOrThrow(page: Page, params: {
 }): Promise<PageVisitResult> {
   const targetUrl = withUrlParams(params.url, params.context.url_params || {});
   const response = await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
-  appendHttpTrace(params.diagnostics, { url: targetUrl, status: response?.status() ?? null });
   await waitForPageSettle(page);
   await dismissCookieBanner(page);
   await waitForPageSettle(page);
+  const finalUrl = page.url() || targetUrl;
+  appendHttpTrace(params.diagnostics, { url: finalUrl, status: response?.status() ?? null });
 
   const content = await page.content();
   const title = await page.title();
@@ -1232,16 +1233,16 @@ export async function gotoPageOrThrow(page: Page, params: {
     headers: response ? response.headers() : {},
     body: content,
     title,
-    url: targetUrl,
+    url: finalUrl,
   });
 
   recordBlockProvider(params.diagnostics, provider);
   if (provider) {
-    throw new BotChallengeError(provider, targetUrl);
+    throw new BotChallengeError(provider, finalUrl);
   }
 
   return {
-    url: targetUrl,
+    url: finalUrl,
     status: response?.status() ?? null,
     content,
     title,

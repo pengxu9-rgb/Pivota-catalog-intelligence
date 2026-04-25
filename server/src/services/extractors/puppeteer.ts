@@ -2217,7 +2217,9 @@ type ShopifyProduct = {
   handle: string;
   type?: string;
   tags?: string[];
+  description?: string;
   body_html?: string;
+  content?: string;
   variants: ShopifyVariant[];
   options?: Array<{ name?: string }>;
   images?: Array<string | ShopifyImage>;
@@ -2764,7 +2766,14 @@ function buildShopifyResponse(params: {
     const optionName = treatAsPseudoVariant
       ? "Variant"
       : product.options?.map((o) => o.name).filter((n): n is string => Boolean(n && n.trim())).join(" / ") || "Variant";
-    const officialText = product.body_html;
+    const officialText = product.body_html || product.description || product.content;
+    const officialTextSource = product.body_html
+      ? "shopify_body_html"
+      : product.description
+        ? "shopify_description"
+        : product.content
+          ? "shopify_content"
+          : "";
     const currency = params.currencyHint || "USD";
     const bodyHtmlPdpFields = extractShopifyBodyHtmlPdpFields(officialText);
     const tagDetailSections = extractPayloadTagDetailSections([
@@ -2787,7 +2796,7 @@ function buildShopifyResponse(params: {
       howToUseRaw: bodyHtmlPdpFields.howToUseRaw,
       faqItems: [],
       fieldSources: {
-        description_raw: officialText ? ["shopify_body_html"] : [],
+        description_raw: officialTextSource ? [officialTextSource] : [],
         details_sections: [
           ...(bodyHtmlPdpFields.detailsSections.length > 0 ? ["shopify_body_html_labeled_sections"] : []),
           ...(tagDetailSections.length > 0 ? ["shopify_product_tags"] : []),
@@ -5133,7 +5142,12 @@ async function scrapeProductPage(params: {
       navigationTimeoutMs: params.navigationTimeoutMs,
     });
     const prefetched = await fetchHtmlViaNativeRequest(params.url, params.diagnostics!, params.context);
-    if (prefetched.body) {
+    const prefetchedUnsafeLocale =
+      prefetched.finalUrl !== params.url && isUnsafeSeedLocaleRedirect(params.url, prefetched.finalUrl, params.baseUrl);
+    if (prefetchedUnsafeLocale) {
+      params.log("warn", `Discarding prefetched PDP HTML after incompatible locale redirect: ${params.url} -> ${prefetched.finalUrl}`);
+    }
+    if (prefetched.body && !prefetchedUnsafeLocale) {
       await enablePrefetchRequestBlocking();
       await page.setContent(injectBaseHref(prefetched.body, params.url), { waitUntil: "domcontentloaded" });
       await ensureBrowserEvalHelpers();
@@ -5171,6 +5185,10 @@ async function scrapeProductPage(params: {
       context: params.context,
       diagnostics: params.diagnostics!,
     });
+    if (visit.url !== params.url && isUnsafeSeedLocaleRedirect(params.url, visit.url, params.baseUrl)) {
+      params.log("warn", `Discarding browser PDP scrape after incompatible locale redirect: ${params.url} -> ${visit.url}`);
+      return null;
+    }
     await ensureBrowserEvalHelpers();
 
     await expandRelevantPdpModules();

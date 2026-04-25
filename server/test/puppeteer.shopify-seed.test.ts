@@ -134,7 +134,7 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
     id: 101,
     title: "Banana Bright 15% Vitamin C Dark Spot Serum",
     handle: "banana-bright-vitamin-c-serum",
-    body_html: "<p>Brightening serum</p>",
+    description: "<p>Brightening serum</p>",
     variants: [
       {
         id: 1001,
@@ -175,6 +175,8 @@ test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {
 
       assert.equal(result.products.length, 1);
       assert.equal(result.products[0]?.url, "https://olehenriksen.com/products/banana-bright-vitamin-c-serum");
+      assert.equal(result.products[0]?.description_raw, "Brightening serum");
+      assert.ok(result.products[0]?.field_sources?.description_raw?.includes("shopify_description"));
       assert.deepEqual(result.products[0]?.variant_skus, ["OH-VC-001"]);
       assert.equal(result.variants[0]?.price, "68.00");
       assert.equal(result.variants[0]?.currency, "USD");

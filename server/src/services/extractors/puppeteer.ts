@@ -4083,7 +4083,9 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
     let ingredientsContent = document.getElementById("accordion-toggle-Ingredients and Safety");
     const howToUseAccordion = ((patterns: RegExp[]) => {
       const controls = Array.from(
-        document.querySelectorAll("button, summary, .accordion__toggle, .accordion-title, .acc__btn"),
+        document.querySelectorAll(
+          "button, summary, .accordion__toggle, .accordion-title, .acc__btn, .module-accordion .item .trigger, .module-accordion .item .text",
+        ),
       ) as HTMLElement[];
       for (const control of controls.slice(0, 120)) {
         const label = normalizeSectionText(
@@ -4096,12 +4098,13 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
           control.closest(".accordion__item") ||
           control.closest("accordion-wrap") ||
           control.closest(".pv-extra-details__accordion") ||
+          control.closest(".module-accordion .item") ||
           control.closest(".acc") ||
           control.parentElement;
         const content =
           target ||
           accordionItem?.querySelector?.(
-            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .wysiwyg, .faq-answer, .faq__answer",
+            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .details, .inner-text, .wysiwyg, .faq-answer, .faq__answer",
           ) ||
           control.nextElementSibling;
         const text = readSectionContainerText(content as Element | null) || readSectionContainerText(accordionItem);
@@ -4112,10 +4115,12 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
         };
       }
       return { container: null, text: undefined };
-    })([/\bhow to use\b/i, /\bhow to layer\b/i, /\busage\b/i, /\bdirections?\b/i]);
+    })([/^how\s*to$/i, /\bhow to use\b/i, /\bhow to layer\b/i, /\busage\b/i, /\bdirections?\b/i]);
     const ingredientsAccordion = ((patterns: RegExp[]) => {
       const controls = Array.from(
-        document.querySelectorAll("button, summary, .accordion__toggle, .accordion-title, .acc__btn"),
+        document.querySelectorAll(
+          "button, summary, .accordion__toggle, .accordion-title, .acc__btn, .module-accordion .item .trigger, .module-accordion .item .text",
+        ),
       ) as HTMLElement[];
       for (const control of controls.slice(0, 120)) {
         const label = normalizeSectionText(
@@ -4128,12 +4133,13 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
           control.closest(".accordion__item") ||
           control.closest("accordion-wrap") ||
           control.closest(".pv-extra-details__accordion") ||
+          control.closest(".module-accordion .item") ||
           control.closest(".acc") ||
           control.parentElement;
         const content =
           target ||
           accordionItem?.querySelector?.(
-            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .wysiwyg, .faq-answer, .faq__answer",
+            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .details, .inner-text, .wysiwyg, .faq-answer, .faq__answer",
           ) ||
           control.nextElementSibling;
         const text = readSectionContainerText(content as Element | null) || readSectionContainerText(accordionItem);
@@ -4144,10 +4150,12 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
         };
       }
       return { container: null, text: undefined };
-    })([/\bingredients?(?: and safety)?\b/i]);
+    })([/\bkey ingredients?\b/i, /\bingredients?(?: and safety)?\b/i]);
     const faqAccordion = ((patterns: RegExp[]) => {
       const controls = Array.from(
-        document.querySelectorAll("button, summary, .accordion__toggle, .accordion-title, .acc__btn"),
+        document.querySelectorAll(
+          "button, summary, .accordion__toggle, .accordion-title, .acc__btn, .module-accordion .item .trigger, .module-accordion .item .text",
+        ),
       ) as HTMLElement[];
       for (const control of controls.slice(0, 120)) {
         const label = normalizeSectionText(
@@ -4160,12 +4168,13 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
           control.closest(".accordion__item") ||
           control.closest("accordion-wrap") ||
           control.closest(".pv-extra-details__accordion") ||
+          control.closest(".module-accordion .item") ||
           control.closest(".acc") ||
           control.parentElement;
         const content =
           target ||
           accordionItem?.querySelector?.(
-            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .wysiwyg, .faq-answer, .faq__answer",
+            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .details, .inner-text, .wysiwyg, .faq-answer, .faq__answer",
           ) ||
           control.nextElementSibling;
         const text = readSectionContainerText(content as Element | null) || readSectionContainerText(accordionItem);
@@ -4392,7 +4401,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       const sections: ExtractedProductDetailSection[] = [];
       const seen = new Set<string>();
       const looksRelevantHeading = (heading: string) =>
-        /\b(details?|benefits?|how to (?:use|apply)|usage|suggested usage|application|tutorial|pro tip|eye look|everyday eye|ingredients?|active ingredients?|inci|about|what(?:'|’)s in it\??|faq|frequently asked questions?|q\s*&\s*a|questions?|clinical(?:\s+results?)?|results?|hydration|hydrates?|sebum|oil[-\s]*moisture|moisture|absorbs?|pores?|texture|finish|layer)\b/i.test(
+        /\b(overview|details?|benefits?|how to(?:\s+(?:use|apply))?|usage|suggested usage|application|tutorial|pro tip|eye look|everyday eye|ingredients?|active ingredients?|inci|about|what(?:'|’)s in it\??|faq|frequently asked questions?|q\s*&\s*a|questions?|clinical(?:\s+results?)?|consumer study results?|results?|hydration|hydrates?|sebum|oil[-\s]*moisture|moisture|absorbs?|pores?|texture|finish|layer)\b/i.test(
           heading,
         );
       const shouldSkipSectionNode = (node: Element | null | undefined) =>
@@ -4518,7 +4527,9 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       }
 
       const accordionButtons = Array.from(
-        document.querySelectorAll("button.accordion-title, .accordion__toggle, .acc__btn"),
+        document.querySelectorAll(
+          "button.accordion-title, .accordion__toggle, .acc__btn, .module-accordion .item .trigger, .module-accordion .item .text",
+        ),
       ) as HTMLElement[];
       for (const button of accordionButtons.filter((node) => looksRelevantHeading(node.textContent || "")).slice(0, 24)) {
         if (shouldSkipSectionNode(button)) continue;
@@ -4536,11 +4547,14 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
         if (!normalizeSectionText(body)) {
           const wrapper =
             button.closest("accordion-wrap") ||
-            button.parentElement ||
             button.closest(".pv-extra-details__accordion") ||
-            button.closest(".acc");
+            button.closest(".module-accordion .item") ||
+            button.closest(".acc") ||
+            button.parentElement;
           const content =
-            wrapper?.querySelector?.(".accordion-content-wrap-inner, .accordion-content-wrap, .acc__menu, .pv-extra-details__accordion-body") ||
+            wrapper?.querySelector?.(
+              ".accordion-content-wrap-inner, .accordion-content-wrap, .acc__menu, .pv-extra-details__accordion-body, .details, .inner-text",
+            ) ||
             button.nextElementSibling;
           body = (content as HTMLElement | null)?.innerText || content?.textContent || "";
         }

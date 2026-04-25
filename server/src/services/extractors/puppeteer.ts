@@ -2585,7 +2585,18 @@ export async function enrichDirectShopifyPdpResponse(params: {
     if (pageHtmlFetched) return pageHtml;
     pageHtmlFetched = true;
     try {
-      const pageOutcome = await fetchTextTracked(params.seedUrl!, params.context || {}, params.diagnostics);
+      const pageOutcome = await fetchTextTracked(params.seedUrl!, withBrowserishHtmlHeaders(params.context || {}), params.diagnostics);
+      if (
+        isLikelyProductUrlShared(params.seedUrl!, params.baseUrl) &&
+        !isLikelyProductUrlShared(pageOutcome.finalUrl, params.baseUrl)
+      ) {
+        params.log(
+          "warn",
+          `Discarding Shopify direct PDP HTML after non-product redirect: ${params.seedUrl} -> ${pageOutcome.finalUrl}`,
+        );
+        pageHtml = undefined;
+        return pageHtml;
+      }
       pageHtml = pageOutcome.body || undefined;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error || "unknown_error");
@@ -3736,23 +3747,28 @@ async function fetchHtmlViaNativeRequest(
   diagnostics: ExtractResponse["diagnostics"],
   context: FetchContext,
 ): Promise<{ status: number | null; body: string | null; finalUrl: string }> {
-  const outcome = await fetchTextTracked(
-    url,
-    {
-      ...context,
-      headers: {
-        "accept-language": "en-US,en;q=0.9",
-        "user-agent": process.env.PUPPETEER_USER_AGENT || DEFAULT_BROWSERISH_USER_AGENT,
-        ...(context.headers || {}),
-      },
-    },
-    diagnostics!,
-  );
+  const outcome = await fetchTextTracked(url, withBrowserishHtmlHeaders(context), diagnostics!);
 
   return {
     status: outcome.status,
     body: outcome.body,
     finalUrl: outcome.finalUrl,
+  };
+}
+
+function withBrowserishHtmlHeaders(context: FetchContext = {}): FetchContext {
+  const inheritedHeaders = Object.fromEntries(
+    Object.entries(context.headers || {}).filter(
+      ([key]) => !["user-agent", "accept-language"].includes(key.toLowerCase()),
+    ),
+  );
+  return {
+    ...context,
+    headers: {
+      ...inheritedHeaders,
+      "accept-language": "en-US,en;q=0.9",
+      "user-agent": process.env.PUPPETEER_USER_AGENT || DEFAULT_BROWSERISH_USER_AGENT,
+    },
   };
 }
 

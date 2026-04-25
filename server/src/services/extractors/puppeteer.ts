@@ -1804,16 +1804,18 @@ function buildPdpCompletenessTitleText(product: ExtractedProduct): string {
 function inferPdpCompletenessRequirements(product: ExtractedProduct) {
   const text = buildPdpCompletenessIdentityText(product);
   const titleText = buildPdpCompletenessTitleText(product);
-  const accessory = PDP_COMPLETENESS_ACCESSORY_RE.test(text);
+  const accessory = PDP_COMPLETENESS_ACCESSORY_RE.test(titleText);
   const bundle =
     PDP_COMPLETENESS_BUNDLE_RE.test(text) ||
     PDP_COMPLETENESS_WEAK_BUNDLE_RE.test(titleText) ||
     (!accessory && PDP_COMPLETENESS_FORMULA_PAIR_RE.test(text)) ||
     PDP_COMPLETENESS_LOOK_BUNDLE_RE.test(text);
-  const fragrance = PDP_COMPLETENESS_FRAGRANCE_RE.test(text);
   const skincare = PDP_COMPLETENESS_SKINCARE_RE.test(text);
   const makeup = PDP_COMPLETENESS_MAKEUP_RE.test(text);
   const hair = PDP_COMPLETENESS_HAIR_RE.test(text);
+  const fragrance =
+    PDP_COMPLETENESS_FRAGRANCE_RE.test(titleText) ||
+    (!skincare && !makeup && !hair && PDP_COMPLETENESS_FRAGRANCE_RE.test(text));
   const formula = !accessory && !bundle && (skincare || makeup || hair || fragrance);
   const needsRoutineUse = !accessory && !bundle && !fragrance && (skincare || hair);
   const needsIngredients = formula && !fragrance;

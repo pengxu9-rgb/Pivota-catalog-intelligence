@@ -954,6 +954,27 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
     ),
     "single_formula",
   );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
+        title: "Moroccanoil Treatment Original",
+        url: "https://www.moroccanoil.com/products/moroccanoil-treatment-original",
+        details_sections: [
+          {
+            heading: "How to Use",
+            body: "Apply a small amount throughout damp hair, then comb through and style as usual.",
+            source_kind: "accordion_control",
+          },
+          {
+            heading: "Fragrance",
+            body: "The formula includes the brand's signature scent.",
+            source_kind: "accordion_control",
+          },
+        ],
+      }),
+    ),
+    "single_formula",
+  );
   assert.deepEqual(
     extractBundleComponents(
       makeProduct({

@@ -5071,6 +5071,21 @@ function buildProductFromPageSignals(params: {
   });
 }
 
+function scoreScrapedProductCompleteness(product: ExtractedProduct | null | undefined): number {
+  if (!product) return -1_000;
+  let score = 0;
+  if (cleanText(product.title)) score += 2;
+  if (cleanText(product.description_raw).length >= PDP_COMPLETENESS_MIN_OVERVIEW_CHARS) score += 3;
+  score += Math.min(Array.isArray(product.details_sections) ? product.details_sections.length : 0, 8) * 3;
+  if (cleanText(product.how_to_use_raw)) score += 5;
+  if (cleanText(product.ingredients_raw)) score += 6;
+  if (cleanText(product.active_ingredients_raw)) score += 4;
+  score += Math.min(Array.isArray(product.faq_items) ? product.faq_items.length : 0, 4);
+  score += Math.min(Array.isArray(product.image_urls) ? product.image_urls.length : 0, 8);
+  score -= getMissingPdpFieldReasons(product).length * 6;
+  return score;
+}
+
 async function scrapeProductPage(params: {
   browser: Browser;
   url: string;
@@ -5083,6 +5098,7 @@ async function scrapeProductPage(params: {
 }): Promise<ExtractedProduct | null> {
   const page = await params.browser.newPage();
   let prefetchRequestHandler: ((request: HTTPRequest) => void) | null = null;
+  let prefetchedProductCandidate: ExtractedProduct | null = null;
   await page.evaluateOnNewDocument(() => {
     if (typeof (globalThis as any).__name !== "function") {
       (globalThis as any).__name = <T>(value: T) => value;
@@ -5208,6 +5224,7 @@ async function scrapeProductPage(params: {
         log: params.log,
       });
       if (prefetchedProduct && !productHasMissingPdpFields(prefetchedProduct)) return prefetchedProduct;
+      prefetchedProductCandidate = prefetchedProduct;
     }
 
     const visit = await gotoPageOrThrow(page, {
@@ -5241,7 +5258,7 @@ async function scrapeProductPage(params: {
           extracted.imageCandidates.length > 0
         ));
 
-    return buildProductFromPageSignals({
+    const liveProduct = buildProductFromPageSignals({
       extracted,
       pageLooksLikeProduct: liveLooksLikeProduct,
       sourceUrl: params.url,
@@ -5249,6 +5266,10 @@ async function scrapeProductPage(params: {
       verbose: params.verbose,
       log: params.log,
     });
+    if (prefetchedProductCandidate && scoreScrapedProductCompleteness(prefetchedProductCandidate) >= scoreScrapedProductCompleteness(liveProduct)) {
+      return prefetchedProductCandidate;
+    }
+    return liveProduct;
   } catch (err) {
     if (err instanceof BotChallengeError) {
       throw err;

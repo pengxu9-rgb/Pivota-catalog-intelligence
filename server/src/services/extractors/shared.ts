@@ -299,6 +299,23 @@ export function normalizeSeedUrlForMarket(seedUrl: string | undefined, marketId:
   }
 }
 
+function getLocalePathSegmentFromUrl(rawUrl: string, baseUrl: string): string | null {
+  const parsed = parseHttpUrl(rawUrl, baseUrl);
+  if (!parsed) return null;
+  const segment = parsed.pathname.split("/").filter(Boolean)[0] || "";
+  return LOCALE_PATH_SEGMENT_RE.test(segment) ? segment.toLowerCase().replace(/_/g, "-") : null;
+}
+
+export function isUnsafeSeedLocaleRedirect(requestedUrl: string, resolvedUrl: string, baseUrl: string): boolean {
+  const requestedLocale = getLocalePathSegmentFromUrl(requestedUrl, baseUrl);
+  const resolvedLocale = getLocalePathSegmentFromUrl(resolvedUrl, baseUrl);
+  if (!requestedLocale || !resolvedLocale || requestedLocale === resolvedLocale) return false;
+
+  const [requestedLanguage] = requestedLocale.split("-");
+  const [resolvedLanguage] = resolvedLocale.split("-");
+  return Boolean(requestedLanguage && resolvedLanguage && requestedLanguage !== resolvedLanguage);
+}
+
 function buildFetchHeaders(context: FetchContext, accept: string): Record<string, string> {
   const headers: Record<string, string> = {
     accept,
@@ -1351,6 +1368,19 @@ export async function discoverProductUrls(params: {
       const requestedSeedUrl = canonicalizeUrl(seedDiscoveryUrl, params.baseUrl);
       const resolvedSeedUrl = canonicalizeUrl(seed.finalUrl || seedDiscoveryUrl, params.baseUrl);
       const resolvedSeedLooksProductLike = scoreProductCandidateUrl(resolvedSeedUrl, params.baseUrl) >= 4;
+      if (directSeedCandidate && requestedSeedUrl !== resolvedSeedUrl && isUnsafeSeedLocaleRedirect(requestedSeedUrl, resolvedSeedUrl, params.baseUrl)) {
+        setDiscoveryStrategy(params.diagnostics, "seed_page");
+        if (!params.diagnostics.failure_category) {
+          setFailureCategory(params.diagnostics, "no_product_urls");
+        }
+        params.log?.("warn", `Direct PDP resolved across incompatible locale segments; rejecting drifted PDP: ${requestedSeedUrl} -> ${resolvedSeedUrl}`);
+        return {
+          sitemapUrl: undefined,
+          productUrls: [],
+          deadSitemapDetected,
+          challengeDetected,
+        };
+      }
       if (
         directSeedCandidate &&
         requestedSeedUrl !== resolvedSeedUrl &&

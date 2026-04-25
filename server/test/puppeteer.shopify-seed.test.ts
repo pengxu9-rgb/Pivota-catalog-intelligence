@@ -274,6 +274,93 @@ test("PuppeteerExtractor repairs stale Shopify direct PDP handles via product-ti
   );
 });
 
+test("PuppeteerExtractor repairs Shopify direct PDPs that redirect to an incompatible locale product", async () => {
+  const extractor = new PuppeteerExtractor();
+  const recoveredProduct = {
+    id: 9731399221582,
+    title: "Repulpant Lèvres Hyaluronic",
+    handle: "repulpant-levres-hyaluronic",
+    type: "Lip Care",
+    body_html:
+      "<p>Hyaluronic lip care.</p><p>How to Use: Apply to lips morning and evening.</p><p>Ingredients: Ricinus Communis Seed Oil, Glycerin, Sodium Hyaluronate.</p>",
+    variants: [
+      {
+        id: 49216125010254,
+        sku: "P0034",
+        title: "7ml",
+        option1: "7ml",
+        price: 3500,
+        available: true,
+        inventory_quantity: 5,
+      },
+    ],
+    options: [{ name: "Format" }],
+    images: [{ src: "https://cdn.example.com/patyka-lip.jpg" }],
+  };
+
+  await withMockFetch(
+    {
+      "https://patyka.com/products/hyaluronic-lip-plumper.js": {
+        status: 404,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ status: 404, message: "Not Found" }),
+      },
+      "https://patyka.com/en-us/products/hyaluronic-lip-plumper": {
+        status: 200,
+        responseUrl: "https://patyka.com/es-ad/products/rellenador-de-labios-hialuronico",
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body><script type="application/ld+json">{"@type":"Product","name":"Rellenador de Labios Hialurónico"}</script></body></html>',
+      },
+      "https://patyka.com/search/suggest.json?q=Repulpant%20L%C3%A8vres%20Hyaluronic&resources[type]=product&resources[limit]=8": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          resources: {
+            results: {
+              products: [
+                {
+                  title: "Repulpant Lèvres Hyaluronic",
+                  handle: "repulpant-levres-hyaluronic",
+                  url: "/products/repulpant-levres-hyaluronic",
+                  available: true,
+                },
+              ],
+            },
+          },
+        }),
+      },
+      "https://patyka.com/products/repulpant-levres-hyaluronic.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify(recoveredProduct),
+      },
+      "https://patyka.com/products/repulpant-levres-hyaluronic": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Patyka",
+        domain: "https://patyka.com/en-us/products/hyaluronic-lip-plumper",
+        product_title: "Repulpant Lèvres Hyaluronic",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.url, "https://patyka.com/products/repulpant-levres-hyaluronic");
+      assert.equal(result.products[0]?.variants[0]?.sku, "P0034");
+      assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
+      assert.ok(
+        result.logs.some((entry) => /Recovered stale Shopify PDP handle via title search/.test(entry.msg)),
+        "expected locale-drifted direct PDP to recover through structured Shopify search",
+      );
+    },
+  );
+});
+
 test("PuppeteerExtractor fails fast when a Shopify direct PDP is deleted", async () => {
   const extractor = new PuppeteerExtractor();
 
@@ -839,6 +926,51 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
       }),
     ),
     "bundle",
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
+        title: "Programme Intensif Lift Regard 360°",
+        url: "https://patyka.com/products/programme-intensif-lift-regard-360",
+      }),
+    ),
+    "bundle",
+  );
+  assert.deepEqual(
+    extractBundleComponents(
+      makeProduct({
+        title: "Programme Intensif Lift Regard 360°",
+        url: "https://patyka.com/products/programme-intensif-lift-regard-360",
+      }),
+    ),
+    [],
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
+        title: "Patchs Lift Regard 360°",
+        url: "https://patyka.com/products/patch-lift-regard-360",
+      }),
+    ),
+    "single_formula",
+  );
+  assert.deepEqual(
+    getMissingPdpFieldReasons(
+      makeProduct({
+        title: "Patchs Lift Regard 360°",
+        url: "https://patyka.com/products/patch-lift-regard-360",
+      }),
+    ),
+    ["how_to_use", "ingredients"],
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
+        title: "BODY RELAX - Soin Corps Relaxant 50 minutes [Cabine]",
+        url: "https://patyka.com/products/body-relax",
+      }),
+    ),
+    "general_merchandise",
   );
   assert.equal(
     classifyExtractedProductKind(

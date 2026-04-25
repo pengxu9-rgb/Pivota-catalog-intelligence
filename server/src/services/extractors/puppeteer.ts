@@ -29,6 +29,7 @@ import {
   gotoPageOrThrow,
   isLikelyProductUrl as isLikelyProductUrlShared,
   isStaticAssetUrl as isStaticAssetUrlShared,
+  isUnsafeSeedLocaleRedirect,
   looksLikeKnownNonProductUrl,
   looksLikeProductPageHtml,
   mapWithConcurrency as mapWithConcurrencyShared,
@@ -1749,13 +1750,13 @@ export function buildProductPdpFields(params: {
 const PDP_COMPLETENESS_ACCESSORY_RE =
   /\b(brush|sponge|puff|applicator|sharpener|tweezer|curler|scissors|comb|mirror|case|bag|pouch|holder|spatula|tool|tools|gua sha|roller|loofah|headband|scrunchie|scarf|hat|cap|tote|clip|clips|pin|pins|keychain|key chain|tray|lash curler|refill case)\b/i;
 const PDP_COMPLETENESS_BUNDLE_RE =
-  /\b(build your own|bundle|set|kit|duo|trio|routine|vault|calendar|advent calendar|mini set|travel set|starter set|value set|gift set|combo|show look|look set|collection set|collection kit|collection bundle)\b/i;
+  /\b(build your own|bundle|set|kit|duo|trio|routine|program|programme|regimen|protocol|coffret|vault|calendar|advent calendar|mini set|travel set|starter set|value set|gift set|combo|show look|look set|collection set|collection kit|collection bundle)\b/i;
 const PDP_COMPLETENESS_LOOK_BUNDLE_RE =
   /\b(?:kylie'?s|vacay|vogue|on-the-go|inspired)\b.*(?:\blook\b|\bglam\b)/i;
 const PDP_COMPLETENESS_FRAGRANCE_RE =
   /\b(fragrance|perfume|parfum|eau de|edt|edp|cologne|body mist|pen spray|scent)\b/i;
 const PDP_COMPLETENESS_SKINCARE_RE =
-  /\b(skincare|skin care|cleanser|toner|essence|serum|ampoule|moisturi[sz]er|cream|lotion|balm|mask|scrub|body scrub|peel|exfoliant|treatment|oil|sunscreen|spf|face mist|facial mist|hydrating mist|retinol|vitamin c|niacinamide|aha|bha|acid|salicylic|benzoyl|azelaic|ceramide|hyaluronic)\b/i;
+  /\b(skincare|skin care|cleanser|toner|essence|serum|ampoule|moisturi[sz]er|cream|lotion|balm|mask|scrub|body scrub|peel|exfoliant|treatment|oil|patch|patchs|patches|eye patch|eye patches|hydrogel patch|pimple patch|sunscreen|spf|face mist|facial mist|hydrating mist|retinol|vitamin c|niacinamide|aha|bha|acid|salicylic|benzoyl|azelaic|ceramide|hyaluronic)\b/i;
 const PDP_COMPLETENESS_MAKEUP_RE =
   /\b(makeup|foundation|concealer|mascara|lipstick|lip gloss|lip glaze|lip oil|lip liner|lip luminizer|lip kit|luminizer|blush|bronzer|powder|highlighter|eyeshadow|eyeliner|brow|primer|setting spray|skin tint|tint|shade|palette)\b/i;
 const PDP_COMPLETENESS_FORMULA_PAIR_RE =
@@ -1852,11 +1853,17 @@ function parseBundleComponentCandidatesFromTitle(title: string): ExtractedBundle
   if (!rawTitle || !PDP_COMPLETENESS_BUNDLE_RE.test(rawTitle)) return [];
 
   const titleWithoutVariant = rawTitle.replace(/\s+[—–-]\s+(?:light|light medium|medium|medium deep|deep|dry skin edition|oily skin edition)$/i, "");
+  const hasExplicitComponentSyntax =
+    /^build your own\b/i.test(titleWithoutVariant) ||
+    titleWithoutVariant.includes(":") ||
+    /(?:\s[+&]\s|[,;]|\s+(?:and|plus)\s+)/i.test(titleWithoutVariant);
+  if (!hasExplicitComponentSyntax) return [];
+
   const componentText = cleanText(
     (titleWithoutVariant.includes(":") ? titleWithoutVariant.split(":").slice(1).join(":") : titleWithoutVariant)
       .replace(/^build your own\s+/i, "")
       .replace(/\b(?:\d+-piece|full-size|mini|travel-size|travel)\b/gi, "")
-      .replace(/\b(?:bundle|set|kit|duo|trio|routine|vault)\b/gi, "")
+      .replace(/\b(?:bundle|set|kit|duo|trio|routine|program|programme|regimen|protocol|coffret|vault)\b/gi, "")
       .replace(/\s+/g, " "),
   );
   if (!componentText || componentText.toLowerCase() === rawTitle.toLowerCase()) return [];
@@ -2954,6 +2961,9 @@ async function classifyMissingShopifyDirectSeed(params: {
   const resolvedSeedUrl = canonicalizeUrlShared(seed.finalUrl || params.seedUrl, params.baseUrl);
 
   if (!seed.ok && !seed.blockedBy) return "not_found";
+  if (requestedSeedUrl !== resolvedSeedUrl && isUnsafeSeedLocaleRedirect(requestedSeedUrl, resolvedSeedUrl, params.baseUrl)) {
+    return "non_product_redirect";
+  }
   if (requestedSeedUrl !== resolvedSeedUrl && looksLikeKnownNonProductUrl(resolvedSeedUrl, params.baseUrl)) {
     return "non_product_redirect";
   }

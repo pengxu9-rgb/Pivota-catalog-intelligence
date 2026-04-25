@@ -11,6 +11,7 @@ import {
   detectBlockProvider,
   discoverProductUrls,
   isCookieActionLabel,
+  isUnsafeSeedLocaleRedirect,
   looksLikeStorefrontPasswordPage,
   looksLikeProductPageHtml,
   parseTarget,
@@ -843,6 +844,68 @@ test("resolveStorefrontTarget preserves language-compatible seed locales when th
 
   assert.equal(resolved.target.seedUrl, "https://patyka.com/en-eu/products/detox-cleansing-foam");
   assert.equal(resolved.target.baseUrl, "https://patyka.com");
+});
+
+test("isUnsafeSeedLocaleRedirect only blocks cross-language locale drift", () => {
+  assert.equal(
+    isUnsafeSeedLocaleRedirect(
+      "https://patyka.com/en-us/products/hyaluronic-lip-plumper",
+      "https://patyka.com/es-ad/products/rellenador-de-labios-hialuronico",
+      "https://patyka.com",
+    ),
+    true,
+  );
+  assert.equal(
+    isUnsafeSeedLocaleRedirect(
+      "https://patyka.com/en-eu/products/detox-cleansing-foam",
+      "https://patyka.com/en-us/products/detox-cleansing-foam",
+      "https://patyka.com",
+    ),
+    false,
+  );
+  assert.equal(
+    isUnsafeSeedLocaleRedirect(
+      "https://patyka.com/en-eu/products/detox-cleansing-foam",
+      "https://patyka.com/products/detox-cleansing-foam",
+      "https://patyka.com",
+    ),
+    false,
+  );
+});
+
+test("discoverProductUrls rejects direct PDP redirects to incompatible locale product pages", async () => {
+  const diagnostics = createDiagnostics("patyka.com", "https://patyka.com");
+
+  await withMockFetch(
+    {
+      "https://patyka.com/en-us/products/hyaluronic-lip-plumper": {
+        status: 200,
+        responseUrl: "https://patyka.com/es-ad/products/rellenador-de-labios-hialuronico",
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `
+          <html>
+            <head>
+              <script type="application/ld+json">{"@type":"Product","name":"Rellenador de Labios Hialurónico"}</script>
+            </head>
+            <body><button>Add to cart</button></body>
+          </html>
+        `,
+      },
+    },
+    async () => {
+      const discovered = await discoverProductUrls({
+        baseUrl: "https://patyka.com",
+        seedUrl: "https://patyka.com/en-us/products/hyaluronic-lip-plumper",
+        maxProducts: 5,
+        context: {},
+        diagnostics,
+      });
+
+      assert.deepEqual(discovered.productUrls, []);
+      assert.equal(diagnostics.discovery_strategy, "seed_page");
+      assert.equal(diagnostics.failure_category, "no_product_urls");
+    },
+  );
 });
 
 test("discoverProductUrls uses landing-page HTML discovery for slug PDPs", async () => {

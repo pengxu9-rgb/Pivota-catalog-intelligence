@@ -12,6 +12,7 @@ import {
   extractShopifyProductJsonAttributeScriptsFromHtml,
   getMissingPdpFieldReasons,
   isNonProductRedirectForRequestedPdp,
+  isShopifyDirectPdpFallbackUsable,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
   productHasMissingPdpFields,
@@ -154,6 +155,58 @@ test("isNonProductRedirectForRequestedPdp catches product URLs redirected to hom
     ),
     false,
   );
+});
+
+test("isShopifyDirectPdpFallbackUsable rejects homepage browser fallback for direct PDP enrichment", () => {
+  const primaryProduct = {
+    title: "Acne Healing Dots",
+    url: "https://peaceoutskincare.com/products/peace-out-acne-dots",
+    image_url: "",
+    image_urls: [],
+    variant_skus: ["PO-ACNE-DOTS"],
+    variants: [
+      {
+        id: "v1",
+        sku: "PO-ACNE-DOTS",
+        url: "https://peaceoutskincare.com/products/peace-out-acne-dots",
+        option_name: "Title",
+        option_value: "Default Title",
+        price: "19.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "",
+        image_url: "",
+        image_urls: [],
+        ad_copy: "",
+      },
+    ],
+  };
+  const homepageFallback = {
+    title: "Peace Out Skincare",
+    url: "https://peaceoutskincare.com/products/peace-out-acne-dots",
+    image_url: "https://peaceoutskincare.com/cdn/shop/files/homepage-hero.jpg",
+    image_urls: ["https://peaceoutskincare.com/cdn/shop/files/homepage-hero.jpg"],
+    variant_skus: [],
+    faq_items: [
+      {
+        question: "Why Your Face Towel Might Be Sabotaging Your Skin",
+        answer: "And what to do about it.",
+        source_kind: "faq_section" as const,
+        source_url: "about:blank",
+        source_title: "FAQ",
+      },
+    ],
+    variants: [],
+  };
+  const matchingFallback = {
+    ...homepageFallback,
+    title: "Acne Healing Dots",
+    variant_skus: ["PO-ACNE-DOTS"],
+    variants: primaryProduct.variants,
+  };
+
+  assert.equal(isShopifyDirectPdpFallbackUsable(primaryProduct, homepageFallback), false);
+  assert.equal(isShopifyDirectPdpFallbackUsable(primaryProduct, matchingFallback), true);
 });
 
 test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {

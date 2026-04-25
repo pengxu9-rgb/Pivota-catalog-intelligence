@@ -2711,6 +2711,14 @@ export async function enrichDirectShopifyPdpResponse(params: {
     return response;
   }
 
+  if (!isShopifyDirectPdpFallbackUsable(currentProduct, browserRun.result)) {
+    params.log(
+      "warn",
+      `Discarding Shopify PDP browser enrichment because fallback identity did not match direct feed product: ${params.seedUrl}`,
+    );
+    return response;
+  }
+
   const merged = mergeShopifyDirectPdpFallback(params.brand, response, browserRun.result);
   if ((merged.products[0]?.image_urls.length || 0) > (product.image_urls.length || 0)) {
     params.log(
@@ -2734,6 +2742,67 @@ function extractShopifyProductHandle(seedUrl: string | undefined, baseUrl: strin
 
 export function isNonProductRedirectForRequestedPdp(requestedUrl: string, finalUrl: string, baseUrl: string): boolean {
   return isLikelyProductUrlShared(requestedUrl, baseUrl) && !isLikelyProductUrlShared(finalUrl, baseUrl);
+}
+
+function normalizeProductIdentityText(value: string | undefined): string {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function productIdentityTokens(value: string | undefined): Set<string> {
+  const stopwords = new Set([
+    "the",
+    "and",
+    "for",
+    "with",
+    "skin",
+    "care",
+    "beauty",
+    "skincare",
+    "makeup",
+  ]);
+  return new Set(
+    normalizeProductIdentityText(value)
+      .split(" ")
+      .filter((token) => token.length > 2 && !stopwords.has(token)),
+  );
+}
+
+function extractProductSkus(product: ExtractedProduct): Set<string> {
+  return new Set(
+    [
+      ...(product.variant_skus || []),
+      ...(product.variants || []).flatMap((variant) => [variant.sku, variant.id]),
+    ]
+      .map((value) => normalizeProductIdentityText(value))
+      .filter(Boolean),
+  );
+}
+
+export function isShopifyDirectPdpFallbackUsable(primaryProduct: ExtractedProduct, fallbackProduct: ExtractedProduct): boolean {
+  const primarySkus = extractProductSkus(primaryProduct);
+  const fallbackSkus = extractProductSkus(fallbackProduct);
+  for (const sku of fallbackSkus) {
+    if (primarySkus.has(sku)) return true;
+  }
+
+  const primaryTitle = normalizeProductIdentityText(primaryProduct.title);
+  const fallbackTitle = normalizeProductIdentityText(fallbackProduct.title);
+  if (!primaryTitle || !fallbackTitle) return false;
+  if (primaryTitle === fallbackTitle || primaryTitle.includes(fallbackTitle) || fallbackTitle.includes(primaryTitle)) {
+    return true;
+  }
+
+  const primaryTokens = productIdentityTokens(primaryProduct.title);
+  const fallbackTokens = productIdentityTokens(fallbackProduct.title);
+  const minimumComparableTokens = Math.min(primaryTokens.size, fallbackTokens.size);
+  if (minimumComparableTokens === 0) return false;
+  const overlap = [...fallbackTokens].filter((token) => primaryTokens.has(token)).length;
+  return overlap >= Math.min(2, minimumComparableTokens) && overlap / minimumComparableTokens >= 0.6;
 }
 
 function buildShopifyResponse(params: {

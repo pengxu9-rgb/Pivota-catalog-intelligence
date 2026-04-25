@@ -11,6 +11,7 @@ import {
   extractShopifyEmbeddedProductPayloadPdpFields,
   extractShopifyProductJsonAttributeScriptsFromHtml,
   getMissingPdpFieldReasons,
+  isNonProductRedirectForRequestedPdp,
   mergeShopifyDirectPdpFallback,
   pickBestJsonLdObjectForPage,
   productHasMissingPdpFields,
@@ -126,6 +127,33 @@ test("PuppeteerExtractor passes market cookies to Shopify direct PDP requests", 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("isNonProductRedirectForRequestedPdp catches product URLs redirected to homepage", () => {
+  assert.equal(
+    isNonProductRedirectForRequestedPdp(
+      "https://peaceoutskincare.com/products/peace-out-acne-dots",
+      "https://peaceoutskincare.com/",
+      "https://peaceoutskincare.com",
+    ),
+    true,
+  );
+  assert.equal(
+    isNonProductRedirectForRequestedPdp(
+      "https://peaceoutskincare.com/products/peace-out-acne-dots",
+      "https://peaceoutskincare.com/products/peace-out-acne-dots?variant=123",
+      "https://peaceoutskincare.com",
+    ),
+    false,
+  );
+  assert.equal(
+    isNonProductRedirectForRequestedPdp(
+      "https://peaceoutskincare.com/collections/shop-all",
+      "https://peaceoutskincare.com/",
+      "https://peaceoutskincare.com",
+    ),
+    false,
+  );
 });
 
 test("PuppeteerExtractor honors direct Shopify PDP seed URLs", async () => {

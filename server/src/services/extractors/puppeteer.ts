@@ -2586,10 +2586,7 @@ export async function enrichDirectShopifyPdpResponse(params: {
     pageHtmlFetched = true;
     try {
       const pageOutcome = await fetchTextTracked(params.seedUrl!, withBrowserishHtmlHeaders(params.context || {}), params.diagnostics);
-      if (
-        isLikelyProductUrlShared(params.seedUrl!, params.baseUrl) &&
-        !isLikelyProductUrlShared(pageOutcome.finalUrl, params.baseUrl)
-      ) {
+      if (isNonProductRedirectForRequestedPdp(params.seedUrl!, pageOutcome.finalUrl, params.baseUrl)) {
         params.log(
           "warn",
           `Discarding Shopify direct PDP HTML after non-product redirect: ${params.seedUrl} -> ${pageOutcome.finalUrl}`,
@@ -2733,6 +2730,10 @@ function extractShopifyProductHandle(seedUrl: string | undefined, baseUrl: strin
   } catch {
     return null;
   }
+}
+
+export function isNonProductRedirectForRequestedPdp(requestedUrl: string, finalUrl: string, baseUrl: string): boolean {
+  return isLikelyProductUrlShared(requestedUrl, baseUrl) && !isLikelyProductUrlShared(finalUrl, baseUrl);
 }
 
 function buildShopifyResponse(params: {
@@ -5205,12 +5206,16 @@ async function scrapeProductPage(params: {
       navigationTimeoutMs: params.navigationTimeoutMs,
     });
     const prefetched = await fetchHtmlViaNativeRequest(params.url, params.diagnostics!, params.context);
+    const prefetchedNonProductRedirect = isNonProductRedirectForRequestedPdp(params.url, prefetched.finalUrl, params.baseUrl);
     const prefetchedUnsafeLocale =
       prefetched.finalUrl !== params.url && isUnsafeSeedLocaleRedirect(params.url, prefetched.finalUrl, params.baseUrl);
+    if (prefetchedNonProductRedirect) {
+      params.log("warn", `Discarding prefetched PDP HTML after non-product redirect: ${params.url} -> ${prefetched.finalUrl}`);
+    }
     if (prefetchedUnsafeLocale) {
       params.log("warn", `Discarding prefetched PDP HTML after incompatible locale redirect: ${params.url} -> ${prefetched.finalUrl}`);
     }
-    if (prefetched.body && !prefetchedUnsafeLocale) {
+    if (prefetched.body && !prefetchedUnsafeLocale && !prefetchedNonProductRedirect) {
       await enablePrefetchRequestBlocking();
       await page.setContent(injectBaseHref(prefetched.body, params.url), { waitUntil: "domcontentloaded" });
       await ensureBrowserEvalHelpers();
@@ -5249,7 +5254,7 @@ async function scrapeProductPage(params: {
       context: params.context,
       diagnostics: params.diagnostics!,
     });
-    if (isLikelyProductUrlShared(params.url, params.baseUrl) && !isLikelyProductUrlShared(visit.url, params.baseUrl)) {
+    if (isNonProductRedirectForRequestedPdp(params.url, visit.url, params.baseUrl)) {
       params.log("warn", `Discarding browser PDP scrape after non-product redirect: ${params.url} -> ${visit.url}`);
       if (prefetchedProductCandidate) return prefetchedProductCandidate;
       throw new BotChallengeError("unknown", visit.url, "Direct PDP redirected to non-product page");

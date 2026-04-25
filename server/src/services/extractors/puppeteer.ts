@@ -5249,6 +5249,11 @@ async function scrapeProductPage(params: {
       context: params.context,
       diagnostics: params.diagnostics!,
     });
+    if (isLikelyProductUrlShared(params.url, params.baseUrl) && !isLikelyProductUrlShared(visit.url, params.baseUrl)) {
+      params.log("warn", `Discarding browser PDP scrape after non-product redirect: ${params.url} -> ${visit.url}`);
+      if (prefetchedProductCandidate) return prefetchedProductCandidate;
+      throw new BotChallengeError("unknown", visit.url, "Direct PDP redirected to non-product page");
+    }
     if (visit.url !== params.url && isUnsafeSeedLocaleRedirect(params.url, visit.url, params.baseUrl)) {
       params.log("warn", `Discarding browser PDP scrape after incompatible locale redirect: ${params.url} -> ${visit.url}`);
       return null;

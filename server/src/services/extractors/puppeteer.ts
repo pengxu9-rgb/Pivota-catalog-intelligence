@@ -4098,71 +4098,165 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
     })();
 
     const domVariants = (() => {
-      const el = document.querySelector("[data-product-skus-value]") as HTMLElement | null;
-      const raw = el?.getAttribute("data-product-skus-value") || "";
-      if (!raw) return [] as DomVariantMeta[];
+      const out: DomVariantMeta[] = [];
+      const bySku = new Map<string, DomVariantMeta>();
 
-      const textarea = document.createElement("textarea");
-      textarea.innerHTML = raw;
-      const decoded = textarea.value;
+      const mergeMeta = (meta: DomVariantMeta) => {
+        if (!meta.sku) return;
+        const existing = bySku.get(meta.sku);
+        const merged = existing
+          ? {
+              ...existing,
+              ...Object.fromEntries(
+                Object.entries(meta).filter(([, value]) => {
+                  if (Array.isArray(value)) return value.length > 0;
+                  return value != null && value !== "";
+                }),
+              ),
+              image_urls:
+                existing.image_urls || meta.image_urls
+                  ? Array.from(new Set([...(existing.image_urls || []), ...(meta.image_urls || [])]))
+                  : undefined,
+            }
+          : meta;
+        bySku.set(meta.sku, merged);
+      };
 
-      try {
-        const parsed = JSON.parse(decoded) as unknown;
-        if (!Array.isArray(parsed)) return [];
+      const pageSku =
+        (document.querySelector(".product-detail[data-pid]") as HTMLElement | null)?.getAttribute("data-pid")?.trim() ||
+        (document.querySelector("[itemprop='sku']") as HTMLElement | null)?.textContent?.trim() ||
+        "";
 
-        return parsed
-          .map((item) => {
-            const obj = item as Record<string, unknown>;
-            const sku =
-              (typeof obj.id === "string" && obj.id.trim()) ||
-              (typeof obj.sku === "string" && obj.sku.trim()) ||
-              "";
+      const normalizeDomOptionName = (raw: string) => {
+        const normalized = raw.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+        if (!normalized) return "";
+        if (["size", "sizes", "volume", "capacity"].includes(normalized)) return "Size";
+        if (["color", "colour"].includes(normalized)) return "Color";
+        if (["shade", "tone", "hue"].includes(normalized)) return "Shade";
+        if (["scent", "fragrance", "flavor", "flavour"].includes(normalized)) return "Scent";
+        return normalized.replace(/\b\w/g, (char) => char.toUpperCase());
+      };
 
-            const size = typeof obj.size === "string" ? obj.size.trim() : "";
-            const shades = Array.isArray(obj.shades) ? obj.shades : [];
-            const firstShade = shades[0] as Record<string, unknown> | undefined;
-            const shadeTitle = typeof firstShade?.title === "string" ? firstShade.title.trim() : "";
-            const multiShade = typeof obj.multi_shade_description === "string" ? obj.multi_shade_description.trim() : "";
+      const normalizeDomOptionValue = (rawText: string, rawAttr: string) => {
+        const text = normalizeSectionText(rawText).replace(/\s+/g, " ").trim();
+        if (text && !/^select(?:ed)?$/i.test(text)) return text;
+        const attr = rawAttr.trim();
+        const sizeMatch = attr.match(/(\d+(?:\.\d+)?)\s*(ml|m l|g|kg|oz|fl oz|l|lb|lbs|mm|cm)\b/i);
+        if (sizeMatch) return `${sizeMatch[1]}${String(sizeMatch[2] || "").toLowerCase().replace(/\s+/g, "")}`;
+        return attr.replace(/^(?:na|size|variant)[-_:\s]*/i, "").trim();
+      };
 
-            const optionName = size ? "Size" : shadeTitle || multiShade ? "Shade" : undefined;
-            const optionValue = size || shadeTitle || multiShade || undefined;
+      const embeddedSkusEl = document.querySelector("[data-product-skus-value]") as HTMLElement | null;
+      const raw = embeddedSkusEl?.getAttribute("data-product-skus-value") || "";
+      if (raw) {
+        const textarea = document.createElement("textarea");
+        textarea.innerHTML = raw;
+        const decoded = textarea.value;
 
-            const urlPath = typeof obj.localized_path === "string" ? obj.localized_path.trim() : "";
-            const ingredients = typeof obj.ingredients === "string" ? obj.ingredients.trim() : "";
+        try {
+          const parsed = JSON.parse(decoded) as unknown;
+          if (Array.isArray(parsed)) {
+            parsed
+              .map((item) => {
+                const obj = item as Record<string, unknown>;
+                const sku =
+                  (typeof obj.id === "string" && obj.id.trim()) ||
+                  (typeof obj.sku === "string" && obj.sku.trim()) ||
+                  "";
 
-            const images = Array.isArray(obj.images) ? obj.images : [];
-            const imageUrls = images
-              .map((image) => {
-                const next = image as Record<string, unknown>;
-                return typeof next?.src === "string" ? next.src.trim() : "";
+                const size = typeof obj.size === "string" ? obj.size.trim() : "";
+                const shades = Array.isArray(obj.shades) ? obj.shades : [];
+                const firstShade = shades[0] as Record<string, unknown> | undefined;
+                const shadeTitle = typeof firstShade?.title === "string" ? firstShade.title.trim() : "";
+                const multiShade =
+                  typeof obj.multi_shade_description === "string" ? obj.multi_shade_description.trim() : "";
+
+                const optionName = size ? "Size" : shadeTitle || multiShade ? "Shade" : undefined;
+                const optionValue = size || shadeTitle || multiShade || undefined;
+
+                const urlPath = typeof obj.localized_path === "string" ? obj.localized_path.trim() : "";
+                const ingredients = typeof obj.ingredients === "string" ? obj.ingredients.trim() : "";
+
+                const images = Array.isArray(obj.images) ? obj.images : [];
+                const imageUrls = images
+                  .map((image) => {
+                    const next = image as Record<string, unknown>;
+                    return typeof next?.src === "string" ? next.src.trim() : "";
+                  })
+                  .filter(Boolean);
+                const imageUrl = imageUrls[0] || "";
+
+                const price =
+                  (typeof obj.price_with_discount === "number" && Number.isFinite(obj.price_with_discount)
+                    ? obj.price_with_discount.toFixed(2)
+                    : "") ||
+                  (typeof obj.price === "number" && Number.isFinite(obj.price) ? obj.price.toFixed(2) : "") ||
+                  (typeof obj.price_with_discount === "string" && obj.price_with_discount.trim()) ||
+                  (typeof obj.price === "string" && obj.price.trim()) ||
+                  "";
+
+                return {
+                  sku,
+                  option_name: optionName,
+                  option_value: optionValue,
+                  url_path: urlPath || undefined,
+                  image_url: imageUrl || undefined,
+                  image_urls: imageUrls.length > 0 ? imageUrls : undefined,
+                  price: price || undefined,
+                  ingredients: ingredients || undefined,
+                };
               })
-              .filter(Boolean);
-            const imageUrl = imageUrls[0] || "";
-
-            const price =
-              (typeof obj.price_with_discount === "number" && Number.isFinite(obj.price_with_discount)
-                ? obj.price_with_discount.toFixed(2)
-                : "") ||
-              (typeof obj.price === "number" && Number.isFinite(obj.price) ? obj.price.toFixed(2) : "") ||
-              (typeof obj.price_with_discount === "string" && obj.price_with_discount.trim()) ||
-              (typeof obj.price === "string" && obj.price.trim()) ||
-              "";
-
-            return {
-              sku,
-              option_name: optionName,
-              option_value: optionValue,
-              url_path: urlPath || undefined,
-              image_url: imageUrl || undefined,
-              image_urls: imageUrls.length > 0 ? imageUrls : undefined,
-              price: price || undefined,
-              ingredients: ingredients || undefined,
-            };
-          })
-          .filter((variant) => Boolean(variant.sku));
-      } catch {
-        return [];
+              .filter((variant) => Boolean(variant.sku))
+              .forEach(mergeMeta);
+          }
+        } catch {
+          // ignore malformed embedded variant metadata
+        }
       }
+
+      const attributeGroups = Array.from(
+        document.querySelectorAll(
+          ".product-variation[data-attr], .attribute-values[data-attr], [data-attr].product_tile-attributes_value",
+        ),
+      ) as HTMLElement[];
+      for (const group of attributeGroups.slice(0, 24)) {
+        const optionName = normalizeDomOptionName(group.getAttribute("data-attr") || "");
+        if (!optionName) continue;
+        const candidates = Array.from(
+          group.querySelectorAll("button[data-attr-value], a[data-attr-value], [role='button'][data-attr-value]"),
+        ) as HTMLElement[];
+        const selected =
+          candidates.filter((node) => {
+            const className = node.className || "";
+            const ariaPressed = (node.getAttribute("aria-pressed") || "").toLowerCase();
+            return /\b(selected|is-selected|active)\b/i.test(String(className)) || ariaPressed === "true";
+          }) || [];
+        const scopedCandidates = selected.length > 0 ? selected : candidates.length === 1 ? candidates : [];
+        for (const node of scopedCandidates.slice(0, 12)) {
+          const rawAttrValue = node.getAttribute("data-attr-value") || "";
+          const valueNode = node.querySelector(
+            ".size-value, .swatch-value, .attribute-value_text, .attribute-value_name, [data-attr-value]",
+          ) as HTMLElement | null;
+          const optionValue = normalizeDomOptionValue(
+            valueNode?.textContent || node.textContent || "",
+            valueNode?.getAttribute("data-attr-value") || rawAttrValue,
+          );
+          if (!optionValue) continue;
+          const sku =
+            node.getAttribute("data-pid")?.trim() ||
+            group.closest("[data-pid]")?.getAttribute("data-pid")?.trim() ||
+            pageSku;
+          if (!sku) continue;
+          mergeMeta({
+            sku,
+            option_name: optionName,
+            option_value: optionValue,
+          });
+        }
+      }
+
+      for (const meta of bySku.values()) out.push(meta);
+      return out;
     })();
 
     let howToUseContent = document.getElementById("accordion-toggle-How to Use");

@@ -454,6 +454,49 @@ function cleanText(text?: string) {
     .trim();
 }
 
+const PRODUCT_SIZE_OPTION_RE =
+  /\b\d+(?:\.\d+)?\s*(?:fl\s*oz|m\s*l|ml|g|kg|oz|l|lb|lbs|mm|cm)\b(?:\s*(?:x|×)\s*\d+)?/i;
+
+function normalizeProductSizeOptionValue(value?: string) {
+  const raw = cleanText(value).match(PRODUCT_SIZE_OPTION_RE)?.[0] || "";
+  if (!raw) return "";
+  return raw
+    .replace(/\s+/g, " ")
+    .replace(/m\s*l/gi, "ml")
+    .replace(/fl\s*oz/gi, "fl oz")
+    .replace(/\b(ml|g|kg|oz|l|lb|lbs|mm|cm)\b/gi, (unit) => unit.toLowerCase())
+    .replace(/(\d)\s+(ml|g|kg|oz|l|lb|lbs|mm|cm)\b/gi, "$1$2")
+    .replace(/\s*(x|×)\s*/i, " x ")
+    .trim();
+}
+
+function extractProductSizeOptionValue(...values: Array<string | undefined>) {
+  for (const value of values) {
+    const normalized = normalizeProductSizeOptionValue(value);
+    if (normalized) return normalized;
+    if (!value) continue;
+    try {
+      const parsed = new URL(value);
+      const decodedPath = decodeURIComponent(parsed.pathname).replace(/[-_]+/g, " ");
+      const fromPath = normalizeProductSizeOptionValue(decodedPath);
+      if (fromPath) return fromPath;
+      const decodedSearch = decodeURIComponent(parsed.search).replace(/[-_]+/g, " ");
+      const fromSearch = normalizeProductSizeOptionValue(decodedSearch);
+      if (fromSearch) return fromSearch;
+    } catch {
+      // Plain titles and URL-like fragments are handled by the direct regex above.
+    }
+  }
+  return "";
+}
+
+function isGenericOfferOptionValue(value: string | undefined, productTitle: string) {
+  const option = cleanText(value).toLowerCase();
+  if (!option) return true;
+  if (/^(?:default|default title|offer|variant)$/i.test(option)) return true;
+  return option === cleanText(productTitle).toLowerCase();
+}
+
 function isPdpContentNoiseText(text?: string) {
   const normalized = cleanText(text).toLowerCase();
   if (!normalized) return false;
@@ -2859,10 +2902,16 @@ function buildShopifyResponse(params: {
     const titleSplit = enableTitleDiscovery ? splitTitleIntoBaseAndVariant(product.title) : null;
     const treatAsPseudoVariant =
       Boolean(titleSplit) && (product.variants || []).length === 1 && isDefaultShopifyVariant(product.variants[0]!);
+    const singleDefaultSizeOption =
+      !treatAsPseudoVariant && (product.variants || []).length === 1 && isDefaultShopifyVariant(product.variants[0]!)
+        ? extractProductSizeOptionValue(product.title, product.handle, productUrl)
+        : "";
 
     const canonicalProductTitle = treatAsPseudoVariant ? titleSplit!.baseTitle : product.title;
     const optionName = treatAsPseudoVariant
       ? "Variant"
+      : singleDefaultSizeOption
+        ? "Size"
       : product.options?.map((o) => o.name).filter((n): n is string => Boolean(n && n.trim())).join(" / ") || "Variant";
     const officialText = product.body_html || product.description || product.content;
     const officialTextSource = product.body_html
@@ -2909,6 +2958,8 @@ function buildShopifyResponse(params: {
     const extractedVariants: ExtractedVariant[] = (product.variants || []).map((v) => {
       const optionValue = treatAsPseudoVariant
         ? titleSplit!.variantLabel
+        : singleDefaultSizeOption
+          ? singleDefaultSizeOption
         : [v.option1, v.option2, v.option3].filter((x): x is string => Boolean(x && x.trim())).join(" / ") ||
           v.title?.trim() ||
           "Default";
@@ -5073,6 +5124,7 @@ function buildProductFromPageSignals(params: {
       ],
     },
   });
+  const productSizeOptionValue = extractProductSizeOptionValue(productTitle, productUrl);
 
   const variants: ExtractedVariant[] =
     variantProducts.length > 1
@@ -5163,10 +5215,24 @@ function buildProductFromPageSignals(params: {
           );
           const stock = stockFromAvailability(offer.availability);
           const optionValueFromOffer =
-            (typeof offer.name === "string" && offer.name.trim()) || (typeof offer.description === "string" && offer.description.trim());
+            (typeof offer.name === "string" ? offer.name.trim() : "") ||
+            (typeof offer.description === "string" ? offer.description.trim() : "");
+          const sizeOptionValue =
+            domMeta?.option_value
+              ? ""
+              : extractProductSizeOptionValue(
+                  optionValueFromOffer,
+                  productSizeOptionValue,
+                  productTitle,
+                  productUrl,
+                  typeof offer.url === "string" ? offer.url : "",
+                );
+          const displayableOfferOptionValue = isGenericOfferOptionValue(optionValueFromOffer, productTitle)
+            ? ""
+            : optionValueFromOffer;
 
-          const optionValue = optionValueFromOffer || domMeta?.option_value || sku;
-          const optionName = domMeta?.option_name || "Offer";
+          const optionValue = domMeta?.option_value || sizeOptionValue || displayableOfferOptionValue || sku;
+          const optionName = domMeta?.option_name || (sizeOptionValue ? "Size" : "Offer");
 
           const id = stableId(`${productUrl}|${sku}|${price}`);
           const ingredientsText = domMeta?.ingredients || ingredientsMarkdownText;
@@ -5206,8 +5272,8 @@ function buildProductFromPageSignals(params: {
             id: stableId(productUrl),
             sku: `AUTO-${stableId(productUrl).slice(0, 8)}`,
             url: productUrl,
-            option_name: "Offer",
-            option_value: "Default",
+            option_name: productSizeOptionValue ? "Size" : "Offer",
+            option_value: productSizeOptionValue || "Default",
             price: normalizePrice(extracted.priceTexts[0]),
             currency: "USD",
             stock: "In Stock",
@@ -5220,7 +5286,11 @@ function buildProductFromPageSignals(params: {
             }),
             image_url: imageUrl,
             image_urls: productImageUrls,
-            ad_copy: generateMockAdCopy(productTitle, "Default", normalizePrice(extracted.priceTexts[0])),
+            ad_copy: generateMockAdCopy(
+              productTitle,
+              productSizeOptionValue || "Default",
+              normalizePrice(extracted.priceTexts[0]),
+            ),
           },
         ];
 

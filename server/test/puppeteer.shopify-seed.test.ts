@@ -181,6 +181,55 @@ test("PuppeteerExtractor turns single default Shopify size evidence into a Size 
   );
 });
 
+test("PuppeteerExtractor reads single default Shopify size evidence from product images", async () => {
+  const extractor = new PuppeteerExtractor();
+
+  await withMockFetch(
+    {
+      "https://example.com/products/peptide-serum.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          id: 202,
+          title: "Peptide Serum",
+          handle: "peptide-serum",
+          body_html: "A peptide serum.",
+          variants: [
+            {
+              id: 2002,
+              sku: "SERUM-30ML",
+              title: "Default Title",
+              option1: "Default Title",
+              price: "2400",
+              available: true,
+              inventory_quantity: 5,
+            },
+          ],
+          options: [{ name: "Title" }],
+          images: [{ src: "https://cdn.example.com/products/peptide-serum-30ml.png" }],
+        }),
+      },
+      "https://example.com/products/peptide-serum": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Example",
+        domain: "https://example.com/products/peptide-serum",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.variants[0]?.option_name, "Size");
+      assert.equal(result.products[0]?.variants[0]?.option_value, "30ml");
+    },
+  );
+});
+
 test("isNonProductRedirectForRequestedPdp catches product URLs redirected to homepage", () => {
   assert.equal(
     isNonProductRedirectForRequestedPdp(

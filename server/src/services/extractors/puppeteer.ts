@@ -455,7 +455,7 @@ function cleanText(text?: string) {
 }
 
 const PRODUCT_SIZE_OPTION_RE =
-  /\b\d+(?:\.\d+)?\s*(?:fl\s*oz|m\s*l|ml|g|kg|oz|l|lb|lbs|mm|cm)\b(?:\s*(?:x|×)\s*\d+)?/i;
+  /\b\d+(?:\.\d+)?\s*(?:fl\.?\s*oz\.?|fluid\s*ounces?|m\s*l|ml|g|kg|oz|l|lb|lbs|mm|cm)\b(?:\s*(?:x|×)\s*\d+)?/i;
 
 function normalizeProductSizeOptionValue(value?: string) {
   const raw = cleanText(value).match(PRODUCT_SIZE_OPTION_RE)?.[0] || "";
@@ -463,7 +463,8 @@ function normalizeProductSizeOptionValue(value?: string) {
   return raw
     .replace(/\s+/g, " ")
     .replace(/m\s*l/gi, "ml")
-    .replace(/fl\s*oz/gi, "fl oz")
+    .replace(/fluid\s*ounces?/gi, "fl oz")
+    .replace(/fl\.?\s*oz\.?/gi, "fl oz")
     .replace(/\b(ml|g|kg|oz|l|lb|lbs|mm|cm)\b/gi, (unit) => unit.toLowerCase())
     .replace(/(\d)\s+(ml|g|kg|oz|l|lb|lbs|mm|cm)\b/gi, "$1$2")
     .replace(/\s*(x|×)\s*/i, " x ")
@@ -2904,7 +2905,7 @@ function buildShopifyResponse(params: {
       Boolean(titleSplit) && (product.variants || []).length === 1 && isDefaultShopifyVariant(product.variants[0]!);
     const singleDefaultSizeOption =
       !treatAsPseudoVariant && (product.variants || []).length === 1 && isDefaultShopifyVariant(product.variants[0]!)
-        ? extractProductSizeOptionValue(product.title, product.handle, productUrl)
+        ? extractProductSizeOptionValue(product.title, product.handle, productUrl, ...productImageUrls)
         : "";
 
     const canonicalProductTitle = treatAsPseudoVariant ? titleSplit!.baseTitle : product.title;
@@ -5217,6 +5218,11 @@ function buildProductFromPageSignals(params: {
           const optionValueFromOffer =
             (typeof offer.name === "string" ? offer.name.trim() : "") ||
             (typeof offer.description === "string" ? offer.description.trim() : "");
+          const offerImageRaw = offer.image;
+          const offerImageUrls = dedupeStringList([
+            ...resolveStructuredImageUrls(params.baseUrl, [offerImageRaw, domMeta?.image_urls, domMeta?.image_url, imageRaw, extracted.imageCandidates]),
+            ...productImageUrls,
+          ]);
           const sizeOptionValue =
             domMeta?.option_value
               ? ""
@@ -5226,6 +5232,7 @@ function buildProductFromPageSignals(params: {
                   productTitle,
                   productUrl,
                   typeof offer.url === "string" ? offer.url : "",
+                  ...offerImageUrls,
                 );
           const displayableOfferOptionValue = isGenericOfferOptionValue(optionValueFromOffer, productTitle)
             ? ""
@@ -5245,11 +5252,6 @@ function buildProductFromPageSignals(params: {
           });
           const adCopy = generateMockAdCopy(productTitle, optionValue, price);
 
-          const offerImageRaw = offer.image;
-          const offerImageUrls = dedupeStringList([
-            ...resolveStructuredImageUrls(params.baseUrl, [offerImageRaw, domMeta?.image_urls, domMeta?.image_url, imageRaw, extracted.imageCandidates]),
-            ...productImageUrls,
-          ]);
           const offerImageUrl = offerImageUrls[0] || imageUrl;
 
           return {

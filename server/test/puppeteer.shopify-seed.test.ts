@@ -130,6 +130,57 @@ test("PuppeteerExtractor passes market cookies to Shopify direct PDP requests", 
   }
 });
 
+test("PuppeteerExtractor turns single default Shopify size evidence into a Size option", async () => {
+  const extractor = new PuppeteerExtractor();
+
+  await withMockFetch(
+    {
+      "https://beautyofjoseon.com/products/dynasty-cream-10ml.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          id: 201,
+          title: "Dynasty Cream 10ml",
+          handle: "dynasty-cream-10ml",
+          body_html: "A moisturizer.",
+          variants: [
+            {
+              id: 2001,
+              sku: "BOJ-DYNASTY-10ML",
+              title: "Default Title",
+              option1: "Default Title",
+              price: "1200",
+              available: true,
+              inventory_quantity: 5,
+            },
+          ],
+          options: [{ name: "Title" }],
+          images: [{ src: "https://cdn.example.com/dynasty-10ml.jpg" }],
+        }),
+      },
+      "https://beautyofjoseon.com/products/dynasty-cream-10ml": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Beauty of Joseon",
+        domain: "https://beautyofjoseon.com/products/dynasty-cream-10ml",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.variants.length, 1);
+      assert.equal(result.products[0]?.variants[0]?.option_name, "Size");
+      assert.equal(result.products[0]?.variants[0]?.option_value, "10ml");
+      assert.equal(result.products[0]?.variants[0]?.sku, "BOJ-DYNASTY-10ML");
+    },
+  );
+});
+
 test("isNonProductRedirectForRequestedPdp catches product URLs redirected to homepage", () => {
   assert.equal(
     isNonProductRedirectForRequestedPdp(

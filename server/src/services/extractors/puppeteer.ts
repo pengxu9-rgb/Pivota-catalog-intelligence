@@ -55,6 +55,9 @@ const DEFAULT_FETCH_TIMEOUT_MS = 8_000;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 15_000;
 const DEFAULT_SCRAPE_TIMEOUT_MS = 60_000;
 const DEFAULT_PRODUCT_URL_RESERVE = 4;
+const DEFAULT_IMAGE_VISION_TIMEOUT_MS = 45_000;
+const DEFAULT_IMAGE_VISION_MAX_IMAGES = 6;
+const DEFAULT_IMAGE_VISION_MAX_IMAGE_BYTES = 5_000_000;
 const DEFAULT_BROWSERISH_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -524,6 +527,19 @@ function isLowQualityDetailSectionText(heading?: string, body?: string) {
   return isPdpContentNoiseText(`${heading || ""}\n${body || ""}`);
 }
 
+function isTaxonomyOnlyDetailSection(section: ExtractedProductDetailSection | undefined) {
+  const heading = cleanText(section?.heading).toLowerCase();
+  const body = cleanText(section?.body);
+  const sourceKind = cleanText(section?.source_kind).toLowerCase();
+  if (!heading || !body) return false;
+  const tagSource =
+    sourceKind === "shopify_product_tags" ||
+    sourceKind === "embedded_product_json_tags" ||
+    sourceKind === "product_image_vision";
+  if (!tagSource) return false;
+  return heading === "product type";
+}
+
 function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
   const out: ExtractedProductDetailSection[] = [];
   const seen = new Set<string>();
@@ -532,6 +548,7 @@ function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
     const body = cleanText(section?.body);
     const sourceKind = cleanText(section?.source_kind) || "unknown";
     if (!heading || !body) continue;
+    if (isTaxonomyOnlyDetailSection({ heading, body, source_kind: sourceKind })) continue;
     if (isLowQualityDetailSectionText(heading, body)) continue;
     const keyBody = heading === "Ingredients" ? cleanText(body.replace(/^full ingredients?\s*/i, "")) : body;
     const key = `${heading.toLowerCase()}|${keyBody.toLowerCase()}`;
@@ -2008,7 +2025,9 @@ function withProductPdpProfile(product: ExtractedProduct): ExtractedProduct {
 export type MissingPdpFieldReason = "overview" | "how_to_use" | "ingredients";
 
 export function getMissingPdpFieldReasons(product: ExtractedProduct): MissingPdpFieldReason[] {
-  const detailsSections = Array.isArray(product?.details_sections) ? product.details_sections : [];
+  const detailsSections = Array.isArray(product?.details_sections)
+    ? product.details_sections.filter((section) => !isTaxonomyOnlyDetailSection(section))
+    : [];
   const descriptionRaw = cleanText(product?.description_raw);
   const hasOverview = detailsSections.length > 0 || descriptionRaw.length >= PDP_COMPLETENESS_MIN_OVERVIEW_CHARS;
   const hasHowToUse = Boolean(cleanText(product?.how_to_use_raw));
@@ -2024,6 +2043,391 @@ export function getMissingPdpFieldReasons(product: ExtractedProduct): MissingPdp
 
 export function productHasMissingPdpFields(product: ExtractedProduct) {
   return getMissingPdpFieldReasons(product).length > 0;
+}
+
+export type ImageVisionPdpFields = {
+  descriptionRaw?: string;
+  detailsSections?: ExtractedProductDetailSection[];
+  ingredientsRaw?: string;
+  activeIngredientsRaw?: string;
+  howToUseRaw?: string;
+  contentImageUrls?: string[];
+};
+
+export type ShopifyImageVisionClient = (params: {
+  brand: string;
+  seedUrl: string;
+  baseUrl: string;
+  product: ExtractedProduct;
+  imageUrls: string[];
+  missingReasons: MissingPdpFieldReason[];
+}) => Promise<ImageVisionPdpFields | null>;
+
+function isImageVisionDisabled() {
+  return /^(?:0|false|no|off)$/i.test(String(process.env.CATALOG_IMAGE_VISION_ENRICHMENT || "").trim());
+}
+
+function getImageVisionApiKey() {
+  return (
+    process.env.CATALOG_IMAGE_VISION_API_KEY ||
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    ""
+  ).trim();
+}
+
+function getImageVisionModel() {
+  return (process.env.CATALOG_IMAGE_VISION_MODEL || process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || "gemini-2.5-flash").trim();
+}
+
+function getImageVisionCandidateUrls(product: ExtractedProduct) {
+  const maxImages = clampIntShared(
+    process.env.CATALOG_IMAGE_VISION_MAX_IMAGES,
+    DEFAULT_IMAGE_VISION_MAX_IMAGES,
+    1,
+    12,
+  );
+  return dedupeStringList([
+    product.image_url,
+    ...product.image_urls,
+    ...product.variants.flatMap((variant) => [variant.image_url, ...variant.image_urls]),
+  ])
+    .filter((url) => /^https?:\/\//i.test(url))
+    .filter((url) => !INVALID_IMAGE_URL_RE.test(url))
+    .slice(0, maxImages);
+}
+
+export function shouldAttemptShopifyImageVisionEnrichment(product: ExtractedProduct) {
+  if (isImageVisionDisabled()) return false;
+  const kind = product.product_kind || classifyExtractedProductKind(product);
+  if (kind === "accessory" || kind === "general_merchandise") return false;
+  const candidateUrls = getImageVisionCandidateUrls(product);
+  if (candidateUrls.length < 2) return false;
+  return getMissingPdpFieldReasons(product).length > 0;
+}
+
+function normalizeImageVisionText(value: unknown, product: ExtractedProduct, minChars = 12) {
+  const normalized = cleanText(typeof value === "string" ? value : undefined);
+  if (!normalized || normalized.length < minChars) return "";
+  const lower = normalized.toLowerCase();
+  const title = cleanText(product.title).toLowerCase();
+  if (lower === title) return "";
+  if (/^(?:product type|primer|serum|moisturi[sz]er|toner|cleanser|sunscreen|foundation|concealer)$/i.test(normalized)) {
+    return "";
+  }
+  if (/\b(?:not visible|not readable|cannot determine|unable to determine|no text visible)\b/i.test(normalized)) return "";
+  return normalized;
+}
+
+function parseImageVisionJson(text: string) {
+  const cleaned = cleanText(text)
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "");
+  try {
+    return JSON.parse(cleaned) as Record<string, unknown>;
+  } catch {
+    const matched = cleaned.match(/\{[\s\S]*\}/);
+    if (!matched) return null;
+    try {
+      return JSON.parse(matched[0]) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function normalizeImageVisionFields(raw: Record<string, unknown>, product: ExtractedProduct, imageUrls: string[]): ImageVisionPdpFields | null {
+  const descriptionRaw = normalizeImageVisionText(raw.description_raw ?? raw.descriptionRaw ?? raw.overview, product, 40);
+  const rawSections = Array.isArray(raw.details_sections)
+    ? raw.details_sections
+    : Array.isArray(raw.detailsSections)
+      ? raw.detailsSections
+      : Array.isArray(raw.sections)
+        ? raw.sections
+        : [];
+  const detailsSections = dedupeDetailSections(
+    rawSections.flatMap((item): ExtractedProductDetailSection[] => {
+      if (!item || typeof item !== "object") return [];
+      const record = item as Record<string, unknown>;
+      const heading = normalizeImageVisionText(record.heading ?? record.title ?? record.name, product, 3);
+      const body = normalizeImageVisionText(record.body ?? record.text ?? record.content, product, 18);
+      if (!heading || !body) return [];
+      return [
+        {
+          heading,
+          body,
+          source_kind: "product_image_vision",
+        },
+      ];
+    }),
+  );
+  const rawIngredients = normalizeImageVisionText(raw.ingredients_raw ?? raw.ingredientsRaw ?? raw.ingredients, product, 24);
+  const ingredientsRaw =
+    stripIngredientPackageDisclaimer(extractLikelyFullIngredientListText(rawIngredients)) ||
+    (looksLikeFullIngredientListText(rawIngredients) ? rawIngredients : "");
+  const activeIngredientsRaw = normalizeImageVisionText(
+    raw.active_ingredients_raw ?? raw.activeIngredientsRaw ?? raw.active_ingredients,
+    product,
+    8,
+  );
+  const howToUseCandidate = normalizeImageVisionText(raw.how_to_use_raw ?? raw.howToUseRaw ?? raw.how_to_use, product, 18);
+  const howToUseRaw = looksLikeHowToUseInstructionText(howToUseCandidate) ? howToUseCandidate : "";
+
+  const fields: ImageVisionPdpFields = {
+    ...(descriptionRaw ? { descriptionRaw } : {}),
+    ...(detailsSections.length > 0 ? { detailsSections } : {}),
+    ...(ingredientsRaw ? { ingredientsRaw } : {}),
+    ...(activeIngredientsRaw ? { activeIngredientsRaw } : {}),
+    ...(howToUseRaw ? { howToUseRaw } : {}),
+    contentImageUrls: imageUrls,
+  };
+  return hasDisplayableImageVisionFields(fields) ? fields : null;
+}
+
+function hasDisplayableImageVisionFields(fields: ImageVisionPdpFields | null | undefined) {
+  if (!fields) return false;
+  const meaningfulSections = (fields.detailsSections || []).filter((section) => !isTaxonomyOnlyDetailSection(section));
+  return Boolean(
+    normalizeImageVisionText(fields.descriptionRaw, { title: "", url: "", image_url: "", image_urls: [], variant_skus: [], variants: [] }, 40) ||
+      meaningfulSections.some((section) => cleanText(section.heading) && cleanText(section.body).length >= 18) ||
+      cleanText(fields.ingredientsRaw) ||
+      cleanText(fields.activeIngredientsRaw) ||
+      cleanText(fields.howToUseRaw),
+  );
+}
+
+async function fetchImageVisionInlinePart(url: string) {
+  const timeoutMs = clampIntShared(
+    process.env.CATALOG_IMAGE_VISION_IMAGE_FETCH_TIMEOUT_MS,
+    DEFAULT_FETCH_TIMEOUT_MS,
+    2_000,
+    60_000,
+  );
+  const maxBytes = clampIntShared(
+    process.env.CATALOG_IMAGE_VISION_MAX_IMAGE_BYTES,
+    DEFAULT_IMAGE_VISION_MAX_IMAGE_BYTES,
+    100_000,
+    20_000_000,
+  );
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        accept: "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.9,*/*;q=0.1",
+        "user-agent": process.env.PUPPETEER_USER_AGENT || DEFAULT_BROWSERISH_USER_AGENT,
+      },
+    });
+    if (!response.ok) return null;
+    const mimeType = (response.headers.get("content-type") || "").split(";")[0]?.trim().toLowerCase() || "";
+    if (!mimeType.startsWith("image/")) return null;
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) return null;
+    return {
+      sourceUrl: url,
+      part: {
+        inlineData: {
+          mimeType,
+          data: bytes.toString("base64"),
+        },
+      },
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function extractShopifyImageVisionPdpFields(params: Parameters<ShopifyImageVisionClient>[0]) {
+  const apiKey = getImageVisionApiKey();
+  if (!apiKey) return null;
+
+  const imageParts: Array<{ sourceUrl: string; part: { inlineData: { mimeType: string; data: string } } }> = [];
+  for (const imageUrl of params.imageUrls) {
+    const imagePart = await fetchImageVisionInlinePart(imageUrl);
+    if (imagePart) imageParts.push(imagePart);
+  }
+  if (imageParts.length === 0) return null;
+
+  const prompt = [
+    "Extract only merchant-visible product detail text from these PDP/product images.",
+    "Do not infer from the product title, category, brand, or general beauty knowledge.",
+    "Do not create marketing copy, summaries, recommendations, or fallback values.",
+    "If a field is not clearly readable in the images, return an empty string or empty array for that field.",
+    "Return JSON only with keys: description_raw, details_sections, how_to_use_raw, ingredients_raw, active_ingredients_raw.",
+    "details_sections must be an array of {heading, body}. Keep sections concise and evidence-backed.",
+    `Product title for identity check only: ${params.product.title}`,
+    `Source PDP: ${params.seedUrl}`,
+  ].join("\n");
+
+  const model = getImageVisionModel();
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            ...imageParts.map((item) => item.part),
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: "application/json",
+      },
+    }),
+  });
+  if (!response.ok) return null;
+  const payload = (await response.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+  const text = payload.candidates?.flatMap((candidate) => candidate.content?.parts || []).map((part) => part.text || "").join("\n");
+  const parsed = parseImageVisionJson(text || "");
+  if (!parsed) return null;
+  return normalizeImageVisionFields(parsed, params.product, imageParts.map((item) => item.sourceUrl));
+}
+
+export function mergeShopifyDirectPdpImageVisionFields(
+  response: Omit<ExtractResponse, "generated_at" | "logs">,
+  fields: ImageVisionPdpFields | null | undefined,
+): Omit<ExtractResponse, "generated_at" | "logs"> {
+  if (!response.products[0] || !hasDisplayableImageVisionFields(fields)) return response;
+
+  const mergedProducts = response.products.map((product, idx) => {
+    if (idx !== 0) return product;
+    const baseSections = (Array.isArray(product.details_sections) ? product.details_sections : []).filter(
+      (section) => !isTaxonomyOnlyDetailSection(section),
+    );
+    const visionSections = dedupeDetailSections(
+      (fields?.detailsSections || []).map((section) => ({
+        ...section,
+        source_kind: "product_image_vision",
+      })),
+    );
+    const mergedProduct: ExtractedProduct = {
+      ...product,
+      image_urls: [...product.image_urls],
+      content_image_urls: dedupeStringList([...(product.content_image_urls || []), ...(fields?.contentImageUrls || [])]),
+      variant_skus: [...product.variant_skus],
+      variants: product.variants.map((variant) => ({
+        ...variant,
+        image_urls: [...variant.image_urls],
+      })),
+    };
+    Object.assign(
+      mergedProduct,
+      buildProductPdpFields({
+        descriptionRaw:
+          cleanText(product.description_raw).length >= PDP_COMPLETENESS_MIN_OVERVIEW_CHARS
+            ? product.description_raw
+            : fields?.descriptionRaw || product.description_raw,
+        detailsSections: dedupeDetailSections([...baseSections, ...visionSections]),
+        ingredientsRaw: product.ingredients_raw || fields?.ingredientsRaw,
+        activeIngredientsRaw: product.active_ingredients_raw || fields?.activeIngredientsRaw,
+        howToUseRaw: product.how_to_use_raw || fields?.howToUseRaw,
+        faqItems: product.faq_items,
+        fieldSources: {
+          description_raw: [
+            ...(product.field_sources?.description_raw || []),
+            fields?.descriptionRaw ? "product_image_vision" : "",
+          ],
+          details_sections: [
+            ...(product.field_sources?.details_sections || []),
+            ...(visionSections.length > 0 ? ["product_image_vision"] : []),
+          ],
+          ingredients_raw: [
+            ...(product.field_sources?.ingredients_raw || []),
+            fields?.ingredientsRaw ? "product_image_vision" : "",
+          ],
+          active_ingredients_raw: [
+            ...(product.field_sources?.active_ingredients_raw || []),
+            fields?.activeIngredientsRaw ? "product_image_vision" : "",
+          ],
+          how_to_use_raw: [
+            ...(product.field_sources?.how_to_use_raw || []),
+            fields?.howToUseRaw ? "product_image_vision" : "",
+          ],
+          faq_items: product.field_sources?.faq_items || [],
+        },
+      }),
+    );
+    return withProductPdpProfile(mergedProduct);
+  });
+
+  const { variants, adCopyById } = flattenVariants({
+    brand: response.brand,
+    products: mergedProducts,
+    simulated: false,
+  });
+
+  return {
+    ...response,
+    products: mergedProducts,
+    variants,
+    ad_copy: { by_variant_id: adCopyById },
+  };
+}
+
+async function enrichShopifyDirectPdpWithImageVision(params: {
+  brand: string;
+  baseUrl: string;
+  seedUrl: string;
+  response: Omit<ExtractResponse, "generated_at" | "logs">;
+  missingReasons: MissingPdpFieldReason[];
+  log: Logger;
+  imageVisionClient?: ShopifyImageVisionClient;
+}) {
+  const product = params.response.products[0];
+  if (!product || !shouldAttemptShopifyImageVisionEnrichment(product)) return params.response;
+  const imageUrls = getImageVisionCandidateUrls(product);
+  if (!params.imageVisionClient && !getImageVisionApiKey()) {
+    params.log(
+      "warn",
+      `Image-only Shopify PDP content gap; vision enrichment unavailable because Gemini API key is not configured: ${params.seedUrl}`,
+    );
+    return params.response;
+  }
+
+  const timeoutMs = clampIntShared(
+    process.env.CATALOG_IMAGE_VISION_TIMEOUT_MS,
+    DEFAULT_IMAGE_VISION_TIMEOUT_MS,
+    5_000,
+    180_000,
+  );
+  const client = params.imageVisionClient || extractShopifyImageVisionPdpFields;
+  try {
+    const fields = await withTimeoutShared(
+      client({
+        brand: params.brand,
+        seedUrl: params.seedUrl,
+        baseUrl: params.baseUrl,
+        product,
+        imageUrls,
+        missingReasons: params.missingReasons,
+      }),
+      timeoutMs,
+      "Shopify direct PDP image vision enrichment",
+    );
+    if (!hasDisplayableImageVisionFields(fields)) {
+      params.log("warn", `Image-only Shopify PDP vision enrichment produced no displayable fields: ${params.seedUrl}`);
+      return params.response;
+    }
+    const merged = mergeShopifyDirectPdpImageVisionFields(params.response, fields);
+    params.log("success", `Recovered Shopify PDP content via product image vision: ${params.seedUrl}`);
+    return merged;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error || "unknown_error");
+    params.log("warn", `Image-only Shopify PDP vision enrichment failed; leaving PDP fields missing: ${msg}`);
+    return params.response;
+  }
 }
 
 function getCollectionHandle(pathname: string): string | undefined {
@@ -2618,6 +3022,7 @@ export async function enrichDirectShopifyPdpResponse(params: {
   log: Logger;
   context?: FetchContext;
   browserRunner?: typeof runBrowserTaskWithFallback<ExtractedProduct | null>;
+  imageVisionClient?: ShopifyImageVisionClient;
 }): Promise<Omit<ExtractResponse, "generated_at" | "logs">> {
   const product = params.response.products[0];
   if (!params.seedUrl || !product || params.response.products.length !== 1) return params.response;
@@ -2715,6 +3120,19 @@ export async function enrichDirectShopifyPdpResponse(params: {
     `Shopify direct PDP requires browser enrichment for ${enrichmentReasons.join(", ")} (product_kind=${currentProduct.product_kind || classifyExtractedProductKind(currentProduct)}): ${params.seedUrl}`,
   );
 
+  const tryImageVisionEnrichment = async (fallbackResponse: Omit<ExtractResponse, "generated_at" | "logs">) => {
+    const productForVision = fallbackResponse.products[0];
+    return enrichShopifyDirectPdpWithImageVision({
+      brand: params.brand,
+      baseUrl: params.baseUrl,
+      seedUrl: params.seedUrl!,
+      response: fallbackResponse,
+      missingReasons: productForVision ? getMissingPdpFieldReasons(productForVision) : missingPdpFieldReasons,
+      log: params.log,
+      imageVisionClient: params.imageVisionClient,
+    });
+  };
+
   const navigationTimeoutMs = clampIntShared(
     process.env.PUPPETEER_DIRECT_PDP_ENRICH_NAV_TIMEOUT_MS,
     Math.max(DEFAULT_NAV_TIMEOUT_MS, 15_000),
@@ -2746,21 +3164,21 @@ export async function enrichDirectShopifyPdpResponse(params: {
     );
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error || "unknown_error");
-    params.log("warn", `Browser enrichment failed for Shopify PDP; returning direct feed response: ${msg}`);
-    return response;
+    params.log("warn", `Browser enrichment failed for Shopify PDP; trying image-only PDP enrichment before returning direct feed response: ${msg}`);
+    return tryImageVisionEnrichment(response);
   }
 
   if (!browserRun.result) {
-    params.log("warn", `Browser enrichment did not recover images for Shopify PDP: ${params.seedUrl}`);
-    return response;
+    params.log("warn", `Browser enrichment did not recover images for Shopify PDP; trying image-only PDP enrichment: ${params.seedUrl}`);
+    return tryImageVisionEnrichment(response);
   }
 
   if (!isShopifyDirectPdpFallbackUsable(currentProduct, browserRun.result)) {
     params.log(
       "warn",
-      `Discarding Shopify PDP browser enrichment because fallback identity did not match direct feed product: ${params.seedUrl}`,
+      `Discarding Shopify PDP browser enrichment because fallback identity did not match direct feed product; trying image-only PDP enrichment: ${params.seedUrl}`,
     );
-    return response;
+    return tryImageVisionEnrichment(response);
   }
 
   const merged = mergeShopifyDirectPdpFallback(params.brand, response, browserRun.result);
@@ -2769,6 +3187,9 @@ export async function enrichDirectShopifyPdpResponse(params: {
       "success",
       `Recovered ${merged.products[0]?.image_urls.length || 0} Shopify PDP images via browser enrichment: ${params.seedUrl}`,
     );
+  }
+  if (merged.products[0] && shouldAttemptShopifyImageVisionEnrichment(merged.products[0])) {
+    return tryImageVisionEnrichment(merged);
   }
   return merged;
 }

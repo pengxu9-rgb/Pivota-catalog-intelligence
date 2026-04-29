@@ -808,6 +808,24 @@ async function fetchTracked(url: string, context: FetchContext, diagnostics: Ext
   }
 }
 
+function isRetryableJsonFetchOutcome(outcome: FetchOutcome): boolean {
+  if (outcome.ok && outcome.body) return false;
+  if (outcome.status == null) return true;
+  return [408, 425, 429, 500, 502, 503, 504].includes(outcome.status);
+}
+
+function retryDelayMs(attempt: number): number {
+  const baseMs = clampInt(process.env.CATALOG_JSON_FETCH_RETRY_BASE_MS, 250, 50, 2_000);
+  const jitterMs = Math.floor(Math.random() * 125);
+  return baseMs * Math.max(1, attempt) + jitterMs;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function readTitleFromHtml(body: string | null): string | null {
   if (!body) return null;
   const matched = body.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1];
@@ -823,7 +841,12 @@ export async function fetchJsonTracked<T>(
   context: FetchContext,
   diagnostics: ExtractionDiagnostics,
 ): Promise<{ data: T | null; status: number | null; blockedBy: BlockProvider; finalUrl: string }> {
-  const outcome = await fetchTracked(url, context, diagnostics, "application/json");
+  const maxRetries = clampInt(process.env.CATALOG_JSON_FETCH_RETRIES, 2, 0, 5);
+  let outcome = await fetchTracked(url, context, diagnostics, "application/json");
+  for (let attempt = 1; attempt <= maxRetries && isRetryableJsonFetchOutcome(outcome); attempt += 1) {
+    await sleep(retryDelayMs(attempt));
+    outcome = await fetchTracked(url, context, diagnostics, "application/json");
+  }
   if (!outcome.ok || !outcome.body) {
     return { data: null, status: outcome.status, blockedBy: outcome.blockedBy, finalUrl: outcome.finalUrl };
   }

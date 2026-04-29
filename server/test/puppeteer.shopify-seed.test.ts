@@ -19,6 +19,7 @@ import {
   pickBestJsonLdObjectForPage,
   productHasMissingPdpFields,
 } from "../src/services/extractors/puppeteer";
+import { createDiagnostics, fetchJsonTracked } from "../src/services/extractors/shared";
 
 type MockRoute = {
   status?: number;
@@ -60,6 +61,55 @@ async function withMockFetch(routes: Record<string, MockRoute>, fn: () => Promis
     globalThis.fetch = originalFetch;
   }
 }
+
+test("fetchJsonTracked retries transient Shopify JSON failures", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalRetries = process.env.CATALOG_JSON_FETCH_RETRIES;
+  const originalBaseMs = process.env.CATALOG_JSON_FETCH_RETRY_BASE_MS;
+  const calls: string[] = [];
+  process.env.CATALOG_JSON_FETCH_RETRIES = "1";
+  process.env.CATALOG_JSON_FETCH_RETRY_BASE_MS = "50";
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    calls.push(url);
+    if (calls.length === 1) {
+      return createMockResponse({
+        status: 503,
+        headers: { "content-type": "text/plain" },
+        body: "Service Unavailable",
+      });
+    }
+    return createMockResponse({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ products: [{ id: 1, handle: "glow-serum" }] }),
+    });
+  }) as typeof fetch;
+
+  try {
+    const diagnostics = createDiagnostics("example.com", "https://example.com");
+    const result = await fetchJsonTracked<{ products: Array<{ id: number; handle: string }> }>(
+      "https://example.com/products.json?limit=250&page=1",
+      {},
+      diagnostics,
+    );
+
+    assert.equal(calls.length, 2);
+    assert.equal(result.status, 200);
+    assert.equal(result.data?.products[0]?.handle, "glow-serum");
+    assert.deepEqual(
+      diagnostics.http_trace.map((entry) => entry.status),
+      [503, 200],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalRetries === undefined) delete process.env.CATALOG_JSON_FETCH_RETRIES;
+    else process.env.CATALOG_JSON_FETCH_RETRIES = originalRetries;
+    if (originalBaseMs === undefined) delete process.env.CATALOG_JSON_FETCH_RETRY_BASE_MS;
+    else process.env.CATALOG_JSON_FETCH_RETRY_BASE_MS = originalBaseMs;
+  }
+});
 
 test("PuppeteerExtractor passes market cookies to Shopify direct PDP requests", async () => {
   const extractor = new PuppeteerExtractor();

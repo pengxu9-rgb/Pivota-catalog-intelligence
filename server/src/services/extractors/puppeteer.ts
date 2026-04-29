@@ -2070,6 +2070,9 @@ function isImageVisionDisabled() {
 function getImageVisionApiKey() {
   return (
     process.env.CATALOG_IMAGE_VISION_API_KEY ||
+    process.env.PIVOTA_GEMINI_API_KEY ||
+    process.env.AURORA_SKIN_GEMINI_API_KEY ||
+    process.env.AURORA_RECO_GEMINI_API_KEY ||
     process.env.GEMINI_API_KEY ||
     process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
     process.env.GOOGLE_API_KEY ||

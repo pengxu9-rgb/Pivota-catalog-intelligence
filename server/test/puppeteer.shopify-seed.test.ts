@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   PuppeteerExtractor,
+  buildProductPdpFields,
   choosePreferredProductOverview,
   classifyExtractedProductKind,
   enrichDirectShopifyPdpResponse,
@@ -733,6 +734,161 @@ test("enrichDirectShopifyPdpResponse preserves direct feed response when browser
   assert.equal(result.products.length, 1);
   assert.equal(result.products[0]?.title, "Fucking Fabulous Parfum");
   assert.match(logs.map((entry) => `${entry.type}:${entry.msg}`).join("\n"), /Browser enrichment failed for Shopify PDP/);
+});
+
+test("buildProductPdpFields keeps Shopify Product Type tags out of user-visible PDP details", () => {
+  const fields = buildProductPdpFields({
+    detailsSections: [
+      {
+        heading: "Product Type",
+        body: "Primer",
+        source_kind: "shopify_product_tags",
+      },
+    ],
+  });
+
+  assert.equal(fields.details_sections, undefined);
+  assert.equal(fields.field_capture_status.details_sections, "missing");
+  assert.deepEqual(
+    getMissingPdpFieldReasons({
+      title: "Reflect Glow Prep Primer",
+      url: "https://tirtir.global/products/reflect-glow-prep-primer",
+      image_url: "https://cdn.example.com/primer-1.png",
+      image_urls: ["https://cdn.example.com/primer-1.png", "https://cdn.example.com/primer-2.png"],
+      variant_skus: ["TIRTIR-PRIMER"],
+      variants: [],
+      details_sections: [
+        {
+          heading: "Product Type",
+          body: "Primer",
+          source_kind: "embedded_product_json_tags",
+        },
+      ],
+    }),
+    ["overview", "ingredients"],
+  );
+});
+
+test("enrichDirectShopifyPdpResponse recovers image-only Shopify PDP content through vision", async () => {
+  const logs: Array<{ type: string; msg: string }> = [];
+  const seedUrl = "https://tirtir.global/products/reflect-glow-prep-primer";
+  const response = {
+    brand: "TIRTIR",
+    domain: "https://tirtir.global",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Reflect Glow Prep Primer",
+        url: seedUrl,
+        image_url: "https://cdn.example.com/tirtir-primer-1.png",
+        image_urls: [
+          "https://cdn.example.com/tirtir-primer-1.png",
+          "https://cdn.example.com/tirtir-primer-2.png",
+          "https://cdn.example.com/tirtir-primer-3.png",
+        ],
+        variant_skus: ["TIRTIR-PRIMER"],
+        details_sections: [
+          {
+            heading: "Product Type",
+            body: "Primer",
+            source_kind: "embedded_product_json_tags",
+          },
+        ],
+        variants: [
+          {
+            id: "1",
+            sku: "TIRTIR-PRIMER",
+            url: seedUrl,
+            option_name: "Title",
+            option_value: "Default Title",
+            price: "20.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "https://cdn.example.com/tirtir-primer-1.png",
+            image_urls: ["https://cdn.example.com/tirtir-primer-1.png"],
+            ad_copy: "",
+          },
+        ],
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 20, max: 20, avg: 20 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "tirtir.global",
+      resolved_base_url: "https://tirtir.global",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  await withMockFetch(
+    {
+      [seedUrl]: {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: "<html><body></body></html>",
+      },
+    },
+    async () => {
+      const result = await enrichDirectShopifyPdpResponse({
+        brand: "TIRTIR",
+        baseUrl: "https://tirtir.global",
+        seedUrl,
+        response,
+        diagnostics: response.diagnostics,
+        log: (type, msg) => logs.push({ type, msg }),
+        browserRunner: async () => {
+          throw new Error("perimeterx");
+        },
+        imageVisionClient: async ({ imageUrls, missingReasons }) => {
+          assert.deepEqual(missingReasons, ["overview", "ingredients"]);
+          assert.equal(imageUrls.length, 3);
+          return {
+            descriptionRaw:
+              "A glow-priming base designed to prep skin with a radiant finish before makeup application.",
+            detailsSections: [
+              {
+                heading: "Benefits",
+                body: "Creates a luminous-looking base and helps makeup apply more smoothly.",
+                source_kind: "product_image_vision",
+              },
+              {
+                heading: "Product Type",
+                body: "Primer",
+                source_kind: "product_image_vision",
+              },
+            ],
+            howToUseRaw: "Apply a thin layer evenly before makeup.",
+            ingredientsRaw: "Water, Glycerin, Butylene Glycol, Niacinamide, Panthenol.",
+            contentImageUrls: imageUrls.slice(0, 2),
+          };
+        },
+      });
+
+      assert.match(result.products[0]?.description_raw || "", /glow-priming base/);
+      assert.equal(result.products[0]?.how_to_use_raw, "Apply a thin layer evenly before makeup.");
+      assert.match(result.products[0]?.ingredients_raw || "", /Niacinamide/);
+      assert.deepEqual(result.products[0]?.details_sections?.map((section) => section.heading), ["Benefits"]);
+      assert.deepEqual(result.products[0]?.field_sources?.details_sections, ["product_image_vision"]);
+      assert.deepEqual(result.products[0]?.content_image_urls, [
+        "https://cdn.example.com/tirtir-primer-1.png",
+        "https://cdn.example.com/tirtir-primer-2.png",
+      ]);
+      assert.match(logs.map((entry) => entry.msg).join("\n"), /Recovered Shopify PDP content via product image vision/);
+    },
+  );
 });
 
 test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enrichment", async () => {

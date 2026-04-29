@@ -2043,6 +2043,68 @@ test("mergeShopifyDirectPdpFallback fills Shopify direct PDP images from fallbac
   assert.equal(merged.variants[0]?.image_url, "https://cdn.shopify.com/glow-getter-set-main.jpg");
 });
 
+test("mergeShopifyDirectPdpFallback rejects site-level meta descriptions", () => {
+  const seedUrl = "https://tirtir.global/products/reflect-glow-prep-primer";
+  const response = {
+    brand: "TIRTIR",
+    domain: "tirtir.global",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Reflect Glow Prep Primer",
+        url: seedUrl,
+        image_url: "https://cdn.example.com/primer.png",
+        image_urls: ["https://cdn.example.com/primer.png"],
+        variant_skus: ["TIRTIR-PRIMER"],
+        variants: [
+          {
+            id: "v1",
+            sku: "TIRTIR-PRIMER",
+            url: seedUrl,
+            option_name: "Title",
+            option_value: "Default Title",
+            price: "20.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "https://cdn.example.com/primer.png",
+            image_urls: ["https://cdn.example.com/primer.png"],
+            ad_copy: "copy",
+          },
+        ],
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD" as const, min: 20, max: 20, avg: 20 },
+    ad_copy: { by_variant_id: {} },
+    pagination: { offset: 0, limit: 1, next_offset: null, has_more: false, discovered_urls: 1 },
+    diagnostics: {
+      requested_domain: "tirtir.global",
+      resolved_base_url: "https://tirtir.global",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+  const fallbackProduct = {
+    title: "Reflect Glow Prep Primer",
+    url: seedUrl,
+    image_url: "https://cdn.example.com/primer.png",
+    image_urls: ["https://cdn.example.com/primer.png"],
+    variant_skus: ["TIRTIR-PRIMER"],
+    description_raw:
+      "Shop Top Selling Skincare Brand For Healthy, Glowing Skin Packed With High Performing Ingredients. Take Your Skincare Quiz & Find Your Perfect Skincare Routine to Find Skin Radiance.",
+    variants: response.products[0]!.variants,
+  };
+
+  const merged = mergeShopifyDirectPdpFallback("TIRTIR", response, fallbackProduct);
+
+  assert.equal(merged.products[0]?.description_raw, undefined);
+  assert.equal(merged.products[0]?.field_capture_status?.description_raw, "missing");
+});
+
 test("mergeShopifyDirectPdpFallback discards unrelated fallback page images", () => {
   const response = {
     brand: "PATYKA",

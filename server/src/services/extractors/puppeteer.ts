@@ -3711,6 +3711,47 @@ function mergeShopifyDirectPdpEmbeddedProductJson(
   };
 }
 
+const FALLBACK_DESCRIPTION_SITE_BOILERPLATE_RE =
+  /\b(?:shop (?:top selling|best selling)|official (?:site|store)|skincare quiz|skin(?:care)? routine quiz|find your perfect|free shipping|join (?:our )?(?:mailing list|newsletter)|healthy,?\s+glowing skin packed with high performing ingredients)\b/i;
+
+const FALLBACK_DESCRIPTION_TITLE_STOPWORDS = new Set([
+  "the",
+  "and",
+  "with",
+  "for",
+  "from",
+  "into",
+  "your",
+  "skin",
+  "care",
+  "skincare",
+  "beauty",
+  "product",
+  "default",
+  "title",
+]);
+
+function getProductSpecificTitleTokens(title: string) {
+  return cleanText(title)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 4 && !FALLBACK_DESCRIPTION_TITLE_STOPWORDS.has(token))
+    .slice(0, 8);
+}
+
+function isUsableShopifyFallbackDescription(product: ExtractedProduct, rawDescription: string | undefined) {
+  const description = cleanText(rawDescription);
+  if (description.length < PDP_COMPLETENESS_MIN_OVERVIEW_CHARS) return false;
+  if (isPdpContentNoiseText(description)) return false;
+  if (FALLBACK_DESCRIPTION_SITE_BOILERPLATE_RE.test(description)) return false;
+  const descriptionLower = description.toLowerCase();
+  const titleTokens = getProductSpecificTitleTokens(product.title);
+  if (titleTokens.length === 0) return true;
+  return titleTokens.some((token) => descriptionLower.includes(token));
+}
+
 export function mergeShopifyDirectPdpFallback(
   brand: string,
   response: Omit<ExtractResponse, "generated_at" | "logs">,
@@ -3733,7 +3774,11 @@ export function mergeShopifyDirectPdpFallback(
     Object.assign(
       mergedProduct,
       buildProductPdpFields({
-        descriptionRaw: product.description_raw || fallbackProduct.description_raw,
+        descriptionRaw:
+          product.description_raw ||
+          (isUsableShopifyFallbackDescription(product, fallbackProduct.description_raw)
+            ? fallbackProduct.description_raw
+            : undefined),
         detailsSections: dedupeDetailSections([
           ...((Array.isArray(product.details_sections) ? product.details_sections : []) || []),
           ...((Array.isArray(fallbackProduct.details_sections) ? fallbackProduct.details_sections : []) || []),

@@ -15,6 +15,7 @@ import {
   isNonProductRedirectForRequestedPdp,
   isShopifyDirectPdpFallbackUsable,
   mergeShopifyDirectPdpFallback,
+  normalizeImageVisionFields,
   pickBestJsonLdObjectForPage,
   productHasMissingPdpFields,
 } from "../src/services/extractors/puppeteer";
@@ -889,6 +890,42 @@ test("enrichDirectShopifyPdpResponse recovers image-only Shopify PDP content thr
       assert.match(logs.map((entry) => entry.msg).join("\n"), /Recovered Shopify PDP content via product image vision/);
     },
   );
+});
+
+test("normalizeImageVisionFields strips ingredient markers and derives active headings from image sections", () => {
+  const fields = normalizeImageVisionFields(
+    {
+      description_raw:
+        "Light-catching glow with a crystal-clear, glass-skin prep. 95% skincare-infused red serum primer for crystal glow, plumping and grip.",
+      ingredients_raw: "* Water, Glycerin, Butylene Glycol, Niacinamide, Propanediol, Adenosine.",
+      details_sections: [
+        {
+          heading: "5% NIACINAMIDE",
+          body: "Refines the look of tone and texture.",
+        },
+        {
+          heading: "PEPTINOL",
+          body: "Helps support firmer, plumper-looking skin.",
+        },
+        {
+          heading: "Clinical Test Results",
+          body: "Visible skin-plumping improvement after use.",
+        },
+      ],
+    },
+    {
+      title: "Reflect Glow Prep Primer",
+      url: "https://tirtir.global/products/reflect-glow-prep-primer",
+      image_url: "https://cdn.example.com/tirtir-primer-1.png",
+      image_urls: ["https://cdn.example.com/tirtir-primer-1.png"],
+      variant_skus: ["TIRTIR-PRIMER"],
+      variants: [],
+    },
+    ["https://cdn.example.com/tirtir-primer-1.png"],
+  );
+
+  assert.equal(fields?.ingredientsRaw, "Water, Glycerin, Butylene Glycol, Niacinamide, Propanediol, Adenosine.");
+  assert.equal(fields?.activeIngredientsRaw, "5% NIACINAMIDE, PEPTINOL");
 });
 
 test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enrichment", async () => {

@@ -2140,7 +2140,36 @@ function parseImageVisionJson(text: string) {
   }
 }
 
-function normalizeImageVisionFields(raw: Record<string, unknown>, product: ExtractedProduct, imageUrls: string[]): ImageVisionPdpFields | null {
+function stripImageVisionListMarker(value: string) {
+  return cleanText(value)
+    .replace(/^(?:[*•·-]\s*)+/, "")
+    .trim();
+}
+
+function normalizeImageVisionIngredientList(value: string) {
+  const withoutMarker = stripImageVisionListMarker(value);
+  const extracted = stripImageVisionListMarker(
+    stripIngredientPackageDisclaimer(extractLikelyFullIngredientListText(withoutMarker)) || "",
+  );
+  if (extracted) return extracted;
+  return looksLikeFullIngredientListText(withoutMarker) ? withoutMarker : "";
+}
+
+function deriveImageVisionActiveIngredientsFromSections(detailsSections: ExtractedProductDetailSection[]) {
+  const activeHeadings = detailsSections
+    .map((section) => stripImageVisionListMarker(section.heading).replace(/[:：]+$/g, "").trim())
+    .filter((heading) => {
+      if (!heading || heading.length > 80) return false;
+      if (/clinical|tested|result|benefit|how to use|direction|ingredient list|full ingredients/i.test(heading)) return false;
+      return (
+        /%/.test(heading) ||
+        /\b(?:niacinamide|retin(?:ol|al)|pept(?:ide|inol)|ceramide|hyaluronic|salicylic|glycolic|lactic|mandelic|azelaic|tranexamic|panthenol|centella|madecassoside|adenosine|squalane|zinc oxide|titanium dioxide|vitamin\s*c|ascorbic|botanical|ferment|extract|complex)\b/i.test(heading)
+      );
+    });
+  return dedupeStringList(activeHeadings).join(", ");
+}
+
+export function normalizeImageVisionFields(raw: Record<string, unknown>, product: ExtractedProduct, imageUrls: string[]): ImageVisionPdpFields | null {
   const descriptionRaw = normalizeImageVisionText(raw.description_raw ?? raw.descriptionRaw ?? raw.overview, product, 40);
   const rawSections = Array.isArray(raw.details_sections)
     ? raw.details_sections
@@ -2166,14 +2195,13 @@ function normalizeImageVisionFields(raw: Record<string, unknown>, product: Extra
     }),
   );
   const rawIngredients = normalizeImageVisionText(raw.ingredients_raw ?? raw.ingredientsRaw ?? raw.ingredients, product, 24);
-  const ingredientsRaw =
-    stripIngredientPackageDisclaimer(extractLikelyFullIngredientListText(rawIngredients)) ||
-    (looksLikeFullIngredientListText(rawIngredients) ? rawIngredients : "");
-  const activeIngredientsRaw = normalizeImageVisionText(
-    raw.active_ingredients_raw ?? raw.activeIngredientsRaw ?? raw.active_ingredients,
-    product,
-    8,
-  );
+  const ingredientsRaw = normalizeImageVisionIngredientList(rawIngredients);
+  const activeIngredientsRaw =
+    normalizeImageVisionText(
+      raw.active_ingredients_raw ?? raw.activeIngredientsRaw ?? raw.active_ingredients,
+      product,
+      8,
+    ) || deriveImageVisionActiveIngredientsFromSections(detailsSections);
   const howToUseCandidate = normalizeImageVisionText(raw.how_to_use_raw ?? raw.howToUseRaw ?? raw.how_to_use, product, 18);
   const howToUseRaw = looksLikeHowToUseInstructionText(howToUseCandidate) ? howToUseCandidate : "";
 

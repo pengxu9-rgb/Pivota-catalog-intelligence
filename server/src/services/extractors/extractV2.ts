@@ -3,6 +3,7 @@ import { type Browser } from "puppeteer";
 
 import { getMarketProfiles } from "./marketProfiles";
 import type {
+  CommerceFactsV1,
   CurrencyConfidence,
   ExtractV2RequestBody,
   ExtractV2Response,
@@ -52,6 +53,7 @@ type Logger = (type: ExtractV2Response["logs"][number]["type"], msg: string) => 
 
 export type RequestContext = {
   market_id: MarketId;
+  country?: string;
   headers: Record<string, string>;
   cookies: Record<string, string>;
   url_params: Record<string, string>;
@@ -106,6 +108,7 @@ type ShopifyVariant = {
   id?: number;
   sku?: string | null;
   price?: string;
+  compare_at_price?: string | null;
   available?: boolean;
   inventory_quantity?: number | null;
 };
@@ -222,12 +225,138 @@ export function buildRequestContext(profile: MarketProfile): RequestContext {
   const injectionEnabled = (process.env.EXTRACT_V2_MARKET_INJECTION_ENABLED || "1").toLowerCase() !== "0";
   return {
     market_id: profile.market_id,
+    country: profile.country,
     headers: injectionEnabled ? { ...profile.headers } : {},
     cookies: injectionEnabled ? { ...profile.cookies } : {},
     url_params: injectionEnabled ? { ...profile.url_params } : {},
     geo_hint: profile.geo_hint,
     expected_currency: profile.currency_target,
     shipping_destination: profile.shipping_destination,
+  };
+}
+
+function normalizeCommerceFactsAvailability(raw: string | undefined): CommerceFactsV1["availability"]["status"] {
+  if (!raw) return "unknown";
+  const normalized = raw.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "in_stock" || normalized === "low_stock" || normalized === "out_of_stock" || normalized === "preorder") {
+    return normalized;
+  }
+  if (/out.*stock|sold.*out|unavailable/.test(normalized)) return "out_of_stock";
+  if (/pre.*order/.test(normalized)) return "preorder";
+  if (/low.*stock/.test(normalized)) return "low_stock";
+  if (/in.*stock|available/.test(normalized)) return "in_stock";
+  return "unknown";
+}
+
+function buildCommerceFactsV1(params: {
+  offerUrl: string;
+  context: RequestContext;
+  capturedAt: string;
+  priceAmount: number | null;
+  priceCurrency: string | null;
+  priceDisplayRaw: string | null;
+  priceType: PriceType;
+  compareAtAmount?: number | null;
+  compareAtCurrency?: string | null;
+  compareAtDisplayRaw?: string | null;
+  rangeMin?: number;
+  rangeMax?: number;
+  taxIncluded: true | false | "unknown";
+  availability?: string;
+  currencyConfidence: CurrencyConfidence;
+  marketSwitchStatus: MarketSwitchStatus;
+}): CommerceFactsV1 {
+  const observedCurrency = params.priceCurrency;
+  const marketCurrencyOk =
+    observedCurrency &&
+    observedCurrency.toUpperCase() === params.context.expected_currency.toUpperCase() &&
+    params.marketSwitchStatus === "ok";
+  const sellableReasonCodes = [
+    marketCurrencyOk ? "market_currency_observed" : "market_currency_not_verified",
+    "shipping_destination_not_verified",
+    "external_checkout_not_queried",
+  ];
+
+  return {
+    contract_version: "commerce_facts.v1",
+    market_id: params.context.market_id,
+    country: params.context.country,
+    currency_target: params.context.expected_currency,
+    source_authority: "catalog_extract_v2",
+    captured_at: params.capturedAt,
+    evidence_url: params.offerUrl,
+    sellable_region: {
+      status: "unknown",
+      countries: params.context.shipping_destination ? [params.context.shipping_destination] : [],
+      evidence_source: "catalog_extract_v2",
+      confidence: marketCurrencyOk ? "medium" : "low",
+      checked_at: params.capturedAt,
+      reason_codes: sellableReasonCodes,
+      evidence_url: params.offerUrl,
+    },
+    regional_price: {
+      amount: params.priceAmount,
+      currency: params.priceCurrency,
+      display_raw: params.priceDisplayRaw,
+      price_type: params.priceType,
+      compare_at_amount: params.compareAtAmount,
+      compare_at_currency: params.compareAtCurrency,
+      compare_at_display_raw: params.compareAtDisplayRaw,
+      range_min: params.rangeMin,
+      range_max: params.rangeMax,
+      tax_included: params.taxIncluded,
+      confidence: params.currencyConfidence,
+      market_switch_status: params.marketSwitchStatus,
+      observed_currency: observedCurrency,
+      source_url: params.offerUrl,
+      captured_at: params.capturedAt,
+    },
+    availability: {
+      status: normalizeCommerceFactsAvailability(params.availability),
+      source: "catalog_extract_v2",
+      confidence: params.availability ? "medium" : "unknown",
+      captured_at: params.capturedAt,
+    },
+    shipping: {
+      status: "unknown",
+      ...(params.context.shipping_destination ? { destination_country: params.context.shipping_destination } : {}),
+      source: "catalog_extract_v2",
+      confidence: "unknown",
+      reason_codes: ["external_checkout_not_queried"],
+      checked_at: params.capturedAt,
+    },
+    promotions: [],
+    returns: {
+      status: "unknown",
+      source: "catalog_extract_v2",
+      confidence: "unknown",
+      reason_codes: ["external_returns_not_extracted"],
+      checked_at: params.capturedAt,
+    },
+  };
+}
+
+function attachCommerceFactsV1(offer: OfferV2, context: RequestContext): OfferV2 {
+  return {
+    ...offer,
+    commerce_facts_v1: buildCommerceFactsV1({
+      offerUrl: offer.url_canonical,
+      context,
+      capturedAt: offer.captured_at,
+      priceAmount: offer.price_amount,
+      priceCurrency: offer.price_currency,
+      priceDisplayRaw: offer.price_display_raw,
+      priceType: offer.price_type,
+      compareAtAmount: offer.compare_at_amount,
+      compareAtCurrency: offer.compare_at_currency,
+      compareAtDisplayRaw: offer.compare_at_display_raw,
+      rangeMin: offer.range_min,
+      rangeMax: offer.range_max,
+      taxIncluded: offer.tax_included,
+      availability: offer.availability,
+      currencyConfidence: offer.currency_confidence,
+      marketSwitchStatus: offer.market_switch_status,
+    }),
   };
 }
 
@@ -393,6 +522,9 @@ async function tryExtractShopifyOffersV2(params: {
       const rawPrice = typeof variant.price === "string" ? variant.price.trim() : "";
       const priceDisplayRaw = rawPrice || null;
       const priceParsed = parsePrice(rawPrice || null);
+      const rawCompareAt = typeof variant.compare_at_price === "string" ? variant.compare_at_price.trim() : "";
+      const compareAtDisplayRaw = rawCompareAt || null;
+      const compareAtParsed = parsePrice(rawCompareAt || null);
       const resolvedCurrency = resolveCurrency({
         structuredCurrency: null,
         metaCurrencyCandidates: hintedCurrency ? [hintedCurrency] : [],
@@ -409,8 +541,15 @@ async function tryExtractShopifyOffersV2(params: {
         canonicalUrl: canonicalProductUrl,
         sku,
       });
+      const priceType =
+        priceParsed.price_amount !== null &&
+        compareAtParsed.price_amount !== null &&
+        compareAtParsed.price_amount > priceParsed.price_amount
+          ? "sale"
+          : priceParsed.price_type;
+      const availability = normalizeAvailabilityFromBoolean(variant.available, variant.inventory_quantity);
 
-      offers.push({
+      const offer: OfferV2 = {
         source_site: params.sourceSite,
         source_product_id: sourceProductId,
         url_canonical: canonicalProductUrl,
@@ -421,11 +560,14 @@ async function tryExtractShopifyOffersV2(params: {
         price_amount: priceParsed.price_amount,
         price_currency: resolvedCurrency.code,
         price_display_raw: priceDisplayRaw,
-        price_type: priceParsed.price_type,
+        price_type: priceType,
+        compare_at_amount: compareAtParsed.price_amount,
+        compare_at_currency: compareAtParsed.price_amount !== null ? resolvedCurrency.code : null,
+        compare_at_display_raw: compareAtDisplayRaw,
         range_min: priceParsed.range_min,
         range_max: priceParsed.range_max,
         tax_included: "unknown",
-        availability: normalizeAvailabilityFromBoolean(variant.available, variant.inventory_quantity),
+        availability,
         captured_at: capturedAt,
         currency_confidence: resolvedCurrency.confidence,
         market_switch_status: status,
@@ -437,7 +579,26 @@ async function tryExtractShopifyOffersV2(params: {
           expected_currency: params.context.expected_currency,
           observed_currency: resolvedCurrency.code,
         },
+      };
+      offer.commerce_facts_v1 = buildCommerceFactsV1({
+        offerUrl: offer.url_canonical,
+        context: params.context,
+        capturedAt,
+        priceAmount: offer.price_amount,
+        priceCurrency: offer.price_currency,
+        priceDisplayRaw: offer.price_display_raw,
+        priceType: offer.price_type,
+        compareAtAmount: offer.compare_at_amount,
+        compareAtCurrency: offer.compare_at_currency,
+        compareAtDisplayRaw: offer.compare_at_display_raw,
+        rangeMin: offer.range_min,
+        rangeMax: offer.range_max,
+        taxIncluded: offer.tax_included,
+        availability: offer.availability,
+        currencyConfidence: offer.currency_confidence,
+        marketSwitchStatus: offer.market_switch_status,
       });
+      offers.push(offer);
     }
   }
 
@@ -674,7 +835,7 @@ export function buildOffersFromScrapedPage(params: {
         canonicalUrl;
       const canonicalVariantUrl = canonicalizeUrl(toAbsoluteUrl(params.baseUrl, rawVariantUrl), params.baseUrl);
 
-      return {
+      return attachCommerceFactsV1({
         source_site: params.sourceSite,
         source_product_id: buildSourceProductId({
           sourceSite: params.sourceSite,
@@ -709,7 +870,7 @@ export function buildOffersFromScrapedPage(params: {
           expected_currency: params.context.expected_currency,
           observed_currency: resolvedCurrency.code,
         },
-      } satisfies OfferV2;
+      } satisfies OfferV2, params.context);
     });
   }
 
@@ -729,39 +890,39 @@ export function buildOffersFromScrapedPage(params: {
     const status = resolveMarketSwitchStatus(resolvedCurrency.code, params.context.expected_currency, false);
 
     return [
-      {
-        source_site: params.sourceSite,
-        source_product_id: buildSourceProductId({
-          sourceSite: params.sourceSite,
-          siteProductId: productIdCandidate,
-          canonicalUrl,
-          sku: productTitle,
-        }),
-        url_canonical: canonicalUrl,
-        product_title: productTitle || null,
-        product_description: productDescription,
-        variant_sku: null,
-        market_id: params.context.market_id,
-        price_amount: parsed.price_amount,
-        price_currency: resolvedCurrency.code,
-        price_display_raw: fallbackPriceDisplay,
-        price_type: parsed.price_type,
-        range_min: parsed.range_min,
-        range_max: parsed.range_max,
-        tax_included: "unknown",
-        availability: undefined,
-        captured_at: params.capturedAt,
-        currency_confidence: resolvedCurrency.confidence,
-        market_switch_status: status,
-        market_context_debug: {
-          headers: { ...params.context.headers },
-          cookies: { ...params.context.cookies },
-          url_params: { ...params.context.url_params },
-          geo_hint: params.context.geo_hint,
-          expected_currency: params.context.expected_currency,
-          observed_currency: resolvedCurrency.code,
-        },
-      },
+      attachCommerceFactsV1({
+          source_site: params.sourceSite,
+          source_product_id: buildSourceProductId({
+            sourceSite: params.sourceSite,
+            siteProductId: productIdCandidate,
+            canonicalUrl,
+            sku: productTitle,
+          }),
+          url_canonical: canonicalUrl,
+          product_title: productTitle || null,
+          product_description: productDescription,
+          variant_sku: null,
+          market_id: params.context.market_id,
+          price_amount: parsed.price_amount,
+          price_currency: resolvedCurrency.code,
+          price_display_raw: fallbackPriceDisplay,
+          price_type: parsed.price_type,
+          range_min: parsed.range_min,
+          range_max: parsed.range_max,
+          tax_included: "unknown",
+          availability: undefined,
+          captured_at: params.capturedAt,
+          currency_confidence: resolvedCurrency.confidence,
+          market_switch_status: status,
+          market_context_debug: {
+            headers: { ...params.context.headers },
+            cookies: { ...params.context.cookies },
+            url_params: { ...params.context.url_params },
+            geo_hint: params.context.geo_hint,
+            expected_currency: params.context.expected_currency,
+            observed_currency: resolvedCurrency.code,
+          },
+      }, params.context),
     ];
   }
 
@@ -810,7 +971,7 @@ export function buildOffersFromScrapedPage(params: {
 
     const status = resolveMarketSwitchStatus(resolvedCurrency.code, params.context.expected_currency, false);
 
-    offers.push({
+    offers.push(attachCommerceFactsV1({
       source_site: params.sourceSite,
       source_product_id: buildSourceProductId({
         sourceSite: params.sourceSite,
@@ -842,7 +1003,7 @@ export function buildOffersFromScrapedPage(params: {
         expected_currency: params.context.expected_currency,
         observed_currency: resolvedCurrency.code,
       },
-    });
+    }, params.context));
   }
 
   return offers;

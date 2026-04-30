@@ -197,6 +197,67 @@ test("buildProductPdpFields relabels short ingredient marketing blurbs as key in
   ]);
 });
 
+test("buildProductPdpFields quarantines low-trust fallback and image-vision fields from surfaceable PDP data", () => {
+  const fields = buildProductPdpFields({
+    descriptionRaw: "Generated from image scan only.",
+    detailsSections: [
+      {
+        heading: "Benefits",
+        body: "Recovered from browser fallback.",
+        source_kind: "browser_fallback:accordion_details",
+      },
+      {
+        heading: "How to Use",
+        body: "Apply to clean skin.",
+        source_kind: "accordion_how_to_use",
+      },
+    ],
+    ingredientsRaw: "Niacinamide, Glycerin",
+    faqItems: [
+      {
+        question: "Recovered FAQ?",
+        answer: "From browser fallback only.",
+        source_kind: "browser_fallback:faq_section",
+      },
+      {
+        question: "Can I use this daily?",
+        answer: "Yes.",
+        source_kind: "faq_section",
+      },
+    ],
+    fieldSources: {
+      description_raw: ["product_image_vision"],
+      details_sections: ["browser_fallback:accordion_details", "accordion_how_to_use"],
+      ingredients_raw: ["product_image_vision"],
+      faq_items: ["browser_fallback:faq_section", "page_faq_section"],
+    },
+  });
+
+  assert.equal(fields.description_raw, undefined);
+  assert.equal(fields.ingredients_raw, undefined);
+  assert.deepEqual(fields.details_sections, [
+    {
+      heading: "How to Use",
+      body: "Apply to clean skin.",
+      source_kind: "accordion_how_to_use",
+    },
+  ]);
+  assert.deepEqual(fields.faq_items, [
+    {
+      question: "Can I use this daily?",
+      answer: "Yes.",
+      source_kind: "faq_section",
+    },
+  ]);
+  assert.equal(fields.field_quality_summary?.description_raw?.source_quality_status, "quarantined");
+  assert.equal(fields.field_quality_summary?.ingredients_raw?.source_origin, "image_vision");
+  assert.equal(fields.field_quality_summary?.faq_items?.source_quality_status, "medium");
+  assert.equal(fields.quarantined_pdp_fields?.description_raw, "Generated from image scan only.");
+  assert.equal(fields.quarantined_pdp_fields?.ingredients_raw, "Niacinamide, Glycerin");
+  assert.equal(fields.quarantined_pdp_fields?.details_sections?.length, 1);
+  assert.equal(fields.quarantined_pdp_fields?.faq_items?.length, 1);
+});
+
 test("fetchOkendoFaqItemsFromMetafieldJson returns approved store-answered product questions", async () => {
   const raw = JSON.stringify({
     questionCount: 1,

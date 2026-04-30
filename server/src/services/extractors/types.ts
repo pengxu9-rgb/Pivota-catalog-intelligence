@@ -53,6 +53,15 @@ export type ExtractInput = ExtractRequestBody;
 
 export type CurrencyCode = "USD" | "EUR" | "SGD" | "JPY" | "CNY" | "KRW";
 export type StockStatus = "In Stock" | "Low Stock" | "Out of Stock";
+export type ExtractedFieldSourceOrigin =
+  | "shopify_json"
+  | "jsonld"
+  | "retail_pdp"
+  | "browser_fallback"
+  | "image_vision"
+  | "simulation"
+  | "unknown";
+export type ExtractedFieldQualityStatus = "high" | "medium" | "low" | "quarantined";
 
 export type ExtractedVariant = {
   id: string;
@@ -67,6 +76,9 @@ export type ExtractedVariant = {
   image_url: string;
   image_urls: string[];
   ad_copy: string;
+  source_origin?: ExtractedFieldSourceOrigin;
+  source_quality_status?: ExtractedFieldQualityStatus;
+  hidden_from_selector?: boolean;
 };
 
 export type ExtractedProductDetailSection = {
@@ -106,6 +118,24 @@ export type ExtractedProductFieldCaptureStatus = {
   faq_items: "present" | "missing";
 };
 
+export type ExtractedFieldQualityRecord = {
+  source_origin: ExtractedFieldSourceOrigin;
+  source_quality_status: ExtractedFieldQualityStatus;
+  source_kinds: string[];
+  reason_codes: string[];
+};
+
+export type ExtractedProductFieldQualitySummary = Partial<
+  Record<keyof ExtractedProductFieldCaptureStatus, ExtractedFieldQualityRecord>
+>;
+
+export type ExtractedProductQuarantinedPdpFields = Partial<
+  Record<
+    keyof ExtractedProductFieldCaptureStatus,
+    string | ExtractedProductDetailSection[] | ExtractedProductFaqItem[]
+  >
+>;
+
 export type ExtractedProduct = {
   title: string;
   url: string;
@@ -124,6 +154,8 @@ export type ExtractedProduct = {
   bundle_components?: ExtractedBundleComponent[];
   field_capture_status?: ExtractedProductFieldCaptureStatus;
   field_sources?: Record<string, string[]>;
+  field_quality_summary?: ExtractedProductFieldQualitySummary;
+  quarantined_pdp_fields?: ExtractedProductQuarantinedPdpFields;
 };
 
 export type ExtractedVariantRow = ExtractedVariant & {
@@ -170,8 +202,24 @@ export type Extractor = {
 };
 
 export type CurrencyConfidence = "high" | "medium" | "low";
+export type CommerceFactConfidence = CurrencyConfidence | "unknown";
 export type PriceType = "list" | "sale" | "from" | "member" | "range" | "unknown";
 export type MarketSwitchStatus = "ok" | "mismatch" | "failed" | "unknown";
+export type CommerceFactSourceAuthority =
+  | "merchant_api"
+  | "checkout_api"
+  | "storefront_structured"
+  | "catalog_extract_v2"
+  | "manual_override";
+export type SellableRegionStatus = "eligible" | "not_eligible" | "unknown";
+export type NormalizedAvailabilityStatus =
+  | "in_stock"
+  | "out_of_stock"
+  | "low_stock"
+  | "preorder"
+  | "unknown";
+export type ShippingStatus = "available" | "unavailable" | "unknown";
+export type ReturnsStatus = "available" | "unavailable" | "unknown";
 
 export type MarketProfile = {
   market_id: MarketId;
@@ -206,6 +254,9 @@ export type OfferV2 = {
   price_currency: string | null;
   price_display_raw: string | null;
   price_type: PriceType;
+  compare_at_amount?: number | null;
+  compare_at_currency?: string | null;
+  compare_at_display_raw?: string | null;
   range_min?: number;
   range_max?: number;
   tax_included: true | false | "unknown";
@@ -214,6 +265,78 @@ export type OfferV2 = {
   currency_confidence: CurrencyConfidence;
   market_switch_status: MarketSwitchStatus;
   market_context_debug: MarketContextDebug;
+  commerce_facts_v1?: CommerceFactsV1;
+};
+
+export type CommerceFactsV1 = {
+  contract_version: "commerce_facts.v1";
+  market_id: MarketId | string;
+  country?: string;
+  currency_target: string;
+  source_authority: CommerceFactSourceAuthority;
+  captured_at: string;
+  evidence_url: string;
+  sellable_region: {
+    status: SellableRegionStatus;
+    countries: string[];
+    evidence_source: CommerceFactSourceAuthority;
+    confidence: CommerceFactConfidence;
+    checked_at: string;
+    reason_codes: string[];
+    evidence_url: string;
+  };
+  regional_price: {
+    amount: number | null;
+    currency: string | null;
+    display_raw: string | null;
+    price_type: PriceType;
+    compare_at_amount?: number | null;
+    compare_at_currency?: string | null;
+    compare_at_display_raw?: string | null;
+    range_min?: number;
+    range_max?: number;
+    tax_included: true | false | "unknown";
+    confidence: CurrencyConfidence;
+    market_switch_status: MarketSwitchStatus;
+    observed_currency: string | null;
+    source_url: string;
+    captured_at: string;
+  };
+  availability: {
+    status: NormalizedAvailabilityStatus;
+    source: CommerceFactSourceAuthority;
+    confidence: CommerceFactConfidence;
+    captured_at: string;
+  };
+  shipping: {
+    status: ShippingStatus;
+    destination_country?: string;
+    method_label?: string;
+    eta_days_range?: [number, number];
+    cost?: { amount: number; currency: string };
+    free_shipping_threshold?: { amount: number; currency: string };
+    source: CommerceFactSourceAuthority;
+    confidence: CommerceFactConfidence;
+    reason_codes: string[];
+    checked_at: string;
+  };
+  promotions: Array<{
+    promo_type: string;
+    summary: string;
+    terms?: string;
+    starts_at?: string;
+    ends_at?: string;
+    source: CommerceFactSourceAuthority;
+    confidence: CommerceFactConfidence;
+    evidence_url?: string;
+  }>;
+  returns: {
+    status: ReturnsStatus;
+    source: CommerceFactSourceAuthority;
+    confidence: CommerceFactConfidence;
+    reason_codes: string[];
+    checked_at: string;
+  };
 };
 
 export type SiteMarketCounters = {

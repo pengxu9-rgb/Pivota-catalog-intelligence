@@ -433,10 +433,10 @@ export function choosePreferredProductOverview(params: {
 }
 
 function generateMockAdCopy(title: string, variantValue: string, price: string) {
-  const normalizedVariant = isGenericOfferOptionValue(variantValue, title) ? "Base product" : cleanText(variantValue) || "Base product";
-  const subject = pick(AD_SUBJECT_TEMPLATES).replace("{title}", title).replace("{variant}", normalizedVariant);
-  const caption = pick(AD_CAPTION_TEMPLATES).replace("{title}", title).replace("{variant}", normalizedVariant);
-  return `**Subject:** ${subject}\n\n**Instagram Caption:**\n${caption}\n\n**Price:** $${price}`;
+  void title;
+  void variantValue;
+  void price;
+  return "";
 }
 
 function cleanText(text?: string) {
@@ -701,6 +701,112 @@ function isLowQualityFaqItem(item: ExtractedProductFaqItem) {
 
 export function filterUsefulFaqItems(items: ExtractedProductFaqItem[]) {
   return dedupeFaqItems(items).filter((item) => !isLowQualityFaqItem(item));
+}
+
+const QUARANTINED_PDP_SOURCE_KIND_RE =
+  /^(?:product_image_vision|simulation|browser_fallback(?::.*|$)|.*(?:mock|synthetic).*)$/i;
+const SHOPIFY_PDP_SOURCE_KIND_RE =
+  /^(?:shopify_|embedded_shopify|embedded_product_json|shopify_body_html|structured_overview)/i;
+const JSONLD_PDP_SOURCE_KIND_RE = /^jsonld/i;
+const RETAIL_PDP_SOURCE_KIND_RE =
+  /^(?:page_|accordion_|details_|faq_|merchant_faq|inline_html_faq|okendo_|modal_content|pdp_content_heading|custom_metafield_|embedded_custom_metafield_)/i;
+
+function normalizePdpSourceKinds(sourceKinds: string[] | undefined) {
+  return dedupeStringList(
+    (Array.isArray(sourceKinds) ? sourceKinds : [])
+      .map((item) => cleanText(item))
+      .filter(Boolean),
+  );
+}
+
+function classifyPdpFieldQuality(sourceKinds: string[] | undefined) {
+  const normalized = normalizePdpSourceKinds(sourceKinds);
+  const reasonCodes: string[] = [];
+  if (normalized.length === 0) {
+    return {
+      source_origin: "unknown" as const,
+      source_quality_status: "low" as const,
+      source_kinds: [],
+      reason_codes: ["missing_source_kind"],
+    };
+  }
+
+  const safeKinds = normalized.filter((kind) => !QUARANTINED_PDP_SOURCE_KIND_RE.test(kind));
+  const quarantinedKinds = normalized.filter((kind) => QUARANTINED_PDP_SOURCE_KIND_RE.test(kind));
+  if (safeKinds.length > 0 && quarantinedKinds.length > 0) {
+    reasonCodes.push("mixed_with_quarantined_sources");
+  }
+
+  const basis = safeKinds.length > 0 ? safeKinds : normalized;
+  const firstKind = basis[0] || "";
+  const fallbackSummary = {
+    source_origin: "unknown" as const,
+    source_quality_status: "low" as const,
+    source_kinds: normalized,
+    reason_codes: reasonCodes,
+  };
+
+  if (QUARANTINED_PDP_SOURCE_KIND_RE.test(firstKind) && safeKinds.length === 0) {
+    return {
+      source_origin:
+        firstKind === "product_image_vision"
+          ? ("image_vision" as const)
+          : firstKind.startsWith("browser_fallback")
+            ? ("browser_fallback" as const)
+            : firstKind === "simulation"
+              ? ("simulation" as const)
+              : ("unknown" as const),
+      source_quality_status: "quarantined" as const,
+      source_kinds: normalized,
+      reason_codes: [...reasonCodes, "quarantined_source_kind"],
+    };
+  }
+  if (basis.some((kind) => SHOPIFY_PDP_SOURCE_KIND_RE.test(kind))) {
+    return {
+      source_origin: "shopify_json" as const,
+      source_quality_status: "high" as const,
+      source_kinds: normalized,
+      reason_codes: reasonCodes,
+    };
+  }
+  if (basis.some((kind) => JSONLD_PDP_SOURCE_KIND_RE.test(kind))) {
+    return {
+      source_origin: "jsonld" as const,
+      source_quality_status: "high" as const,
+      source_kinds: normalized,
+      reason_codes: reasonCodes,
+    };
+  }
+  if (basis.some((kind) => RETAIL_PDP_SOURCE_KIND_RE.test(kind))) {
+    return {
+      source_origin: "retail_pdp" as const,
+      source_quality_status: "medium" as const,
+      source_kinds: normalized,
+      reason_codes: reasonCodes,
+    };
+  }
+  return fallbackSummary;
+}
+
+function isQuarantinedDetailSourceKind(sourceKind: string | undefined) {
+  return QUARANTINED_PDP_SOURCE_KIND_RE.test(cleanText(sourceKind));
+}
+
+function tagFallbackSourceKind(sourceKind: string | undefined) {
+  const normalized = cleanText(sourceKind) || "unknown";
+  return normalized.startsWith("browser_fallback") ? normalized : `browser_fallback:${normalized}`;
+}
+
+function tagFallbackFieldSources(sourceKinds: string[] | undefined) {
+  return normalizePdpSourceKinds(sourceKinds).map((kind) => tagFallbackSourceKind(kind));
+}
+
+function fallbackFieldSourceKinds(
+  sourceKinds: string[] | undefined,
+  fallbackLabel: string,
+): string[] {
+  const tagged = tagFallbackFieldSources(sourceKinds);
+  return tagged.length > 0 ? tagged : [tagFallbackSourceKind(fallbackLabel)];
 }
 
 type OkendoMetafieldSnapshot = {
@@ -1799,30 +1905,92 @@ export function buildProductPdpFields(params: {
   const cleanedHowToUseRaw = cleanText(params.howToUseRaw);
   const howToUseRaw = isPdpContentNoiseText(cleanedHowToUseRaw) ? "" : cleanedHowToUseRaw;
   const faqItems = dedupeFaqItems(params.faqItems || []);
+  const fieldSources = {
+    description_raw: normalizePdpSourceKinds(params.fieldSources?.description_raw || []),
+    details_sections: normalizePdpSourceKinds(params.fieldSources?.details_sections || []),
+    ingredients_raw: normalizePdpSourceKinds(params.fieldSources?.ingredients_raw || []),
+    active_ingredients_raw: normalizePdpSourceKinds(params.fieldSources?.active_ingredients_raw || []),
+    how_to_use_raw: normalizePdpSourceKinds(params.fieldSources?.how_to_use_raw || []),
+    faq_items: normalizePdpSourceKinds(params.fieldSources?.faq_items || []),
+  };
+  const surfacedDetailsSections = detailsSections.filter((section) => !isQuarantinedDetailSourceKind(section.source_kind));
+  const quarantinedDetailsSections = detailsSections.filter((section) => isQuarantinedDetailSourceKind(section.source_kind));
+  const surfacedFaqItems = faqItems.filter((item) => !isQuarantinedDetailSourceKind(item.source_kind));
+  const quarantinedFaqItems = faqItems.filter((item) => isQuarantinedDetailSourceKind(item.source_kind));
+  const descriptionSummary = classifyPdpFieldQuality(fieldSources.description_raw);
+  const detailsSummary = classifyPdpFieldQuality(
+    surfacedDetailsSections.length > 0
+      ? surfacedDetailsSections.map((section) => section.source_kind)
+      : fieldSources.details_sections,
+  );
+  const ingredientsSummary = classifyPdpFieldQuality(fieldSources.ingredients_raw);
+  const activeIngredientsSummary = classifyPdpFieldQuality(fieldSources.active_ingredients_raw);
+  const howToUseSummary = classifyPdpFieldQuality(fieldSources.how_to_use_raw);
+  const faqSummary = classifyPdpFieldQuality(
+    surfacedFaqItems.length > 0 ? surfacedFaqItems.map((item) => item.source_kind) : fieldSources.faq_items,
+  );
+  const quarantinedFields: ExtractedProduct["quarantined_pdp_fields"] = {};
+  if (descriptionRaw && descriptionSummary.source_quality_status === "quarantined") {
+    quarantinedFields.description_raw = descriptionRaw;
+  }
+  if (quarantinedDetailsSections.length > 0 || detailsSummary.source_quality_status === "quarantined") {
+    quarantinedFields.details_sections =
+      quarantinedDetailsSections.length > 0 ? quarantinedDetailsSections : detailsSections;
+  }
+  if (ingredientsRaw && ingredientsSummary.source_quality_status === "quarantined") {
+    quarantinedFields.ingredients_raw = ingredientsRaw;
+  }
+  if (activeIngredientsRaw && activeIngredientsSummary.source_quality_status === "quarantined") {
+    quarantinedFields.active_ingredients_raw = activeIngredientsRaw;
+  }
+  if (howToUseRaw && howToUseSummary.source_quality_status === "quarantined") {
+    quarantinedFields.how_to_use_raw = howToUseRaw;
+  }
+  if (quarantinedFaqItems.length > 0 || faqSummary.source_quality_status === "quarantined") {
+    quarantinedFields.faq_items = quarantinedFaqItems.length > 0 ? quarantinedFaqItems : faqItems;
+  }
+
+  const surfacedDescriptionRaw =
+    descriptionSummary.source_quality_status === "quarantined" ? "" : descriptionRaw;
+  const surfacedIngredientsRaw =
+    ingredientsSummary.source_quality_status === "quarantined" ? "" : ingredientsRaw;
+  const surfacedActiveIngredientsRaw =
+    activeIngredientsSummary.source_quality_status === "quarantined" ? "" : activeIngredientsRaw;
+  const surfacedHowToUseRaw =
+    howToUseSummary.source_quality_status === "quarantined" ? "" : howToUseRaw;
 
   return {
-    ...(descriptionRaw ? { description_raw: descriptionRaw } : {}),
-    ...(detailsSections.length > 0 ? { details_sections: detailsSections } : {}),
-    ...(ingredientsRaw ? { ingredients_raw: ingredientsRaw } : {}),
-    ...(activeIngredientsRaw ? { active_ingredients_raw: activeIngredientsRaw } : {}),
-    ...(howToUseRaw ? { how_to_use_raw: howToUseRaw } : {}),
-    ...(faqItems.length > 0 ? { faq_items: faqItems } : {}),
+    ...(surfacedDescriptionRaw ? { description_raw: surfacedDescriptionRaw } : {}),
+    ...(surfacedDetailsSections.length > 0 ? { details_sections: surfacedDetailsSections } : {}),
+    ...(surfacedIngredientsRaw ? { ingredients_raw: surfacedIngredientsRaw } : {}),
+    ...(surfacedActiveIngredientsRaw ? { active_ingredients_raw: surfacedActiveIngredientsRaw } : {}),
+    ...(surfacedHowToUseRaw ? { how_to_use_raw: surfacedHowToUseRaw } : {}),
+    ...(surfacedFaqItems.length > 0 ? { faq_items: surfacedFaqItems } : {}),
     field_capture_status: {
-      description_raw: descriptionRaw ? "present" : "missing",
-      details_sections: detailsSections.length > 0 ? "present" : "missing",
-      ingredients_raw: ingredientsRaw ? "present" : "missing",
-      active_ingredients_raw: activeIngredientsRaw ? "present" : "missing",
-      how_to_use_raw: howToUseRaw ? "present" : "missing",
-      faq_items: faqItems.length > 0 ? "present" : "missing",
+      description_raw: surfacedDescriptionRaw ? "present" : "missing",
+      details_sections: surfacedDetailsSections.length > 0 ? "present" : "missing",
+      ingredients_raw: surfacedIngredientsRaw ? "present" : "missing",
+      active_ingredients_raw: surfacedActiveIngredientsRaw ? "present" : "missing",
+      how_to_use_raw: surfacedHowToUseRaw ? "present" : "missing",
+      faq_items: surfacedFaqItems.length > 0 ? "present" : "missing",
     } as const,
     field_sources: {
-      description_raw: uniqueFieldSources(params.fieldSources?.description_raw || []),
-      details_sections: uniqueFieldSources(params.fieldSources?.details_sections || []),
-      ingredients_raw: uniqueFieldSources(params.fieldSources?.ingredients_raw || []),
-      active_ingredients_raw: uniqueFieldSources(params.fieldSources?.active_ingredients_raw || []),
-      how_to_use_raw: uniqueFieldSources(params.fieldSources?.how_to_use_raw || []),
-      faq_items: uniqueFieldSources(params.fieldSources?.faq_items || []),
+      description_raw: fieldSources.description_raw,
+      details_sections: fieldSources.details_sections,
+      ingredients_raw: fieldSources.ingredients_raw,
+      active_ingredients_raw: fieldSources.active_ingredients_raw,
+      how_to_use_raw: fieldSources.how_to_use_raw,
+      faq_items: fieldSources.faq_items,
     },
+    field_quality_summary: {
+      description_raw: descriptionSummary,
+      details_sections: detailsSummary,
+      ingredients_raw: ingredientsSummary,
+      active_ingredients_raw: activeIngredientsSummary,
+      how_to_use_raw: howToUseSummary,
+      faq_items: faqSummary,
+    },
+    ...(Object.keys(quarantinedFields).length > 0 ? { quarantined_pdp_fields: quarantinedFields } : {}),
   };
 }
 
@@ -2356,22 +2524,27 @@ export function mergeShopifyDirectPdpImageVisionFields(
         image_urls: [...variant.image_urls],
       })),
     };
+    const useImageVisionDescription =
+      cleanText(product.description_raw).length < PDP_COMPLETENESS_MIN_OVERVIEW_CHARS && Boolean(fields?.descriptionRaw);
+    const useImageVisionIngredients = !product.ingredients_raw && Boolean(fields?.ingredientsRaw);
+    const useImageVisionActiveIngredients = !product.active_ingredients_raw && Boolean(fields?.activeIngredientsRaw);
+    const useImageVisionHowToUse = !product.how_to_use_raw && Boolean(fields?.howToUseRaw);
     Object.assign(
       mergedProduct,
       buildProductPdpFields({
         descriptionRaw:
-          cleanText(product.description_raw).length >= PDP_COMPLETENESS_MIN_OVERVIEW_CHARS
-            ? product.description_raw
-            : fields?.descriptionRaw || product.description_raw,
+          useImageVisionDescription ? fields?.descriptionRaw : product.description_raw,
         detailsSections: dedupeDetailSections([...baseSections, ...visionSections]),
-        ingredientsRaw: product.ingredients_raw || fields?.ingredientsRaw,
-        activeIngredientsRaw: product.active_ingredients_raw || fields?.activeIngredientsRaw,
-        howToUseRaw: product.how_to_use_raw || fields?.howToUseRaw,
+        ingredientsRaw: useImageVisionIngredients ? fields?.ingredientsRaw : product.ingredients_raw,
+        activeIngredientsRaw: useImageVisionActiveIngredients
+          ? fields?.activeIngredientsRaw
+          : product.active_ingredients_raw,
+        howToUseRaw: useImageVisionHowToUse ? fields?.howToUseRaw : product.how_to_use_raw,
         faqItems: product.faq_items,
         fieldSources: {
           description_raw: [
             ...(product.field_sources?.description_raw || []),
-            fields?.descriptionRaw ? "product_image_vision" : "",
+            useImageVisionDescription ? "product_image_vision" : "",
           ],
           details_sections: [
             ...(product.field_sources?.details_sections || []),
@@ -2379,15 +2552,15 @@ export function mergeShopifyDirectPdpImageVisionFields(
           ],
           ingredients_raw: [
             ...(product.field_sources?.ingredients_raw || []),
-            fields?.ingredientsRaw ? "product_image_vision" : "",
+            useImageVisionIngredients ? "product_image_vision" : "",
           ],
           active_ingredients_raw: [
             ...(product.field_sources?.active_ingredients_raw || []),
-            fields?.activeIngredientsRaw ? "product_image_vision" : "",
+            useImageVisionActiveIngredients ? "product_image_vision" : "",
           ],
           how_to_use_raw: [
             ...(product.field_sources?.how_to_use_raw || []),
-            fields?.howToUseRaw ? "product_image_vision" : "",
+            useImageVisionHowToUse ? "product_image_vision" : "",
           ],
           faq_items: product.field_sources?.faq_items || [],
         },
@@ -2646,6 +2819,31 @@ function selectRelevantFallbackImageUrls(product: { title: string; url: string }
     .map((entry) => entry.url);
 }
 
+function isIdentityLikeVariantValue(value: string, sku: string) {
+  const normalizedValue = cleanText(value).toLowerCase();
+  const normalizedSku = cleanText(sku).toLowerCase();
+  if (!normalizedValue) return true;
+  if (normalizedSku && normalizedValue === normalizedSku) return true;
+  if (/^(?:default|default title|title|variant|offer)$/i.test(normalizedValue)) return true;
+  const compact = normalizedValue.replace(/[\s-]+/g, "");
+  if (/^\d{8,14}$/.test(compact)) return true;
+  return /^[a-z]{0,4}\d{6,}[a-z0-9-]*$/i.test(normalizedValue) && normalizedValue.length >= 8 && !/\s/.test(normalizedValue);
+}
+
+function finalizeExtractedVariants(variants: ExtractedVariant[]) {
+  const prepared = (Array.isArray(variants) ? variants : []).map((variant) => {
+    const hiddenFromSelector = isIdentityLikeVariantValue(variant.option_value, variant.sku);
+    return {
+      ...variant,
+      source_origin: variant.source_origin || ("shopify_json" as const),
+      source_quality_status: hiddenFromSelector ? ("quarantined" as const) : (variant.source_quality_status || "high"),
+      hidden_from_selector: hiddenFromSelector,
+      ad_copy: cleanText(variant.ad_copy),
+    };
+  });
+  return prepared;
+}
+
 function flattenVariants(params: {
   brand: string;
   products: ExtractedProduct[];
@@ -2666,7 +2864,9 @@ function flattenVariants(params: {
         simulated: params.simulated,
       };
       variants.push(row);
-      adCopyById[variant.id] = variant.ad_copy;
+      if (cleanText(variant.ad_copy)) {
+        adCopyById[variant.id] = variant.ad_copy;
+      }
     }
   }
 
@@ -2928,7 +3128,7 @@ async function tryExtractShopify(params: {
   log: Logger;
 }): Promise<Omit<ExtractResponse, "generated_at" | "logs"> | null> {
   const log = params.log;
-  const directHandle = extractShopifyProductHandle(params.seedUrl, params.baseUrl);
+  const directHandles = buildShopifyDirectHandleCandidates(params.seedUrl, params.baseUrl, params.productTitle);
   const currencyHintUrls = dedupeStringList([params.seedUrl, params.baseUrl]);
   const marketProfile = getMarketProfile(normalizeMarketId(params.marketId));
   const shopifyContext = {
@@ -2936,30 +3136,41 @@ async function tryExtractShopify(params: {
     cookies: marketProfile.cookies,
   };
 
-  if (directHandle) {
-    const directUrl = `${params.baseUrl}/products/${directHandle}.js`;
-    log("info", `Checking Shopify direct product feed: ${directUrl}`);
-    const directProduct = await fetchJsonTracked<ShopifyProduct>(directUrl, shopifyContext, params.diagnostics!);
-    if (directProduct.data && typeof directProduct.data.id === "number") {
-      log("success", `Shopify direct product detected for handle: ${directHandle}`);
+  if (directHandles.length > 0) {
+    for (const [index, directHandle] of directHandles.entries()) {
+      const directUrl = `${params.baseUrl}/products/${directHandle}.js`;
+      log("info", `Checking Shopify direct product feed: ${directUrl}`);
+      const directProduct = await fetchJsonTracked<ShopifyProduct>(directUrl, shopifyContext, params.diagnostics!);
+      if (!directProduct.data || typeof directProduct.data.id !== "number") continue;
+      log(
+        "success",
+        index === 0
+          ? `Shopify direct product detected for handle: ${directHandle}`
+          : `Recovered Shopify direct product via canonical handle: ${directHandle}`,
+      );
       setDiscoveryStrategy(params.diagnostics!, "shopify_json");
-      const currencyHint = await fetchShopifyCurrencyHint(currencyHintUrls, params.diagnostics!, shopifyContext);
+      const currencyHint = await fetchShopifyCurrencyHint(
+        dedupeStringList([...currencyHintUrls, `${params.baseUrl}/products/${directHandle}`]),
+        params.diagnostics!,
+        shopifyContext,
+      );
       const response = buildShopifyResponse({
         ...params,
         currencyHint,
         products: [directProduct.data],
-        platformLabel: "Shopify (Direct PDP)",
+        platformLabel: index === 0 ? "Shopify (Direct PDP)" : "Shopify (Direct PDP Canonical Repair)",
       });
       return enrichDirectShopifyPdpResponse({
         brand: params.brand,
         baseUrl: params.baseUrl,
-        seedUrl: params.seedUrl,
+        seedUrl: `${params.baseUrl}/products/${directHandle}`,
         response,
         diagnostics: params.diagnostics,
         log,
         context: shopifyContext,
       });
     }
+    const directHandle = directHandles[0]!;
     const directSeedStatus = await classifyMissingShopifyDirectSeed({
       seedUrl: params.seedUrl,
       baseUrl: params.baseUrl,
@@ -3239,6 +3450,39 @@ function extractShopifyProductHandle(seedUrl: string | undefined, baseUrl: strin
   }
 }
 
+const SHOPIFY_DUPLICATE_COPY_HANDLE_SUFFIX_RE = /-copy(?:-\d+)?$/i;
+const SHOPIFY_DUPLICATE_COUNTER_HANDLE_SUFFIX_RE = /-(\d{1,2})$/;
+
+function stripShopifyDuplicateHandleSuffix(handle: string, productTitle?: string): string | null {
+  const normalized = cleanText(handle).toLowerCase();
+  if (!normalized) return null;
+
+  const withoutCopySuffix = normalized.replace(SHOPIFY_DUPLICATE_COPY_HANDLE_SUFFIX_RE, "");
+  if (withoutCopySuffix && withoutCopySuffix !== normalized) return withoutCopySuffix;
+
+  const counterMatch = normalized.match(SHOPIFY_DUPLICATE_COUNTER_HANDLE_SUFFIX_RE);
+  if (!counterMatch) return null;
+  const baseHandle = normalized.slice(0, -counterMatch[0].length);
+  if (!baseHandle) return null;
+
+  const titleTokens = new Set(shopifySearchTokens(productTitle));
+  const handleTokens = new Set(shopifySearchTokens(baseHandle.replace(/-/g, " ")));
+  if (titleTokens.size === 0 || handleTokens.size === 0) return baseHandle;
+  const overlap = Array.from(handleTokens).filter((token) => titleTokens.has(token)).length;
+  return overlap >= Math.max(2, Math.ceil(handleTokens.size * 0.5)) ? baseHandle : null;
+}
+
+function buildShopifyDirectHandleCandidates(
+  seedUrl: string | undefined,
+  baseUrl: string,
+  productTitle?: string,
+): string[] {
+  const directHandle = extractShopifyProductHandle(seedUrl, baseUrl);
+  if (!directHandle) return [];
+  const canonicalHandle = stripShopifyDuplicateHandleSuffix(directHandle, productTitle);
+  return dedupeStringList([directHandle, canonicalHandle]);
+}
+
 export function isNonProductRedirectForRequestedPdp(requestedUrl: string, finalUrl: string, baseUrl: string): boolean {
   return isLikelyProductUrlShared(requestedUrl, baseUrl) && !isLikelyProductUrlShared(finalUrl, baseUrl);
 }
@@ -3411,7 +3655,7 @@ function buildShopifyResponse(params: {
       },
     });
 
-    const extractedVariants: ExtractedVariant[] = (product.variants || []).map((v) => {
+    const extractedVariants: ExtractedVariant[] = finalizeExtractedVariants((product.variants || []).map((v) => {
       const optionValue = treatAsPseudoVariant
         ? titleSplit!.variantLabel
         : singleDefaultSizeOption
@@ -3442,7 +3686,7 @@ function buildShopifyResponse(params: {
         image_urls: imageUrls,
         ad_copy: adCopy,
       };
-    });
+    }));
 
     const existing: ExtractedProduct =
       extractedByTitle.get(canonicalProductTitle) ||
@@ -3469,10 +3713,7 @@ function buildShopifyResponse(params: {
       ...extractedVariants.flatMap((variant) => variant.image_urls),
     ]);
     existing.image_url = existing.image_urls[0] || existing.image_url || "";
-    existing.variant_skus = dedupeStringList([
-      ...existing.variant_skus,
-      ...extractedVariants.map((variant) => variant.sku),
-    ]);
+    existing.variant_skus = dedupeStringList([...existing.variant_skus, ...extractedVariants.map((variant) => variant.sku)]);
     const mergedPdpFields = buildProductPdpFields({
       descriptionRaw: existing.description_raw || productPdpFields.description_raw,
       detailsSections:
@@ -3802,49 +4043,76 @@ export function mergeShopifyDirectPdpFallback(
         image_urls: [...variant.image_urls],
       })),
     };
+    const useFallbackDescription = Boolean(
+      !product.description_raw &&
+        isUsableShopifyFallbackDescription(product, fallbackProduct.description_raw),
+    );
+    const useFallbackIngredients = !product.ingredients_raw && Boolean(fallbackProduct.ingredients_raw);
+    const useFallbackActiveIngredients =
+      !product.active_ingredients_raw && Boolean(fallbackProduct.active_ingredients_raw);
+    const useFallbackHowToUse = !product.how_to_use_raw && Boolean(fallbackProduct.how_to_use_raw);
+    const useFallbackFaqItems =
+      (!Array.isArray(product.faq_items) || product.faq_items.length === 0) &&
+      Array.isArray(fallbackProduct.faq_items) &&
+      fallbackProduct.faq_items.length > 0;
     Object.assign(
       mergedProduct,
       buildProductPdpFields({
-        descriptionRaw:
-          product.description_raw ||
-          (isUsableShopifyFallbackDescription(product, fallbackProduct.description_raw)
-            ? fallbackProduct.description_raw
-            : undefined),
+        descriptionRaw: useFallbackDescription ? fallbackProduct.description_raw : product.description_raw,
         detailsSections: dedupeDetailSections([
           ...((Array.isArray(product.details_sections) ? product.details_sections : []) || []),
-          ...((Array.isArray(fallbackProduct.details_sections) ? fallbackProduct.details_sections : []) || []),
+          ...((Array.isArray(fallbackProduct.details_sections) ? fallbackProduct.details_sections : []) || []).map((section) => ({
+            ...section,
+            source_kind: tagFallbackSourceKind(section.source_kind),
+          })),
         ]),
-        ingredientsRaw: product.ingredients_raw || fallbackProduct.ingredients_raw,
-        activeIngredientsRaw: product.active_ingredients_raw || fallbackProduct.active_ingredients_raw,
-        howToUseRaw: product.how_to_use_raw || fallbackProduct.how_to_use_raw,
-        faqItems:
-          (Array.isArray(product.faq_items) && product.faq_items.length > 0)
-            ? product.faq_items
-            : fallbackProduct.faq_items,
+        ingredientsRaw: useFallbackIngredients ? fallbackProduct.ingredients_raw : product.ingredients_raw,
+        activeIngredientsRaw:
+          useFallbackActiveIngredients ? fallbackProduct.active_ingredients_raw : product.active_ingredients_raw,
+        howToUseRaw: useFallbackHowToUse ? fallbackProduct.how_to_use_raw : product.how_to_use_raw,
+        faqItems: useFallbackFaqItems
+          ? (fallbackProduct.faq_items || []).map((item) => ({
+              ...item,
+              source_kind: tagFallbackSourceKind(item.source_kind),
+            }))
+          : product.faq_items,
         fieldSources: {
           description_raw: [
             ...(product.field_sources?.description_raw || []),
-            ...(fallbackProduct.field_sources?.description_raw || []),
+            ...(useFallbackDescription
+              ? fallbackFieldSourceKinds(fallbackProduct.field_sources?.description_raw || [], "description_raw")
+              : []),
           ],
           details_sections: [
             ...(product.field_sources?.details_sections || []),
-            ...(fallbackProduct.field_sources?.details_sections || []),
+            ...fallbackFieldSourceKinds(fallbackProduct.field_sources?.details_sections || [], "details_sections"),
           ],
           ingredients_raw: [
             ...(product.field_sources?.ingredients_raw || []),
-            ...(fallbackProduct.field_sources?.ingredients_raw || []),
+            ...(useFallbackIngredients
+              ? fallbackFieldSourceKinds(fallbackProduct.field_sources?.ingredients_raw || [], "ingredients_raw")
+              : []),
           ],
           active_ingredients_raw: [
             ...(product.field_sources?.active_ingredients_raw || []),
-            ...(fallbackProduct.field_sources?.active_ingredients_raw || []),
+            ...(useFallbackActiveIngredients
+              ? fallbackFieldSourceKinds(
+                  fallbackProduct.field_sources?.active_ingredients_raw || [],
+                  "active_ingredients_raw",
+                )
+              : []),
           ],
           how_to_use_raw: [
             ...(product.field_sources?.how_to_use_raw || []),
-            ...(fallbackProduct.field_sources?.how_to_use_raw || []),
+            ...(useFallbackHowToUse
+              ? fallbackFieldSourceKinds(fallbackProduct.field_sources?.how_to_use_raw || [], "how_to_use_raw")
+              : []),
           ],
           faq_items: [
             ...(product.field_sources?.faq_items || []),
-            ...(fallbackProduct.field_sources?.faq_items || []),
+            ...(useFallbackFaqItems
+              ? fallbackFieldSourceKinds(fallbackProduct.field_sources?.faq_items || [], "faq_items")
+              : []),
           ],
         },
       }),
@@ -5627,7 +5895,7 @@ function buildProductFromPageSignals(params: {
   });
   const productSizeOptionValue = extractProductSizeOptionValue(productTitle, productUrl);
 
-  const variants: ExtractedVariant[] =
+  const variants: ExtractedVariant[] = finalizeExtractedVariants(
     variantProducts.length > 1
       ? variantProducts.map((variantProduct, idx) => {
           const variantOffer = normalizeJsonLdOffers(variantProduct.offers)[0];
@@ -5794,7 +6062,8 @@ function buildProductFromPageSignals(params: {
               normalizePrice(extracted.priceTexts[0]),
             ),
           },
-        ];
+        ],
+  );
 
   const finalProductImageUrls = dedupeStringList([
     ...productImageUrls,

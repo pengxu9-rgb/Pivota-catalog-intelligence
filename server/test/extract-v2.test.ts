@@ -339,3 +339,56 @@ test("buildOffersFromScrapedPage falls back to Product.sku when Offer.sku is mis
   assert.equal(offers[0]?.variant_sku, "G062203");
   assert.equal(offers[0]?.price_amount, 176);
 });
+
+test("buildOffersFromScrapedPage emits conservative CommerceFactsV1 for external PDP facts", () => {
+  const capturedAt = "2026-04-29T00:00:00.000Z";
+  const offers = buildOffersFromScrapedPage({
+    baseUrl: "https://example.com",
+    sourceSite: "example.com",
+    context: {
+      market_id: "US",
+      country: "US",
+      headers: {},
+      cookies: {},
+      url_params: {},
+      expected_currency: "USD",
+      shipping_destination: "US",
+    },
+    extracted: {
+      title: "Barrier Serum",
+      canonical: "https://example.com/products/barrier-serum",
+      metaDescription: "Serum",
+      scripts: [
+        JSON.stringify({
+          "@context": "https://schema.org/",
+          "@type": "Product",
+          name: "Barrier Serum",
+          sku: "BARRIER-30",
+          url: "https://example.com/products/barrier-serum",
+          offers: {
+            "@type": "Offer",
+            url: "https://example.com/products/barrier-serum",
+            priceCurrency: "USD",
+            price: "24.00",
+            availability: "http://schema.org/InStock",
+          },
+        }),
+      ],
+      metaCurrencies: [],
+      priceTexts: ["$24.00"],
+    },
+    pageHtml: "<html><body><h1>Barrier Serum</h1></body></html>",
+    capturedAt,
+  });
+
+  assert.equal(offers.length, 1);
+  assert.equal(offers[0]?.commerce_facts_v1?.contract_version, "commerce_facts.v1");
+  assert.equal(offers[0]?.commerce_facts_v1?.regional_price.amount, 24);
+  assert.equal(offers[0]?.commerce_facts_v1?.regional_price.currency, "USD");
+  assert.equal(offers[0]?.commerce_facts_v1?.regional_price.market_switch_status, "ok");
+  assert.equal(offers[0]?.commerce_facts_v1?.availability.status, "in_stock");
+  assert.equal(offers[0]?.commerce_facts_v1?.shipping.status, "unknown");
+  assert.deepEqual(offers[0]?.commerce_facts_v1?.shipping.reason_codes, ["external_checkout_not_queried"]);
+  assert.equal(offers[0]?.commerce_facts_v1?.sellable_region.status, "unknown");
+  assert.deepEqual(offers[0]?.commerce_facts_v1?.promotions, []);
+});

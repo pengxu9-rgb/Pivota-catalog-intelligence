@@ -172,6 +172,8 @@ test("PuppeteerExtractor passes market cookies to Shopify direct PDP requests", 
 
     assert.equal(result.products.length, 1);
     assert.equal(result.products[0]?.variants[0]?.currency, "USD");
+    assert.equal(result.products[0]?.variants[0]?.hidden_from_selector, true);
+    assert.equal(result.products[0]?.variants[0]?.source_quality_status, "quarantined");
     const directRequest = requests.find((entry) => entry.url === "https://olehenriksen.com/products/henriksen-tote.js");
     assert.ok(directRequest);
     assert.match(directRequest!.cookie, /localization=US/i);
@@ -180,6 +182,72 @@ test("PuppeteerExtractor passes market cookies to Shopify direct PDP requests", 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("PuppeteerExtractor retries canonical Shopify handle for duplicate copy PDP URLs", async () => {
+  const extractor = new PuppeteerExtractor();
+
+  await withMockFetch(
+    {
+      "https://anua.us/products/heartleaf-77-soothing-toner-copy.js": {
+        status: 404,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ status: 404, message: "Not Found" }),
+      },
+      "https://anua.us/products/heartleaf-77-soothing-toner.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          id: 301,
+          title: "Heartleaf 77 Soothing Toner",
+          handle: "heartleaf-77-soothing-toner",
+          body_html:
+            "<p>A calming toner.</p><p>How to Use: Apply after cleansing.</p><p>Ingredients: Water, Houttuynia Cordata Extract.</p>",
+          variants: [
+            {
+              id: 3001,
+              sku: "ANUA-H77-TONER",
+              title: "Default Title",
+              option1: "Default Title",
+              price: "2300",
+              available: true,
+              inventory_quantity: 5,
+            },
+          ],
+          options: [{ name: "Title" }],
+          images: [{ src: "https://cdn.example.com/anua-toner.jpg" }],
+        }),
+      },
+      "https://anua.us/products/heartleaf-77-soothing-toner": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+      "https://anua.us/products/heartleaf-77-soothing-toner-copy": {
+        status: 404,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: "<html><body><h1>404</h1></body></html>",
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Anua",
+        domain: "https://anua.us/products/heartleaf-77-soothing-toner-copy",
+        product_title: "Heartleaf 77 Soothing Toner",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.url, "https://anua.us/products/heartleaf-77-soothing-toner");
+      assert.equal(result.products[0]?.variants[0]?.sku, "ANUA-H77-TONER");
+      assert.equal(result.products[0]?.variants[0]?.hidden_from_selector, true);
+      assert.ok(
+        result.logs.some((entry) => /Recovered Shopify direct product via canonical handle/.test(entry.msg)),
+        "expected duplicate-handle seed to recover through canonical handle retry",
+      );
+    },
+  );
 });
 
 test("PuppeteerExtractor turns single default Shopify size evidence into a Size option", async () => {
@@ -928,11 +996,16 @@ test("enrichDirectShopifyPdpResponse recovers image-only Shopify PDP content thr
         },
       });
 
-      assert.match(result.products[0]?.description_raw || "", /glow-priming base/);
-      assert.equal(result.products[0]?.how_to_use_raw, "Apply a thin layer evenly before makeup.");
-      assert.match(result.products[0]?.ingredients_raw || "", /Niacinamide/);
-      assert.deepEqual(result.products[0]?.details_sections?.map((section) => section.heading), ["Benefits"]);
-      assert.deepEqual(result.products[0]?.field_sources?.details_sections, ["product_image_vision"]);
+      assert.equal(result.products[0]?.description_raw, undefined);
+      assert.equal(result.products[0]?.how_to_use_raw, undefined);
+      assert.equal(result.products[0]?.ingredients_raw, undefined);
+      assert.deepEqual(result.products[0]?.details_sections?.map((section) => section.heading), ["Product Type"]);
+      assert.equal(result.products[0]?.field_quality_summary?.description_raw?.source_quality_status, "quarantined");
+      assert.equal(result.products[0]?.field_quality_summary?.ingredients_raw?.source_origin, "image_vision");
+      assert.match(result.products[0]?.quarantined_pdp_fields?.description_raw || "", /glow-priming base/);
+      assert.deepEqual(result.products[0]?.quarantined_pdp_fields?.details_sections?.map((section) => section.heading), [
+        "Benefits",
+      ]);
       assert.deepEqual(result.products[0]?.content_image_urls, [
         "https://cdn.example.com/tirtir-primer-1.png",
         "https://cdn.example.com/tirtir-primer-2.png",
@@ -2316,7 +2389,7 @@ test("mergeShopifyDirectPdpFallback discards unrelated fallback page images", ()
   );
 });
 
-test("mergeShopifyDirectPdpFallback preserves fallback PDP fields even when no new images are contributed", () => {
+test("mergeShopifyDirectPdpFallback quarantines fallback PDP fields even when no new images are contributed", () => {
   const response = {
     brand: "Tom Ford Beauty",
     domain: "www.tomfordbeauty.com",
@@ -2435,20 +2508,15 @@ test("mergeShopifyDirectPdpFallback preserves fallback PDP fields even when no n
 
   const merged = mergeShopifyDirectPdpFallback("Tom Ford Beauty", response, fallbackProduct);
 
-  assert.equal(merged.products[0]?.ingredients_raw, "Ingredients: Water Aqua Eau, Glycerin, Panthenol.");
-  assert.equal(merged.products[0]?.how_to_use_raw, "Smooth into skin as needed.");
-  assert.equal(merged.products[0]?.details_sections?.length, 3);
-  assert.deepEqual(
-    merged.products[0]?.details_sections?.map((section) => section.heading),
-    ["Format", "Ingredients", "How to Use"],
-  );
-  assert.deepEqual(merged.products[0]?.faq_items, [
-    {
-      question: "Can I use this every day?",
-      answer: "Yes, smooth into skin as needed.",
-      source_kind: "faq_section",
-    },
-  ]);
+  assert.equal(merged.products[0]?.ingredients_raw, undefined);
+  assert.equal(merged.products[0]?.how_to_use_raw, undefined);
+  assert.equal(merged.products[0]?.details_sections?.length, 1);
+  assert.deepEqual(merged.products[0]?.details_sections?.map((section) => section.heading), ["Format"]);
+  assert.equal(merged.products[0]?.faq_items, undefined);
+  assert.equal(merged.products[0]?.field_quality_summary?.ingredients_raw?.source_quality_status, "quarantined");
+  assert.equal(merged.products[0]?.field_quality_summary?.how_to_use_raw?.source_origin, "browser_fallback");
+  assert.equal(merged.products[0]?.quarantined_pdp_fields?.details_sections?.length, 2);
+  assert.equal(merged.products[0]?.quarantined_pdp_fields?.faq_items?.length, 1);
   assert.equal(merged.products[0]?.image_url, "https://cdn.example.com/tomford-neroli-1.jpg");
 });
 

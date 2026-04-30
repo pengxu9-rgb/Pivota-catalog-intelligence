@@ -374,18 +374,18 @@ const SOCIAL_CONTENT_TEMPLATES = [
 ] as const;
 
 const AD_SUBJECT_TEMPLATES = [
-  "✨ Back in Stock: {title} in {variant}",
-  "Why everyone is talking about {title} ({variant})",
-  "Your new obsession: {title}",
-  "Exclusive: The perfect {variant} shade is here",
-  "Luxury Redefined: Meet {title}",
+  "{title}",
+  "{title} ({variant})",
+  "Offer snapshot: {title}",
+  "Catalog capture: {title}",
+  "{title} - merchant PDP observation",
 ] as const;
 
 const AD_CAPTION_TEMPLATES = [
-  "Finally got my hands on {title} in {variant} and I'm obsessed! 😍 The texture is incredible and it lasts all day. \n\n#TomFordBeauty #LuxuryMakeup #BeautyFaves #{variant}",
-  "Pov: You found the perfect {variant} shade. ✨ {title} is worth the hype. Tap the link to shop before it sells out! \n\n#MakeupAddict #SplurgeWorthy #{variant} #TomFord",
-  "Elevate your routine with {title}. The shade {variant} is absolute perfection for any occasion. 🖤 \n\n#BeautyEssentials #LuxuryLife #{variant}",
-  "Run don't walk! 🏃‍♀️ {title} in {variant} is the viral product of the season. \n\n#ViralBeauty #TomFord #{variant} #MakeupHaul",
+  "Observed product: {title}\nObserved option: {variant}",
+  "Merchant PDP capture for {title}\nOption observed: {variant}",
+  "Catalog extraction snapshot for {title}\nObserved option: {variant}",
+  "Observed sellable option for {title}: {variant}",
 ] as const;
 
 function getMergedDescription(params: {
@@ -433,8 +433,9 @@ export function choosePreferredProductOverview(params: {
 }
 
 function generateMockAdCopy(title: string, variantValue: string, price: string) {
-  const subject = pick(AD_SUBJECT_TEMPLATES).replace("{title}", title).replace("{variant}", variantValue);
-  const caption = pick(AD_CAPTION_TEMPLATES).replace("{title}", title).replace("{variant}", variantValue);
+  const normalizedVariant = isGenericOfferOptionValue(variantValue, title) ? "Base product" : cleanText(variantValue) || "Base product";
+  const subject = pick(AD_SUBJECT_TEMPLATES).replace("{title}", title).replace("{variant}", normalizedVariant);
+  const caption = pick(AD_CAPTION_TEMPLATES).replace("{title}", title).replace("{variant}", normalizedVariant);
   return `**Subject:** ${subject}\n\n**Instagram Caption:**\n${caption}\n\n**Price:** $${price}`;
 }
 
@@ -674,6 +675,20 @@ function isLowQualityFaqItem(item: ExtractedProductFaqItem) {
   if (/^why .+ loves it$/.test(question)) return true;
   if (/^how to pair$/.test(question)) return true;
   if (/be the first to be in the know/.test(question)) return true;
+  if (
+    /\b(?:forgot your password|reset your password|create an account|create account|sign in|log in|login|track(?: my)? order|where(?:'|’)s my order|order status|returns?|refunds?|shipping policy|contact us|customer service)\b/.test(
+      question,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:enter your email|check your inbox|follow the reset link|sign in to your account|log in to your account|contact customer service)\b/.test(
+      answer,
+    )
+  ) {
+    return true;
+  }
   if (/\b(?:shop now|save \d+%|sign up|subscribe|newsletter|join our list|text .*join)\b/.test(`${question} ${answer}`)) {
     return true;
   }
@@ -2155,20 +2170,6 @@ function normalizeImageVisionIngredientList(value: string) {
   return looksLikeFullIngredientListText(withoutMarker) ? withoutMarker : "";
 }
 
-function deriveImageVisionActiveIngredientsFromSections(detailsSections: ExtractedProductDetailSection[]) {
-  const activeHeadings = detailsSections
-    .map((section) => stripImageVisionListMarker(section.heading).replace(/[:：]+$/g, "").trim())
-    .filter((heading) => {
-      if (!heading || heading.length > 80) return false;
-      if (/clinical|tested|result|benefit|how to use|direction|ingredient list|full ingredients/i.test(heading)) return false;
-      return (
-        /%/.test(heading) ||
-        /\b(?:niacinamide|retin(?:ol|al)|pept(?:ide|inol)|ceramide|hyaluronic|salicylic|glycolic|lactic|mandelic|azelaic|tranexamic|panthenol|centella|madecassoside|adenosine|squalane|zinc oxide|titanium dioxide|vitamin\s*c|ascorbic|botanical|ferment|extract|complex)\b/i.test(heading)
-      );
-    });
-  return dedupeStringList(activeHeadings).join(", ");
-}
-
 export function normalizeImageVisionFields(raw: Record<string, unknown>, product: ExtractedProduct, imageUrls: string[]): ImageVisionPdpFields | null {
   const descriptionRaw = normalizeImageVisionText(raw.description_raw ?? raw.descriptionRaw ?? raw.overview, product, 40);
   const rawSections = Array.isArray(raw.details_sections)
@@ -2196,12 +2197,11 @@ export function normalizeImageVisionFields(raw: Record<string, unknown>, product
   );
   const rawIngredients = normalizeImageVisionText(raw.ingredients_raw ?? raw.ingredientsRaw ?? raw.ingredients, product, 24);
   const ingredientsRaw = normalizeImageVisionIngredientList(rawIngredients);
-  const activeIngredientsRaw =
-    normalizeImageVisionText(
-      raw.active_ingredients_raw ?? raw.activeIngredientsRaw ?? raw.active_ingredients,
-      product,
-      8,
-    ) || deriveImageVisionActiveIngredientsFromSections(detailsSections);
+  const activeIngredientsRaw = normalizeImageVisionText(
+    raw.active_ingredients_raw ?? raw.activeIngredientsRaw ?? raw.active_ingredients,
+    product,
+    8,
+  );
   const howToUseCandidate = normalizeImageVisionText(raw.how_to_use_raw ?? raw.howToUseRaw ?? raw.how_to_use, product, 18);
   const howToUseRaw = looksLikeHowToUseInstructionText(howToUseCandidate) ? howToUseCandidate : "";
 

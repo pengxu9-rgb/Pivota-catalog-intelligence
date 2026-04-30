@@ -942,7 +942,7 @@ test("enrichDirectShopifyPdpResponse recovers image-only Shopify PDP content thr
   );
 });
 
-test("normalizeImageVisionFields strips ingredient markers and derives active headings from image sections", () => {
+test("normalizeImageVisionFields strips ingredient markers but does not infer active ingredients from section headings alone", () => {
   const fields = normalizeImageVisionFields(
     {
       description_raw:
@@ -975,7 +975,7 @@ test("normalizeImageVisionFields strips ingredient markers and derives active he
   );
 
   assert.equal(fields?.ingredientsRaw, "Water, Glycerin, Butylene Glycol, Niacinamide, Propanediol, Adenosine.");
-  assert.equal(fields?.activeIngredientsRaw, "5% NIACINAMIDE, PEPTINOL");
+  assert.equal(fields?.activeIngredientsRaw, undefined);
 });
 
 test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enrichment", async () => {

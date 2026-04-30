@@ -465,6 +465,11 @@ test("filterUsefulFaqItems removes promo and pseudo-faq noise but keeps product 
       source_kind: "accordion_question_answer",
     },
     {
+      question: "Forgot your password?",
+      answer: "Enter your email and follow the reset link we send you.",
+      source_kind: "inline_html_faq",
+    },
+    {
       question: "Can I use Always an Optimist 4-in-1 Mist as a setting spray?",
       answer: "You can. It helps extend makeup wear with a natural radiant finish.",
       source_kind: "inline_html_faq",

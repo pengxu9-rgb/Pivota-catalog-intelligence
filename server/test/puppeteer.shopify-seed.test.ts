@@ -1338,6 +1338,15 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
   assert.equal(
     classifyExtractedProductKind(
       makeProduct({
+        title: "Overnight Spot Stickers",
+        url: "https://pixibeauty.com/products/overnight-spot-stickers",
+      }),
+    ),
+    "single_formula",
+  );
+  assert.equal(
+    classifyExtractedProductKind(
+      makeProduct({
         title: "Hair Pins",
         url: "https://kyliecosmetics.com/products/hair-pins",
         description_raw:

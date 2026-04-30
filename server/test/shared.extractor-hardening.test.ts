@@ -177,6 +177,26 @@ test("buildProductPdpFields filters consent and review-form noise from PDP secti
   assert.equal(fields.field_capture_status?.how_to_use_raw, "missing");
 });
 
+test("buildProductPdpFields relabels short ingredient marketing blurbs as key ingredients", () => {
+  const fields = buildProductPdpFields({
+    detailsSections: [
+      {
+        heading: "Ingredients",
+        body: "Hyaluronic Acid\n\nAntioxidants\n\nVitamin C\n\nAmino Acids",
+        source_kind: "accordion_ingredients",
+      },
+    ],
+  });
+
+  assert.deepEqual(fields.details_sections, [
+    {
+      heading: "Key Ingredients",
+      body: "Hyaluronic Acid\n\nAntioxidants\n\nVitamin C\n\nAmino Acids",
+      source_kind: "accordion_ingredients",
+    },
+  ]);
+});
+
 test("fetchOkendoFaqItemsFromMetafieldJson returns approved store-answered product questions", async () => {
   const raw = JSON.stringify({
     questionCount: 1,
@@ -290,10 +310,7 @@ test("deriveProductPdpModuleBodies keeps summary-style ingredient accordions out
   });
 
   assert.equal(bodies.ingredientsRaw, undefined);
-  assert.equal(
-    bodies.activeIngredientsRaw,
-    "Rose Flower Oil nourishes & restores. Ceramide provides time-release moisture. Probiotics protect & balance.",
-  );
+  assert.equal(bodies.activeIngredientsRaw, undefined);
   assert.equal(bodies.howToUseRaw, "Use daily after cleansing and serum.");
 });
 

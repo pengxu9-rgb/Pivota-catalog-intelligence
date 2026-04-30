@@ -545,10 +545,13 @@ function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
   const out: ExtractedProductDetailSection[] = [];
   const seen = new Set<string>();
   for (const section of Array.isArray(sections) ? sections : []) {
-    const heading = normalizeDetailSectionHeading(section?.heading);
+    let heading = normalizeDetailSectionHeading(section?.heading);
     const body = cleanText(section?.body);
     const sourceKind = cleanText(section?.source_kind) || "unknown";
     if (!heading || !body) continue;
+    if (heading === "Ingredients" && !looksLikeFullIngredientListText(body)) {
+      heading = "Key Ingredients";
+    }
     if (isTaxonomyOnlyDetailSection({ heading, body, source_kind: sourceKind })) continue;
     if (isLowQualityDetailSectionText(heading, body)) continue;
     const keyBody = heading === "Ingredients" ? cleanText(body.replace(/^full ingredients?\s*/i, "")) : body;
@@ -1834,7 +1837,7 @@ const PDP_COMPLETENESS_LOOK_BUNDLE_RE =
 const PDP_COMPLETENESS_FRAGRANCE_RE =
   /\b(fragrance|perfume|parfum|eau de|edt|edp|cologne|body mist|pen spray|scent)\b/i;
 const PDP_COMPLETENESS_SKINCARE_RE =
-  /\b(skincare|skin care|cleanser|toner|essence|serum|ampoule|moisturi[sz]er|cream|lotion|balm|mask|scrub|body scrub|peel|exfoliant|treatment|oil|patch|patchs|patches|eye patch|eye patches|hydrogel patch|pimple patch|healing dots?|acne|blemish|hydrocolloid|sunscreen|spf|face mist|facial mist|hydrating mist|retinol|vitamin c|niacinamide|aha|bha|acid|salicylic|benzoyl|azelaic|ceramide|hyaluronic)\b/i;
+  /\b(skincare|skin care|cleanser|toner|essence|serum|ampoule|moisturi[sz]er|cream|lotion|balm|mask|scrub|body scrub|peel|exfoliant|treatment|oil|patch|patchs|patches|eye patch|eye patches|hydrogel patch|pimple patch|spot stickers?|blemish stickers?|acne stickers?|healing dots?|acne|blemish|hydrocolloid|sunscreen|spf|face mist|facial mist|hydrating mist|retinol|vitamin c|niacinamide|aha|bha|acid|salicylic|benzoyl|azelaic|ceramide|hyaluronic)\b/i;
 const PDP_COMPLETENESS_MAKEUP_RE =
   /\b(makeup|foundation|concealer|mascara|lipstick|lip gloss|lip glaze|lip oil|lip liner|lip luminizer|lip kit|luminizer|blush|bronzer|powder|highlighter|eyeshadow|eyeliner|brow|primer|setting spray|skin tint|tint|shade|palette)\b/i;
 const PDP_COMPLETENESS_FORMULA_PAIR_RE =

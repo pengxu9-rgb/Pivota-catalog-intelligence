@@ -41,7 +41,8 @@ Backend (Railway):
 - Root directory: `server`
 - Build command: `npm run build`
 - Start command: `npm start`
-- Env: `CORS_ORIGIN=<your-vercel-url>`, `EXTRACTION_MODE=simulation` (or `puppeteer` for real extraction)
+- Env: `CORS_ORIGIN=<your-vercel-url>`, `EXTRACTION_MODE=puppeteer`
+- `EXTRACTION_MODE=simulation` is for explicit local/test-only use. In deployed environments the extractor now fails closed if simulation mode is requested without explicit opt-in.
 - Optional: `MAX_PRODUCTS=50`, `PUPPETEER_CONCURRENCY=2`, `PUPPETEER_NAV_TIMEOUT_MS=30000`, `SHOPIFY_VARIANT_DISCOVERY=auto`
 
 Frontend (Vercel):

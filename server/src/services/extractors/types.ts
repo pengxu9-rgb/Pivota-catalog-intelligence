@@ -95,6 +95,69 @@ export type ExtractedProductFaqItem = {
   source_title?: string;
 };
 
+export type ExtractedReviewMediaItem = {
+  type: string;
+  url: string;
+  thumbnail_url?: string;
+  source?: string;
+  source_kind?: string;
+  source_scope?: string;
+  content_review_state?: string;
+  public_visible?: boolean;
+};
+
+export type ExtractedReviewPreviewItem = {
+  review_id: string;
+  rating?: number;
+  author_label?: string;
+  title?: string;
+  text_snippet?: string;
+  media?: ExtractedReviewMediaItem[];
+  source?: string;
+  source_kind?: string;
+  source_scope?: string;
+  content_review_state?: string;
+  public_visible?: boolean;
+  verified_buyer?: boolean;
+};
+
+export type ExtractedReviewDistributionRow = {
+  stars: number;
+  count?: number;
+  percent?: number;
+};
+
+export type ExtractedReviewSummaryQuestion = {
+  question: string;
+  answer?: string;
+  source?: string;
+  source_label?: string;
+  support_count?: number;
+  replies?: number;
+  content_review_state?: string;
+  public_visible?: boolean;
+};
+
+export type ExtractedReviewBrandCard = {
+  name?: string;
+  subtitle?: string;
+};
+
+export type ExtractedProductReviewSummary = {
+  rating?: number;
+  review_count?: number;
+  scale?: number;
+  preview_items?: ExtractedReviewPreviewItem[];
+  questions?: ExtractedReviewSummaryQuestion[];
+  star_distribution?: ExtractedReviewDistributionRow[];
+  rating_distribution?: ExtractedReviewDistributionRow[];
+  brand_card?: ExtractedReviewBrandCard;
+  aggregation_scope?: string;
+  exact_item_review_count?: number;
+  product_line_review_count?: number;
+  scope_label?: string;
+};
+
 export type ExtractedProductKind =
   | "single_formula"
   | "bundle"
@@ -150,6 +213,7 @@ export type ExtractedProduct = {
   active_ingredients_raw?: string;
   how_to_use_raw?: string;
   faq_items?: ExtractedProductFaqItem[];
+  review_summary?: ExtractedProductReviewSummary;
   product_kind?: ExtractedProductKind;
   bundle_components?: ExtractedBundleComponent[];
   field_capture_status?: ExtractedProductFieldCaptureStatus;

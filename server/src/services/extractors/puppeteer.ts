@@ -9,6 +9,7 @@ import type {
   ExtractedProductDetailSection,
   ExtractedProductFaqItem,
   ExtractedProductKind,
+  ExtractedProductReviewSummary,
   ExtractedVariant,
   ExtractedVariantRow,
   Extractor,
@@ -813,6 +814,12 @@ type OkendoMetafieldSnapshot = {
   subscriberId: string;
   productId: string;
   questionCount: number;
+  reviewCount: number;
+  averageRating?: number;
+  ratingDistribution: Array<{ stars: number; count: number; percent?: number }>;
+  reviewsNextUrl?: string;
+  reviewsOrderBy?: string;
+  areReviewsGrouped?: boolean;
 };
 
 type OkendoQuestionAnswer = {
@@ -832,6 +839,97 @@ type OkendoQuestionsResponse = {
   questions?: OkendoQuestion[];
 };
 
+type OkendoReviewMedia = {
+  fullSizeUrl?: string;
+  largeUrl?: string;
+  mediumUrl?: string;
+  smallUrl?: string;
+  thumbnailUrl?: string;
+  type?: string;
+};
+
+type OkendoReviewer = {
+  displayName?: string;
+  isVerified?: boolean;
+};
+
+type OkendoReview = {
+  reviewId?: string;
+  rating?: number;
+  title?: string;
+  body?: string;
+  status?: string;
+  helpfulCount?: number;
+  reviewer?: OkendoReviewer;
+  media?: OkendoReviewMedia[];
+};
+
+type OkendoReviewsResponse = {
+  areReviewsGrouped?: boolean;
+  reviews?: OkendoReview[];
+};
+
+function buildOkendoDistributionRows(
+  reviewAggregate: Record<string, unknown> | null,
+  reviewCount: number,
+): Array<{ stars: number; count: number; percent?: number }> {
+  const rawDistribution =
+    reviewAggregate?.reviewCountByLevel && typeof reviewAggregate.reviewCountByLevel === "object"
+      ? (reviewAggregate.reviewCountByLevel as Record<string, unknown>)
+      : reviewAggregate?.ratingAndReviewCountByLevel && typeof reviewAggregate.ratingAndReviewCountByLevel === "object"
+        ? (reviewAggregate.ratingAndReviewCountByLevel as Record<string, unknown>)
+        : null;
+  if (!rawDistribution) return [];
+
+  const rows: Array<{ stars: number; count: number; percent?: number }> = [];
+  for (let stars = 5; stars >= 1; stars -= 1) {
+    const key = `level${stars}Count`;
+    const count = Number(rawDistribution[key]);
+    if (!Number.isFinite(count) || count < 0) continue;
+    rows.push({
+      stars,
+      count: Math.floor(count),
+      ...(reviewCount > 0 ? { percent: Math.max(0, Math.min(1, count / reviewCount)) } : {}),
+    });
+  }
+  return rows;
+}
+
+function resolveOkendoAverageRating(reviewAggregate: Record<string, unknown> | null, reviewCount: number) {
+  const directAverage = Number(reviewAggregate?.averageRating);
+  if (Number.isFinite(directAverage) && directAverage > 0) return directAverage;
+  const reviewRatingValuesTotal = Number(reviewAggregate?.reviewRatingValuesTotal);
+  if (Number.isFinite(reviewRatingValuesTotal) && reviewCount > 0) {
+    return Number((reviewRatingValuesTotal / reviewCount).toFixed(2));
+  }
+  const ratingAndReviewValuesTotal = Number(reviewAggregate?.ratingAndReviewValuesTotal);
+  const ratingAndReviewCount = Number(reviewAggregate?.ratingAndReviewCount);
+  if (
+    Number.isFinite(ratingAndReviewValuesTotal) &&
+    Number.isFinite(ratingAndReviewCount) &&
+    ratingAndReviewCount > 0
+  ) {
+    return Number((ratingAndReviewValuesTotal / ratingAndReviewCount).toFixed(2));
+  }
+  return undefined;
+}
+
+function resolveOkendoReviewsOrderBy(
+  reviewsNextUrl: string | undefined,
+  defaultSort: string | undefined,
+) {
+  const sortFromSnapshot = cleanText(defaultSort);
+  if (sortFromSnapshot) return sortFromSnapshot;
+  const normalizedUrl = cleanText(reviewsNextUrl);
+  if (!normalizedUrl) return "date desc";
+  try {
+    const parsed = new URL(normalizedUrl.startsWith("http") ? normalizedUrl : `https://api.okendo.io/v1${normalizedUrl}`);
+    return cleanText(parsed.searchParams.get("orderBy") || "") || "date desc";
+  } catch {
+    return "date desc";
+  }
+}
+
 function parseOkendoMetafieldSnapshot(raw: string | undefined): OkendoMetafieldSnapshot | null {
   const normalized = cleanText(raw);
   if (!normalized) return null;
@@ -845,6 +943,8 @@ function parseOkendoMetafieldSnapshot(raw: string | undefined): OkendoMetafieldS
       typeof reviewAggregate?.subscriberId_productId === "string" ? reviewAggregate.subscriberId_productId : undefined,
     );
     const reviewsNextUrl = cleanText(typeof parsed.reviewsNextUrl === "string" ? parsed.reviewsNextUrl : undefined);
+    const sortConfig =
+      parsed.sort && typeof parsed.sort === "object" ? (parsed.sort as Record<string, unknown>) : null;
     const subscriberIdFromKey = subscriberProductKey.split(":")[0] || "";
     const productIdFromKey = subscriberProductKey.split(":").slice(1).join(":") || "";
     const subscriberIdFromReviewsUrl =
@@ -866,11 +966,30 @@ function parseOkendoMetafieldSnapshot(raw: string | undefined): OkendoMetafieldS
           : productIdFromKey || productIdFromReviewsUrl,
     );
     const questionCountRaw = Number(parsed.questionCount);
-    if (!subscriberId || !productId || !Number.isFinite(questionCountRaw)) return null;
+    const reviewCountRaw = Number(
+      parsed.reviewCount ??
+        reviewAggregate?.reviewCount ??
+        reviewAggregate?.ratingAndReviewCount ??
+        reviewAggregate?.ratingCount,
+    );
+    if (!subscriberId || !productId) return null;
+    const reviewCount = Number.isFinite(reviewCountRaw) ? Math.max(0, Math.floor(reviewCountRaw)) : 0;
+    const averageRatingFromParsed = Number(parsed.averageRating);
+    const averageRating =
+      (Number.isFinite(averageRatingFromParsed) && averageRatingFromParsed > 0 ? averageRatingFromParsed : undefined) ||
+      resolveOkendoAverageRating(reviewAggregate, reviewCount);
     return {
       subscriberId,
       productId,
-      questionCount: Math.max(0, Math.floor(questionCountRaw)),
+      questionCount: Number.isFinite(questionCountRaw) ? Math.max(0, Math.floor(questionCountRaw)) : 0,
+      reviewCount,
+      ...(Number.isFinite(averageRating) ? { averageRating } : {}),
+      ratingDistribution: buildOkendoDistributionRows(reviewAggregate, reviewCount),
+      ...(reviewsNextUrl ? { reviewsNextUrl } : {}),
+      ...(resolveOkendoReviewsOrderBy(reviewsNextUrl, cleanText(typeof sortConfig?.defaultSort === "string" ? sortConfig.defaultSort : undefined))
+        ? { reviewsOrderBy: resolveOkendoReviewsOrderBy(reviewsNextUrl, cleanText(typeof sortConfig?.defaultSort === "string" ? sortConfig.defaultSort : undefined)) }
+        : {}),
+      ...(typeof parsed.areReviewsGrouped === "boolean" ? { areReviewsGrouped: parsed.areReviewsGrouped } : {}),
     };
   } catch {
     return null;
@@ -937,6 +1056,211 @@ export async function fetchOkendoFaqItemsFromMetafieldJson(raw: string | undefin
     return filterUsefulFaqItems(items);
   } catch {
     return [] as ExtractedProductFaqItem[];
+  }
+}
+
+function mergeOkendoReviewPreviewItems(
+  values: Array<NonNullable<ExtractedProductReviewSummary["preview_items"]> | undefined>,
+) {
+  const out: NonNullable<ExtractedProductReviewSummary["preview_items"]> = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    for (const item of Array.isArray(value) ? value : []) {
+      const reviewId = cleanText(item?.review_id).toLowerCase();
+      if (!reviewId || seen.has(reviewId)) continue;
+      seen.add(reviewId);
+      out.push(item);
+    }
+  }
+  return out;
+}
+
+function mergeOkendoReviewQuestions(
+  values: Array<NonNullable<ExtractedProductReviewSummary["questions"]> | undefined>,
+) {
+  const out: NonNullable<ExtractedProductReviewSummary["questions"]> = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    for (const item of Array.isArray(value) ? value : []) {
+      const question = cleanText(item?.question).toLowerCase();
+      if (!question || seen.has(question)) continue;
+      seen.add(question);
+      out.push(item);
+    }
+  }
+  return out;
+}
+
+function mergeOkendoReviewSummary(
+  existing: ExtractedProductReviewSummary | undefined,
+  incoming: ExtractedProductReviewSummary | undefined,
+): ExtractedProductReviewSummary | undefined {
+  const left = existing && typeof existing === "object" ? existing : undefined;
+  const right = incoming && typeof incoming === "object" ? incoming : undefined;
+  if (!left) return right;
+  if (!right) return left;
+
+  const previewItems = mergeOkendoReviewPreviewItems([left.preview_items, right.preview_items]);
+  const questions = mergeOkendoReviewQuestions([left.questions, right.questions]);
+  const starDistribution =
+    (Array.isArray(left.star_distribution) && left.star_distribution.length > 0 ? left.star_distribution : undefined) ||
+    (Array.isArray(left.rating_distribution) && left.rating_distribution.length > 0 ? left.rating_distribution : undefined) ||
+    (Array.isArray(right.star_distribution) && right.star_distribution.length > 0 ? right.star_distribution : undefined) ||
+    (Array.isArray(right.rating_distribution) && right.rating_distribution.length > 0 ? right.rating_distribution : undefined);
+
+  return {
+    ...(left.scale != null ? { scale: left.scale } : right.scale != null ? { scale: right.scale } : {}),
+    ...(left.rating != null ? { rating: left.rating } : right.rating != null ? { rating: right.rating } : {}),
+    ...(left.review_count != null
+      ? { review_count: left.review_count }
+      : right.review_count != null
+        ? { review_count: right.review_count }
+        : {}),
+    ...(left.aggregation_scope
+      ? { aggregation_scope: left.aggregation_scope }
+      : right.aggregation_scope
+        ? { aggregation_scope: right.aggregation_scope }
+        : {}),
+    ...(left.exact_item_review_count != null
+      ? { exact_item_review_count: left.exact_item_review_count }
+      : right.exact_item_review_count != null
+        ? { exact_item_review_count: right.exact_item_review_count }
+        : {}),
+    ...(left.product_line_review_count != null
+      ? { product_line_review_count: left.product_line_review_count }
+      : right.product_line_review_count != null
+        ? { product_line_review_count: right.product_line_review_count }
+        : {}),
+    ...(left.scope_label ? { scope_label: left.scope_label } : right.scope_label ? { scope_label: right.scope_label } : {}),
+    ...(starDistribution ? { star_distribution: starDistribution, rating_distribution: starDistribution } : {}),
+    ...(previewItems.length > 0 ? { preview_items: previewItems } : {}),
+    ...(questions.length > 0 ? { questions } : {}),
+    ...(left.brand_card
+      ? { brand_card: left.brand_card }
+      : right.brand_card
+        ? { brand_card: right.brand_card }
+        : {}),
+  };
+}
+
+function buildOkendoReviewSummaryFromSnapshot(snapshot: OkendoMetafieldSnapshot) {
+  const distribution = snapshot.ratingDistribution;
+  const summary: ExtractedProductReviewSummary = {
+    ...(snapshot.averageRating != null ? { rating: snapshot.averageRating } : {}),
+    ...(snapshot.reviewCount > 0 ? { review_count: snapshot.reviewCount, scale: 5 } : {}),
+    ...(distribution.length > 0 ? { star_distribution: distribution, rating_distribution: distribution } : {}),
+    ...(snapshot.areReviewsGrouped === true ? { aggregation_scope: "group", product_line_review_count: snapshot.reviewCount } : {}),
+    ...(snapshot.areReviewsGrouped === false ? { aggregation_scope: "product", exact_item_review_count: snapshot.reviewCount } : {}),
+  };
+  return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+function resolveOkendoReviewMediaItems(media: OkendoReviewMedia[] | undefined) {
+  const out: NonNullable<NonNullable<ExtractedProductReviewSummary["preview_items"]>[number]["media"]> = [];
+  const seen = new Set<string>();
+  for (const item of Array.isArray(media) ? media : []) {
+    const url = cleanText(
+      typeof item?.fullSizeUrl === "string"
+        ? item.fullSizeUrl
+        : typeof item?.largeUrl === "string"
+          ? item.largeUrl
+          : typeof item?.mediumUrl === "string"
+            ? item.mediumUrl
+            : typeof item?.smallUrl === "string"
+              ? item.smallUrl
+              : undefined,
+    );
+    if (!url || seen.has(url.toLowerCase())) continue;
+    seen.add(url.toLowerCase());
+    const thumbnailUrl = cleanText(
+      typeof item?.thumbnailUrl === "string"
+        ? item.thumbnailUrl
+        : typeof item?.smallUrl === "string"
+          ? item.smallUrl
+          : typeof item?.mediumUrl === "string"
+            ? item.mediumUrl
+            : undefined,
+    );
+    out.push({
+      type: cleanText(typeof item?.type === "string" ? item.type : undefined) || "image",
+      url,
+      ...(thumbnailUrl ? { thumbnail_url: thumbnailUrl } : {}),
+      source: "merchant_public",
+      source_kind: "okendo_reviews_api",
+      source_scope: "merchant_public",
+      content_review_state: "approved",
+      public_visible: true,
+    });
+  }
+  return out;
+}
+
+function buildOkendoReviewsEndpoint(snapshot: OkendoMetafieldSnapshot, limit: number) {
+  const normalizedLimit = Math.min(Math.max(limit, 1), 6);
+  const orderBy = cleanText(snapshot.reviewsOrderBy) || "date desc";
+  return `https://api.okendo.io/v1/stores/${encodeURIComponent(snapshot.subscriberId)}/products/${encodeURIComponent(snapshot.productId)}/reviews?limit=${normalizedLimit}&orderBy=${encodeURIComponent(orderBy)}`;
+}
+
+export async function fetchOkendoReviewSummaryFromMetafieldJson(raw: string | undefined, sourceUrl: string) {
+  const snapshot = parseOkendoMetafieldSnapshot(raw);
+  if (!snapshot) return null as ExtractedProductReviewSummary | null;
+
+  const baseSummary = buildOkendoReviewSummaryFromSnapshot(snapshot);
+  if (snapshot.reviewCount <= 0) return baseSummary || null;
+
+  const limit = Math.min(Math.max(snapshot.reviewCount, 1), 6);
+  const endpoint = buildOkendoReviewsEndpoint(snapshot, limit);
+
+  try {
+    const response = await withTimeout(fetch(endpoint), 10000, "okendo_reviews_fetch");
+    if (!response.ok) return baseSummary || null;
+    const payload = (await response.json()) as OkendoReviewsResponse;
+    const previewItems: NonNullable<ExtractedProductReviewSummary["preview_items"]> = [];
+
+    for (const reviewRow of Array.isArray(payload.reviews) ? payload.reviews : []) {
+      const reviewId = cleanText(reviewRow?.reviewId);
+      const status = cleanText(reviewRow?.status).toLowerCase();
+      const rawBody = typeof reviewRow?.body === "string" ? reviewRow.body : "";
+      const rawTitle = typeof reviewRow?.title === "string" ? reviewRow.title : "";
+      const rawReviewerLabel = typeof reviewRow?.reviewer?.displayName === "string" ? reviewRow.reviewer.displayName : "";
+      const textSnippet = cleanText(decodeHtmlAttributeEntities(rawBody));
+      const title = cleanText(decodeHtmlAttributeEntities(rawTitle));
+      const authorLabel = cleanText(decodeHtmlAttributeEntities(rawReviewerLabel));
+      if (!reviewId || (!textSnippet && !title)) continue;
+      if (status && status !== "approved") continue;
+      previewItems.push({
+        review_id: reviewId,
+        ...(Number.isFinite(Number(reviewRow?.rating)) ? { rating: Number(reviewRow!.rating) } : {}),
+        ...(authorLabel ? { author_label: authorLabel } : {}),
+        ...(title ? { title } : {}),
+        ...(textSnippet ? { text_snippet: textSnippet } : {}),
+        ...(resolveOkendoReviewMediaItems(reviewRow?.media).length > 0
+          ? { media: resolveOkendoReviewMediaItems(reviewRow?.media) }
+          : {}),
+        source: "merchant_public",
+        source_kind: "okendo_reviews_api",
+        source_scope: "merchant_public",
+        content_review_state: "approved",
+        public_visible: true,
+        ...(reviewRow?.reviewer?.isVerified === true ? { verified_buyer: true } : {}),
+      });
+    }
+
+    return mergeOkendoReviewSummary(
+      baseSummary,
+      previewItems.length > 0
+        ? {
+            ...(payload.areReviewsGrouped === true
+              ? { aggregation_scope: "group", product_line_review_count: snapshot.reviewCount }
+              : payload.areReviewsGrouped === false
+                ? { aggregation_scope: "product", exact_item_review_count: snapshot.reviewCount }
+                : {}),
+            preview_items: previewItems,
+          }
+        : undefined,
+    ) || null;
+  } catch {
+    return baseSummary || null;
   }
 }
 
@@ -3297,20 +3621,36 @@ export async function enrichDirectShopifyPdpResponse(params: {
   };
 
   const faqMissing = !Array.isArray(product.faq_items) || product.faq_items.length === 0;
-  if (faqMissing) {
+  const reviewSummaryPreviewMissing =
+    !Array.isArray(product.review_summary?.preview_items) || product.review_summary.preview_items.length === 0;
+  const reviewSummaryAggregateMissing =
+    !(Number(product.review_summary?.review_count || 0) > 0 && Number(product.review_summary?.rating || 0) > 0);
+  const reviewSummaryMissing = !product.review_summary || reviewSummaryPreviewMissing || reviewSummaryAggregateMissing;
+  if (faqMissing || reviewSummaryMissing) {
     try {
       const html = await fetchSeedPageHtml();
-      const faqItems = await fetchOkendoFaqItemsFromMetafieldJson(
-        extractOkendoMetafieldJsonFromHtml(html),
-        params.seedUrl,
-      );
+      const okendoMetafieldJson = extractOkendoMetafieldJsonFromHtml(html);
+      const faqItems = faqMissing ? await fetchOkendoFaqItemsFromMetafieldJson(okendoMetafieldJson, params.seedUrl) : [];
+      const reviewSummary = reviewSummaryMissing
+        ? await fetchOkendoReviewSummaryFromMetafieldJson(okendoMetafieldJson, params.seedUrl)
+        : null;
       if (faqItems.length > 0) {
         response = mergeShopifyDirectPdpFaqFallback(response, faqItems);
         params.log("success", `Recovered ${faqItems.length} Shopify PDP FAQ items via Okendo questions: ${params.seedUrl}`);
       }
+      if (reviewSummary) {
+        response = mergeShopifyDirectPdpReviewSummaryFallback(response, reviewSummary);
+        const previewCount = Array.isArray(reviewSummary.preview_items) ? reviewSummary.preview_items.length : 0;
+        params.log(
+          "success",
+          previewCount > 0
+            ? `Recovered ${previewCount} Shopify PDP merchant review previews via Okendo reviews: ${params.seedUrl}`
+            : `Recovered Shopify PDP merchant review aggregate via Okendo reviews: ${params.seedUrl}`,
+        );
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error || "unknown_error");
-      params.log("warn", `Shopify direct PDP FAQ enrichment failed; continuing without FAQ recovery: ${msg}`);
+      params.log("warn", `Shopify direct PDP Okendo enrichment failed; continuing without FAQ/review recovery: ${msg}`);
     }
   }
 
@@ -3899,6 +4239,32 @@ function mergeShopifyDirectPdpFaqFallback(
     );
 
     return withProductPdpProfile(mergedProduct);
+  });
+
+  return {
+    ...response,
+    products: mergedProducts,
+  };
+}
+
+function mergeShopifyDirectPdpReviewSummaryFallback(
+  response: Omit<ExtractResponse, "generated_at" | "logs">,
+  reviewSummary: ExtractedProductReviewSummary | null | undefined,
+): Omit<ExtractResponse, "generated_at" | "logs"> {
+  if (!response.products[0] || !reviewSummary) return response;
+
+  const mergedProducts = response.products.map((product, idx) => {
+    if (idx !== 0) return product;
+    return withProductPdpProfile({
+      ...product,
+      image_urls: [...product.image_urls],
+      variant_skus: [...product.variant_skus],
+      variants: product.variants.map((variant) => ({
+        ...variant,
+        image_urls: [...variant.image_urls],
+      })),
+      review_summary: mergeOkendoReviewSummary(product.review_summary, reviewSummary),
+    });
   });
 
   return {

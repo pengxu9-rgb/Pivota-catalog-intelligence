@@ -1143,8 +1143,16 @@ test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enr
                     subscriberId: "store-123",
                     productId: "shopify-456",
                     subscriberId_productId: "store-123:shopify-456",
+                    reviewCount: 2,
+                    reviewRatingValuesTotal: 9,
+                    reviewCountByLevel: {
+                      level4Count: 1,
+                      level5Count: 1,
+                    },
                   },
                   questionCount: 1,
+                  reviewsNextUrl:
+                    "https://api.okendo.io/v1/stores/store-123/products/shopify-456/reviews?limit=5&orderBy=date%20desc",
                 })}
               </script>
             </body>
@@ -1167,6 +1175,36 @@ test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enr
                   isStoreAnswer: true,
                 },
               ],
+            },
+          ],
+        }),
+      },
+      "https://api.okendo.io/v1/stores/store-123/products/shopify-456/reviews?limit=2&orderBy=date%20desc": {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          areReviewsGrouped: false,
+          reviews: [
+            {
+              reviewId: "review-1",
+              rating: 5,
+              title: "Clarity staple",
+              body: "Keeps pores clear without stripping my skin.",
+              status: "approved",
+              reviewer: {
+                displayName: "Soo J.",
+                isVerified: true,
+              },
+            },
+            {
+              reviewId: "review-2",
+              rating: 4,
+              title: "Gentle exfoliation",
+              body: "Balanced enough for frequent use.",
+              status: "approved",
+              reviewer: {
+                displayName: "Maya R.",
+              },
             },
           ],
         }),
@@ -1197,7 +1235,50 @@ test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enr
       ]);
       assert.deepEqual(result.products[0]?.field_sources?.faq_items, ["okendo_questions_api"]);
       assert.equal(result.products[0]?.field_capture_status?.faq_items, "present");
+      assert.deepEqual(result.products[0]?.review_summary, {
+        rating: 4.5,
+        review_count: 2,
+        scale: 5,
+        aggregation_scope: "product",
+        exact_item_review_count: 2,
+        star_distribution: [
+          { stars: 5, count: 1, percent: 0.5 },
+          { stars: 4, count: 1, percent: 0.5 },
+        ],
+        rating_distribution: [
+          { stars: 5, count: 1, percent: 0.5 },
+          { stars: 4, count: 1, percent: 0.5 },
+        ],
+        preview_items: [
+          {
+            review_id: "review-1",
+            rating: 5,
+            author_label: "Soo J.",
+            title: "Clarity staple",
+            text_snippet: "Keeps pores clear without stripping my skin.",
+            source: "merchant_public",
+            source_kind: "okendo_reviews_api",
+            source_scope: "merchant_public",
+            content_review_state: "approved",
+            public_visible: true,
+            verified_buyer: true,
+          },
+          {
+            review_id: "review-2",
+            rating: 4,
+            author_label: "Maya R.",
+            title: "Gentle exfoliation",
+            text_snippet: "Balanced enough for frequent use.",
+            source: "merchant_public",
+            source_kind: "okendo_reviews_api",
+            source_scope: "merchant_public",
+            content_review_state: "approved",
+            public_visible: true,
+          },
+        ],
+      });
       assert.doesNotMatch(logs.map((entry) => entry.msg).join("\n"), /Attempting browser enrichment/);
+      assert.match(logs.map((entry) => entry.msg).join("\n"), /merchant review previews via Okendo reviews/);
     },
   );
 });

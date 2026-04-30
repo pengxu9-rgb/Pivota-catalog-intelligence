@@ -25,6 +25,7 @@ import {
   deriveProductPdpModuleBodies,
   extractDelimitedLabeledSectionText,
   fetchOkendoFaqItemsFromMetafieldJson,
+  fetchOkendoReviewSummaryFromMetafieldJson,
   extractInlineFaqItemsFromHtml,
   extractShopifyEmbeddedProductPayloadPdpFields,
   extractShopifyBodyHtmlPdpFields,
@@ -316,6 +317,128 @@ test("fetchOkendoFaqItemsFromMetafieldJson skips empty Okendo question pools", a
 
   const items = await fetchOkendoFaqItemsFromMetafieldJson(raw, "https://pixibeauty.com/products/lash-booster-mascara");
   assert.deepEqual(items, []);
+});
+
+test("fetchOkendoReviewSummaryFromMetafieldJson returns approved merchant review previews and aggregate", async () => {
+  const raw = JSON.stringify({
+    reviewAggregate: {
+      subscriberId: "store-123",
+      productId: "shopify-456",
+      subscriberId_productId: "store-123:shopify-456",
+      reviewCount: 2,
+      reviewRatingValuesTotal: 9,
+      reviewCountByLevel: {
+        level4Count: 1,
+        level5Count: 1,
+      },
+    },
+    questionCount: 0,
+    reviewsNextUrl: "https://api.okendo.io/v1/stores/store-123/products/shopify-456/reviews?limit=5&orderBy=rating%20desc",
+    areReviewsGrouped: false,
+  });
+
+  await withMockFetch(
+    {
+      "https://api.okendo.io/v1/stores/store-123/products/shopify-456/reviews?limit=2&orderBy=rating%20desc": {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          areReviewsGrouped: false,
+          reviews: [
+            {
+              reviewId: "review-1",
+              rating: 5,
+              title: "Works well",
+              body: "<p>Helped calm down redness quickly.</p>",
+              status: "approved",
+              reviewer: {
+                displayName: "Ava K.",
+                isVerified: true,
+              },
+              media: [
+                {
+                  fullSizeUrl: "https://cdn.example.com/review-1-full.jpg",
+                  thumbnailUrl: "https://cdn.example.com/review-1-thumb.jpg",
+                },
+              ],
+            },
+            {
+              reviewId: "review-2",
+              rating: 4,
+              title: "Solid toner",
+              body: "Hydrating and lightweight.",
+              status: "approved",
+              reviewer: {
+                displayName: "Mina L.",
+                isVerified: false,
+              },
+            },
+            {
+              reviewId: "review-3",
+              rating: 1,
+              title: "Should be filtered",
+              body: "Pending moderation",
+              status: "pending",
+            },
+          ],
+        }),
+      },
+    },
+    async () => {
+      const summary = await fetchOkendoReviewSummaryFromMetafieldJson(
+        raw,
+        "https://pixibeauty.com/products/clarity-tonic",
+      );
+
+      assert.equal(summary?.rating, 4.5);
+      assert.equal(summary?.review_count, 2);
+      assert.equal(summary?.aggregation_scope, "product");
+      assert.equal(summary?.exact_item_review_count, 2);
+      assert.deepEqual(summary?.star_distribution, [
+        { stars: 5, count: 1, percent: 0.5 },
+        { stars: 4, count: 1, percent: 0.5 },
+      ]);
+      assert.deepEqual(summary?.preview_items, [
+        {
+          review_id: "review-1",
+          rating: 5,
+          author_label: "Ava K.",
+          title: "Works well",
+          text_snippet: "Helped calm down redness quickly.",
+          media: [
+            {
+              type: "image",
+              url: "https://cdn.example.com/review-1-full.jpg",
+              thumbnail_url: "https://cdn.example.com/review-1-thumb.jpg",
+              source: "merchant_public",
+              source_kind: "okendo_reviews_api",
+              source_scope: "merchant_public",
+              content_review_state: "approved",
+              public_visible: true,
+            },
+          ],
+          source: "merchant_public",
+          source_kind: "okendo_reviews_api",
+          source_scope: "merchant_public",
+          content_review_state: "approved",
+          public_visible: true,
+          verified_buyer: true,
+        },
+        {
+          review_id: "review-2",
+          rating: 4,
+          author_label: "Mina L.",
+          title: "Solid toner",
+          text_snippet: "Hydrating and lightweight.",
+          source: "merchant_public",
+          source_kind: "okendo_reviews_api",
+          source_scope: "merchant_public",
+          content_review_state: "approved",
+          public_visible: true,
+        },
+      ]);
+    },
+  );
 });
 
 test("deriveProductPdpModuleBodies extracts full modal ingredients and active ingredients separately", () => {

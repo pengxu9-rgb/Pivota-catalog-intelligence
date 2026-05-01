@@ -1010,14 +1010,105 @@ function pickBestOkendoAnswer(answers: OkendoQuestionAnswer[] | undefined): Oken
   return approvedAnswers[0] || null;
 }
 
-function extractOkendoMetafieldJsonFromHtml(html: string | undefined) {
+function parseOkendoLooseSummary(raw: string | undefined) {
+  const normalized = cleanText(raw);
+  if (!normalized) return {} as { averageRating?: number; reviewCount?: number; questionCount?: number };
+  try {
+    const parsed = JSON.parse(normalized) as Record<string, unknown>;
+    const averageRating = Number(parsed.averageRating);
+    const reviewCount = Number(parsed.reviewCount);
+    const questionCount = Number(parsed.questionCount);
+    return {
+      ...(Number.isFinite(averageRating) && averageRating > 0 ? { averageRating } : {}),
+      ...(Number.isFinite(reviewCount) && reviewCount >= 0 ? { reviewCount: Math.floor(reviewCount) } : {}),
+      ...(Number.isFinite(questionCount) && questionCount >= 0 ? { questionCount: Math.floor(questionCount) } : {}),
+    };
+  } catch {
+    return {} as { averageRating?: number; reviewCount?: number; questionCount?: number };
+  }
+}
+
+function decodeEmbeddedJsonString(value: string | undefined) {
+  const normalized = typeof value === "string" ? value : "";
+  if (!normalized) return "";
+  const htmlDecoded = decodeHtmlAttributeEntities(normalized);
+  try {
+    return JSON.parse(`"${htmlDecoded.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
+  } catch {
+    return cleanText(htmlDecoded.replace(/\\\//g, "/").replace(/\\u0026/g, "&"));
+  }
+}
+
+function extractOkendoSettingsFromHtml(html: string) {
+  const match = html.match(/<script[^>]*id=["']oke-reviews-settings["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (!match) return { subscriberId: "", defaultSort: "" };
+  try {
+    const parsed = JSON.parse(cleanText(match[1])) as Record<string, unknown>;
+    const widgetSettings =
+      parsed.widgetSettings && typeof parsed.widgetSettings === "object"
+        ? (parsed.widgetSettings as Record<string, unknown>)
+        : null;
+    const homepageCarousel =
+      widgetSettings?.homepageCarousel && typeof widgetSettings.homepageCarousel === "object"
+        ? (widgetSettings.homepageCarousel as Record<string, unknown>)
+        : null;
+    return {
+      subscriberId: cleanText(typeof parsed.subscriberId === "string" ? parsed.subscriberId : undefined),
+      defaultSort: cleanText(typeof homepageCarousel?.defaultSort === "string" ? homepageCarousel.defaultSort : undefined),
+    };
+  } catch {
+    return { subscriberId: "", defaultSort: "" };
+  }
+}
+
+function extractOkendoProductIdFromHtml(html: string) {
+  const match = html.match(/data-oke-reviews-product-id=["']([^"']+)["']/i);
+  return cleanText(match?.[1]);
+}
+
+function extractOkendoReviewsNextUrlFromHtml(html: string) {
+  const match = html.match(/"reviewsNextUrl"\s*:\s*"([^"]+)"/i);
+  return decodeEmbeddedJsonString(match?.[1]);
+}
+
+function extractOkendoAreReviewsGroupedFromHtml(html: string) {
+  const match = html.match(/"areReviewsGrouped"\s*:\s*(true|false)/i);
+  if (!match) return undefined;
+  return match[1] === "true";
+}
+
+export function extractOkendoMetafieldJsonFromHtml(html: string | undefined) {
   const normalized = typeof html === "string" ? html : "";
   if (!normalized.trim()) return undefined;
   const matches = Array.from(normalized.matchAll(/<script[^>]*data-oke-metafield-data[^>]*>([\s\S]*?)<\/script>/gi));
+  let fallbackSummary: { averageRating?: number; reviewCount?: number; questionCount?: number } | null = null;
   for (const match of matches.reverse()) {
     const raw = cleanText(match[1]);
     if (!raw) continue;
     if (parseOkendoMetafieldSnapshot(raw)) return raw;
+    const looseSummary = parseOkendoLooseSummary(raw);
+    if (!fallbackSummary && Object.keys(looseSummary).length > 0) fallbackSummary = looseSummary;
+  }
+
+  const { subscriberId, defaultSort } = extractOkendoSettingsFromHtml(normalized);
+  const productId = extractOkendoProductIdFromHtml(normalized);
+  if (!subscriberId || !productId) return undefined;
+
+  const synthesized = {
+    subscriberId,
+    productId,
+    ...(fallbackSummary || {}),
+    ...(extractOkendoReviewsNextUrlFromHtml(normalized)
+      ? { reviewsNextUrl: extractOkendoReviewsNextUrlFromHtml(normalized) }
+      : {}),
+    ...(defaultSort ? { sort: { defaultSort } } : {}),
+    ...(typeof extractOkendoAreReviewsGroupedFromHtml(normalized) === "boolean"
+      ? { areReviewsGrouped: extractOkendoAreReviewsGroupedFromHtml(normalized) }
+      : {}),
+  };
+  const serialized = JSON.stringify(synthesized);
+  if (parseOkendoMetafieldSnapshot(serialized)) {
+    return serialized;
   }
   return undefined;
 }

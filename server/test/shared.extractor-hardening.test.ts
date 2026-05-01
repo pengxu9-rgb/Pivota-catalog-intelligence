@@ -24,6 +24,7 @@ import {
   buildProductPdpFields,
   deriveProductPdpModuleBodies,
   extractDelimitedLabeledSectionText,
+  extractOkendoMetafieldJsonFromHtml,
   fetchOkendoFaqItemsFromMetafieldJson,
   fetchOkendoReviewSummaryFromMetafieldJson,
   extractInlineFaqItemsFromHtml,
@@ -317,6 +318,50 @@ test("fetchOkendoFaqItemsFromMetafieldJson skips empty Okendo question pools", a
 
   const items = await fetchOkendoFaqItemsFromMetafieldJson(raw, "https://pixibeauty.com/products/lash-booster-mascara");
   assert.deepEqual(items, []);
+});
+
+test("extractOkendoMetafieldJsonFromHtml synthesizes snapshot from settings and star-rating attributes", () => {
+  const html = `
+    <html>
+      <head>
+        <script type="application/json" id="oke-reviews-settings">
+          ${JSON.stringify({
+            subscriberId: "store-123",
+            widgetSettings: {
+              homepageCarousel: {
+                defaultSort: "rating desc",
+              },
+            },
+          })}
+        </script>
+      </head>
+      <body>
+        <div data-oke-star-rating data-oke-reviews-product-id="shopify-456">
+          <script type="application/json" data-oke-metafield-data>
+            ${JSON.stringify({
+              averageRating: "4.7",
+              reviewCount: 93,
+              questionCount: 2,
+            })}
+          </script>
+        </div>
+      </body>
+    </html>
+  `;
+
+  const raw = extractOkendoMetafieldJsonFromHtml(html);
+  assert.ok(raw);
+  const parsed = JSON.parse(raw!);
+  assert.deepEqual(parsed, {
+    subscriberId: "store-123",
+    productId: "shopify-456",
+    averageRating: 4.7,
+    reviewCount: 93,
+    questionCount: 2,
+    sort: {
+      defaultSort: "rating desc",
+    },
+  });
 });
 
 test("fetchOkendoReviewSummaryFromMetafieldJson returns approved merchant review previews and aggregate", async () => {

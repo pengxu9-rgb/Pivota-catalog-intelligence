@@ -1139,22 +1139,22 @@ test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enr
             <body>
               <script data-oke-metafield-data type="application/json">
                 ${JSON.stringify({
-                  reviewAggregate: {
-                    subscriberId: "store-123",
-                    productId: "shopify-456",
-                    subscriberId_productId: "store-123:shopify-456",
-                    reviewCount: 2,
-                    reviewRatingValuesTotal: 9,
-                    reviewCountByLevel: {
-                      level4Count: 1,
-                      level5Count: 1,
-                    },
-                  },
+                  averageRating: "4.5",
+                  reviewCount: 2,
                   questionCount: 1,
-                  reviewsNextUrl:
-                    "https://api.okendo.io/v1/stores/store-123/products/shopify-456/reviews?limit=5&orderBy=date%20desc",
                 })}
               </script>
+              <script type="application/json" id="oke-reviews-settings">
+                ${JSON.stringify({
+                  subscriberId: "store-123",
+                  widgetSettings: {
+                    homepageCarousel: {
+                      defaultSort: "date desc",
+                    },
+                  },
+                })}
+              </script>
+              <div data-oke-star-rating data-oke-reviews-product-id="shopify-456"></div>
             </body>
           </html>
         `,
@@ -1241,14 +1241,6 @@ test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enr
         scale: 5,
         aggregation_scope: "product",
         exact_item_review_count: 2,
-        star_distribution: [
-          { stars: 5, count: 1, percent: 0.5 },
-          { stars: 4, count: 1, percent: 0.5 },
-        ],
-        rating_distribution: [
-          { stars: 5, count: 1, percent: 0.5 },
-          { stars: 4, count: 1, percent: 0.5 },
-        ],
         preview_items: [
           {
             review_id: "review-1",

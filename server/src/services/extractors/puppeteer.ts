@@ -302,6 +302,7 @@ type ScrapedPageSignals = {
   scripts: string[];
   embeddedProductScripts: string[];
   domVariants: DomVariantMeta[];
+  productVolumeText?: string;
   productDetailsText: string;
   howToUseText?: string;
   ingredientsMarkdownText?: string;
@@ -461,9 +462,31 @@ function cleanText(text?: string) {
 
 const PRODUCT_SIZE_OPTION_RE =
   /\b\d+(?:\.\d+)?\s*(?:fl\.?\s*oz\.?|fluid\s*ounces?|m\s*l|ml|g|kg|oz|l|lb|lbs|mm|cm|ea|ct|count|pcs?|pieces?|pads?|patches?)\b(?:\s*(?:x|×)\s*\d+)?/i;
+const PRODUCT_SIZE_OPTION_GLOBAL_RE = new RegExp(PRODUCT_SIZE_OPTION_RE.source, "gi");
+
+function getProductSizeUnitPriority(value: string) {
+  const normalized = cleanText(value).toLowerCase();
+  if (!normalized) return 0;
+  if (/\b(?:ml|m l|g|kg|l|mm|cm)\b/.test(normalized)) return 4;
+  if (/\b(?:ea|ct|count|pcs?|pieces?|pads?|patches?)\b/.test(normalized)) return 3;
+  if (/\b(?:fl\.?\s*oz\.?|fluid\s*ounces?|oz|lb|lbs)\b/.test(normalized)) return 2;
+  return 1;
+}
+
+function pickPreferredProductSizeMatch(value?: string) {
+  const normalized = cleanText(value);
+  if (!normalized) return "";
+  const matches = Array.from(normalized.matchAll(PRODUCT_SIZE_OPTION_GLOBAL_RE))
+    .map((match) => cleanText(match[0]))
+    .filter(Boolean);
+  if (matches.length === 0) return "";
+  return matches.reduce((best, current) =>
+    getProductSizeUnitPriority(current) > getProductSizeUnitPriority(best) ? current : best,
+  );
+}
 
 function normalizeProductSizeOptionValue(value?: string) {
-  const raw = cleanText(value).match(PRODUCT_SIZE_OPTION_RE)?.[0] || "";
+  const raw = pickPreferredProductSizeMatch(value);
   if (!raw) return "";
   return raw
     .replace(/\s+/g, " ")
@@ -5329,6 +5352,11 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
 
       return "";
     })();
+    const productVolumeText = (() => {
+      const volumeNode = document.querySelector(".product__volume, .product-volume, [data-product-volume]");
+      const text = normalizeSectionText((volumeNode as HTMLElement | null)?.innerText || volumeNode?.textContent || "");
+      return text || undefined;
+    })();
 
     const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
       .map((s) => s.textContent || "")
@@ -6173,6 +6201,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       scripts,
       embeddedProductScripts,
       domVariants,
+      productVolumeText,
       productDetailsText,
       howToUseText,
       ingredientsMarkdownText,
@@ -6186,7 +6215,7 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
   });
 }
 
-function buildProductFromPageSignals(params: {
+export function buildProductFromPageSignals(params: {
   extracted: ScrapedPageSignals;
   pageLooksLikeProduct: boolean;
   sourceUrl: string;
@@ -6430,6 +6459,7 @@ function buildProductFromPageSignals(params: {
     variantProducts.length === 1 && typeof variantProducts[0]?.size === "string"
       ? variantProducts[0].size
       : undefined,
+    extracted.productVolumeText,
     productTitle,
     productUrl,
     ...productImageUrls,

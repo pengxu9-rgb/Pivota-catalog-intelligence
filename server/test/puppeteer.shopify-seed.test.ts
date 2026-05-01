@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildProductFromPageSignals,
   PuppeteerExtractor,
   buildProductPdpFields,
   choosePreferredProductOverview,
@@ -403,6 +404,36 @@ test("PuppeteerExtractor reads single default Shopify pack-count evidence from p
       assert.equal(result.products[0]?.variants[0]?.sku, "PAD-110EA");
     },
   );
+});
+
+test("buildProductFromPageSignals reads single default size evidence from product volume text", () => {
+  const product = buildProductFromPageSignals({
+    extracted: {
+      title: "Bouncy & Firm Eye Sleeping Mask",
+      canonical: "https://us.laneige.com/products/bouncy-firm-eye-sleeping-mask",
+      metaDescription: "",
+      priceTexts: ["$32"],
+      imageCandidates: ["https://cdn.example.com/bouncy-eye.jpg"],
+      scripts: [],
+      embeddedProductScripts: [],
+      domVariants: [],
+      productVolumeText: "(0.70 fl. oz./20 mL)",
+      productDetailsText: "An overnight cooling and hydrating eye treatment.",
+      detailsSections: [],
+      faqItems: [],
+      faqHtmlSnippets: [],
+    },
+    pageLooksLikeProduct: true,
+    sourceUrl: "https://us.laneige.com/products/bouncy-firm-eye-sleeping-mask",
+    baseUrl: "https://us.laneige.com",
+    verbose: false,
+    log: () => {},
+  });
+
+  assert.ok(product);
+  assert.equal(product?.variants.length, 1);
+  assert.equal(product?.variants[0]?.option_name, "Size");
+  assert.equal(product?.variants[0]?.option_value, "20ml");
 });
 
 test("isNonProductRedirectForRequestedPdp catches product URLs redirected to homepage", () => {

@@ -460,7 +460,7 @@ function cleanText(text?: string) {
 }
 
 const PRODUCT_SIZE_OPTION_RE =
-  /\b\d+(?:\.\d+)?\s*(?:fl\.?\s*oz\.?|fluid\s*ounces?|m\s*l|ml|g|kg|oz|l|lb|lbs|mm|cm)\b(?:\s*(?:x|×)\s*\d+)?/i;
+  /\b\d+(?:\.\d+)?\s*(?:fl\.?\s*oz\.?|fluid\s*ounces?|m\s*l|ml|g|kg|oz|l|lb|lbs|mm|cm|ea|ct|count|pcs?|pieces?|pads?|patches?)\b(?:\s*(?:x|×)\s*\d+)?/i;
 
 function normalizeProductSizeOptionValue(value?: string) {
   const raw = cleanText(value).match(PRODUCT_SIZE_OPTION_RE)?.[0] || "";
@@ -470,8 +470,11 @@ function normalizeProductSizeOptionValue(value?: string) {
     .replace(/m\s*l/gi, "ml")
     .replace(/fluid\s*ounces?/gi, "fl oz")
     .replace(/fl\.?\s*oz\.?/gi, "fl oz")
-    .replace(/\b(ml|g|kg|oz|l|lb|lbs|mm|cm)\b/gi, (unit) => unit.toLowerCase())
+    .replace(/\b(ml|g|kg|oz|l|lb|lbs|mm|cm|ea|ct|count|pcs?|pieces?|pads?|patches?)\b/gi, (unit) =>
+      unit.toLowerCase(),
+    )
     .replace(/(\d)\s+(ml|g|kg|oz|l|lb|lbs|mm|cm)\b/gi, "$1$2")
+    .replace(/(\d)\s+(ea|ct|count|pcs?|pieces?|pads?|patches?)\b/gi, "$1 $2")
     .replace(/\s*(x|×)\s*/i, " x ")
     .trim();
 }
@@ -3385,6 +3388,7 @@ type ShopifyVariant = {
   id: number;
   sku?: string | null;
   title?: string;
+  public_title?: string | null;
   option1?: string | null;
   option2?: string | null;
   option3?: string | null;
@@ -3471,6 +3475,16 @@ function isDefaultShopifyVariant(variant: ShopifyVariant): boolean {
     .map((v) => (v || "").trim().toLowerCase())
     .filter(Boolean);
   return fields.length > 0 && fields.every((v) => v === "default title" || v === "default");
+}
+
+function isGenericSingleShopifyVariant(product: ShopifyProduct, variant: ShopifyVariant): boolean {
+  if (isDefaultShopifyVariant(variant)) return true;
+  const normalizedTitle = normalizeProductIdentityText(product.title);
+  if (!normalizedTitle) return false;
+  const fields = [variant.title, variant.option1, variant.option2, variant.option3, variant.public_title]
+    .map((value) => normalizeProductIdentityText(value || undefined))
+    .filter(Boolean);
+  return fields.length > 0 && fields.every((value) => value === normalizedTitle);
 }
 
 const SHOPIFY_SEARCH_STOP_TOKENS = new Set([
@@ -4041,7 +4055,8 @@ function buildShopifyResponse(params: {
   const discoveryCandidates = params.products
     .map((p) => {
       const split = splitTitleIntoBaseAndVariant(p.title);
-      const isSingleDefault = (p.variants || []).length === 1 && isDefaultShopifyVariant(p.variants[0]!);
+      const isSingleDefault =
+        (p.variants || []).length === 1 && isGenericSingleShopifyVariant(p, p.variants[0]!);
       return Boolean(split && isSingleDefault);
     })
     .filter(Boolean).length;
@@ -4073,9 +4088,13 @@ function buildShopifyResponse(params: {
     const productImageUrls = resolveShopifyProductImageUrls(params.baseUrl, product);
     const titleSplit = enableTitleDiscovery ? splitTitleIntoBaseAndVariant(product.title) : null;
     const treatAsPseudoVariant =
-      Boolean(titleSplit) && (product.variants || []).length === 1 && isDefaultShopifyVariant(product.variants[0]!);
+      Boolean(titleSplit) &&
+      (product.variants || []).length === 1 &&
+      isGenericSingleShopifyVariant(product, product.variants[0]!);
     const singleDefaultSizeOption =
-      !treatAsPseudoVariant && (product.variants || []).length === 1 && isDefaultShopifyVariant(product.variants[0]!)
+      !treatAsPseudoVariant &&
+      (product.variants || []).length === 1 &&
+      isGenericSingleShopifyVariant(product, product.variants[0]!)
         ? extractProductSizeOptionValue(product.title, product.handle, productUrl, ...productImageUrls)
         : "";
 
@@ -4648,6 +4667,14 @@ export function mergeShopifyDirectPdpFallback(
         fallbackBySku.get(variant.sku) ||
         fallbackByOption.get(`${variant.option_name}::${variant.option_value}`) ||
         fallbackProduct.variants[0];
+      const directVariantOptionGeneric = isGenericOfferOptionValue(variant.option_value, mergedProduct.title);
+      const fallbackVariantOptionGeneric = isGenericOfferOptionValue(
+        matchedFallback?.option_value,
+        mergedProduct.title,
+      );
+      const useFallbackVariantDisplay = Boolean(
+        matchedFallback && directVariantOptionGeneric && !fallbackVariantOptionGeneric,
+      );
       const relevantVariantFallbackImages = selectRelevantFallbackImageUrls(
         {
           title: [mergedProduct.title, variant.option_name, variant.option_value].filter(Boolean).join(" "),
@@ -4668,6 +4695,12 @@ export function mergeShopifyDirectPdpFallback(
 
       return {
         ...variant,
+        ...(useFallbackVariantDisplay
+          ? {
+              option_name: matchedFallback?.option_name || variant.option_name,
+              option_value: matchedFallback?.option_value || variant.option_value,
+            }
+          : {}),
         image_urls: mergedVariantImages,
         image_url: mergedVariantImages[0] || variant.image_url || mergedProduct.image_url,
       };
@@ -6391,7 +6424,16 @@ function buildProductFromPageSignals(params: {
       ],
     },
   });
-  const productSizeOptionValue = extractProductSizeOptionValue(productTitle, productUrl);
+  const productSizeOptionValue = extractProductSizeOptionValue(
+    typeof primaryProductObj?.size === "string" ? primaryProductObj.size : undefined,
+    typeof productGroupObj?.size === "string" ? productGroupObj.size : undefined,
+    variantProducts.length === 1 && typeof variantProducts[0]?.size === "string"
+      ? variantProducts[0].size
+      : undefined,
+    productTitle,
+    productUrl,
+    ...productImageUrls,
+  );
 
   const variants: ExtractedVariant[] = finalizeExtractedVariants(
     variantProducts.length > 1
@@ -6489,23 +6531,28 @@ function buildProductFromPageSignals(params: {
             ...resolveStructuredImageUrls(params.baseUrl, [offerImageRaw, domMeta?.image_urls, domMeta?.image_url, imageRaw, extracted.imageCandidates]),
             ...productImageUrls,
           ]);
-          const sizeOptionValue =
-            domMeta?.option_value
-              ? ""
-              : extractProductSizeOptionValue(
-                  optionValueFromOffer,
-                  productSizeOptionValue,
-                  productTitle,
-                  productUrl,
-                  typeof offer.url === "string" ? offer.url : "",
-                  ...offerImageUrls,
-                );
+          const displayableDomOptionValue =
+            domMeta?.option_value && !isGenericOfferOptionValue(domMeta.option_value, productTitle)
+              ? domMeta.option_value
+              : "";
+          const sizeOptionValue = displayableDomOptionValue
+            ? ""
+            : extractProductSizeOptionValue(
+                domMeta?.option_value,
+                optionValueFromOffer,
+                productSizeOptionValue,
+                productTitle,
+                productUrl,
+                typeof offer.url === "string" ? offer.url : "",
+                ...offerImageUrls,
+              );
           const displayableOfferOptionValue = isGenericOfferOptionValue(optionValueFromOffer, productTitle)
             ? ""
             : optionValueFromOffer;
 
-          const optionValue = domMeta?.option_value || sizeOptionValue || displayableOfferOptionValue || sku;
-          const optionName = domMeta?.option_name || (sizeOptionValue ? "Size" : "Offer");
+          const optionValue = displayableDomOptionValue || sizeOptionValue || displayableOfferOptionValue || sku;
+          const optionName =
+            (displayableDomOptionValue ? domMeta?.option_name : undefined) || (sizeOptionValue ? "Size" : "Offer");
 
           const id = stableId(`${productUrl}|${sku}|${price}`);
           const ingredientsText = domMeta?.ingredients || ingredientsMarkdownText;

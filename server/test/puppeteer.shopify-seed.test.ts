@@ -350,6 +350,61 @@ test("PuppeteerExtractor reads single default Shopify size evidence from product
   );
 });
 
+test("PuppeteerExtractor reads single default Shopify pack-count evidence from product images", async () => {
+  const extractor = new PuppeteerExtractor();
+
+  await withMockFetch(
+    {
+      "https://example.com/products/catechin-calming-pad.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          id: 203,
+          title: "Catechin Calming Pad",
+          handle: "catechin-calming-pad",
+          body_html: "A calming toner pad.",
+          variants: [
+            {
+              id: 2003,
+              sku: "PAD-110EA",
+              title: "Catechin Calming Pad",
+              option1: "Catechin Calming Pad",
+              price: "2300",
+              available: true,
+              inventory_quantity: 5,
+              featured_image: {
+                alt: "Catechin Calming Pad 110 ea",
+                src: "https://cdn.example.com/products/catechin-calming-pad-110-ea.png",
+              },
+            },
+          ],
+          options: [{ name: "Catechin Calming Pad" }],
+          images: [{ src: "https://cdn.example.com/products/catechin-calming-pad-110-ea.png" }],
+        }),
+      },
+      "https://example.com/products/catechin-calming-pad": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Example",
+        domain: "https://example.com/products/catechin-calming-pad",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.variants.length, 1);
+      assert.equal(result.products[0]?.variants[0]?.option_name, "Size");
+      assert.equal(result.products[0]?.variants[0]?.option_value, "110 ea");
+      assert.equal(result.products[0]?.variants[0]?.sku, "PAD-110EA");
+    },
+  );
+});
+
 test("isNonProductRedirectForRequestedPdp catches product URLs redirected to homepage", () => {
   assert.equal(
     isNonProductRedirectForRequestedPdp(
@@ -2287,6 +2342,103 @@ test("mergeShopifyDirectPdpFallback fills Shopify direct PDP images from fallbac
     "https://cdn.shopify.com/glow-getter-set-side.jpg",
   ]);
   assert.equal(merged.variants[0]?.image_url, "https://cdn.shopify.com/glow-getter-set-main.jpg");
+});
+
+test("mergeShopifyDirectPdpFallback upgrades generic single-variant display fields from fallback scrape data", () => {
+  const response = {
+    brand: "Laneige",
+    domain: "us.laneige.com",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Bouncy & Firm Eye Sleeping Mask",
+        url: "https://us.laneige.com/products/bouncy-firm-eye-sleeping-mask",
+        image_url: "https://cdn.shopify.com/bouncy-eye-main.jpg",
+        image_urls: ["https://cdn.shopify.com/bouncy-eye-main.jpg"],
+        variant_skus: ["270284032"],
+        variants: [
+          {
+            id: "v1",
+            sku: "270284032",
+            url: "https://us.laneige.com/products/bouncy-firm-eye-sleeping-mask",
+            option_name: "Title",
+            option_value: "Default Title",
+            price: "32.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "desc",
+            image_url: "https://cdn.shopify.com/bouncy-eye-main.jpg",
+            image_urls: ["https://cdn.shopify.com/bouncy-eye-main.jpg"],
+            ad_copy: "copy",
+          },
+        ],
+      },
+    ],
+    variants: [
+      {
+        id: "v1",
+        sku: "270284032",
+        url: "https://us.laneige.com/products/bouncy-firm-eye-sleeping-mask",
+        option_name: "Title",
+        option_value: "Default Title",
+        price: "32.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "desc",
+        image_url: "https://cdn.shopify.com/bouncy-eye-main.jpg",
+        image_urls: ["https://cdn.shopify.com/bouncy-eye-main.jpg"],
+        ad_copy: "copy",
+        brand: "Laneige",
+        product_title: "Bouncy & Firm Eye Sleeping Mask",
+        product_url: "https://us.laneige.com/products/bouncy-firm-eye-sleeping-mask",
+        deep_link: "https://us.laneige.com/products/bouncy-firm-eye-sleeping-mask?variant=v1",
+        simulated: false,
+      },
+    ],
+    pricing: { currency: "USD" as const, min: 32, max: 32, avg: 32 },
+    ad_copy: { by_variant_id: { v1: "copy" } },
+    pagination: { offset: 0, limit: 1, next_offset: null, has_more: false, discovered_urls: 1 },
+    diagnostics: {
+      requested_domain: "us.laneige.com",
+      resolved_base_url: "https://us.laneige.com",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  const fallbackProduct = {
+    title: "Bouncy & Firm Eye Sleeping Mask",
+    url: "https://us.laneige.com/products/bouncy-firm-eye-sleeping-mask",
+    image_url: "https://cdn.shopify.com/bouncy-eye-main.jpg",
+    image_urls: ["https://cdn.shopify.com/bouncy-eye-main.jpg"],
+    variant_skus: ["270284032"],
+    variants: [
+      {
+        id: "fallback-v1",
+        sku: "270284032",
+        url: "https://us.laneige.com/products/bouncy-firm-eye-sleeping-mask",
+        option_name: "Size",
+        option_value: "20mL",
+        price: "32.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "desc",
+        image_url: "https://cdn.shopify.com/bouncy-eye-main.jpg",
+        image_urls: ["https://cdn.shopify.com/bouncy-eye-main.jpg"],
+        ad_copy: "copy",
+      },
+    ],
+  };
+
+  const merged = mergeShopifyDirectPdpFallback("Laneige", response, fallbackProduct);
+
+  assert.equal(merged.products[0]?.variants[0]?.option_name, "Size");
+  assert.equal(merged.products[0]?.variants[0]?.option_value, "20mL");
+  assert.equal(merged.variants[0]?.option_name, "Size");
+  assert.equal(merged.variants[0]?.option_value, "20mL");
 });
 
 test("mergeShopifyDirectPdpFallback rejects site-level meta descriptions", () => {

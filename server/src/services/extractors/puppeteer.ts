@@ -1773,6 +1773,17 @@ export function extractShopifyProductJsonAttributeScriptsFromHtml(html: string |
   return out;
 }
 
+function extractShopifyProductVolumeTextFromHtml(html: string | undefined) {
+  const source = typeof html === "string" ? html : "";
+  if (!source.trim()) return "";
+  const match =
+    source.match(/<[^>]+class=["'][^"']*\bproduct__volume\b[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i) ||
+    source.match(/<[^>]+data-product-volume(?:=["'][^"']*["'])?[^>]*>([\s\S]*?)<\/[^>]+>/i) ||
+    source.match(/<[^>]+class=["'][^"']*\bproduct-volume\b[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i);
+  if (!match?.[1]) return "";
+  return cleanText(decodeHtmlAttributeEntities(match[1].replace(/<[^>]+>/g, " ")));
+}
+
 function extractRichTextJsonToText(value: unknown): string {
   const walk = (node: unknown): string[] => {
     if (!node || typeof node !== "object") return [];
@@ -4454,8 +4465,19 @@ function mergeShopifyDirectPdpEmbeddedProductJson(
   if (!response.products[0] || !html) return response;
 
   const embeddedScripts = extractShopifyProductJsonAttributeScriptsFromHtml(html);
-  if (embeddedScripts.length === 0) return response;
-  const embeddedFields = extractShopifyEmbeddedProductPayloadPdpFields(embeddedScripts);
+  const htmlVolumeText = extractShopifyProductVolumeTextFromHtml(html);
+  if (embeddedScripts.length === 0 && !htmlVolumeText) return response;
+  const embeddedFields: ReturnType<typeof extractShopifyEmbeddedProductPayloadPdpFields> =
+    embeddedScripts.length > 0
+      ? extractShopifyEmbeddedProductPayloadPdpFields(embeddedScripts)
+      : {
+          descriptionRaw: undefined,
+          detailsSections: [],
+          ingredientsRaw: undefined,
+          activeIngredientsRaw: undefined,
+          howToUseRaw: undefined,
+          imageUrls: [],
+        };
   const mergedImages = resolveStructuredImageUrls(response.domain, embeddedFields.imageUrls);
 
   const mergedProducts = response.products.map((product, idx) => {
@@ -4475,6 +4497,18 @@ function mergeShopifyDirectPdpEmbeddedProductJson(
       }),
     };
     mergedProduct.image_url = mergedProduct.image_urls[0] || product.image_url || "";
+    const htmlVolumeOptionValue =
+      mergedProduct.variants.length === 1 && isGenericOfferOptionValue(mergedProduct.variants[0]?.option_value, mergedProduct.title)
+        ? extractProductSizeOptionValue(htmlVolumeText)
+        : "";
+    if (htmlVolumeOptionValue && mergedProduct.variants[0]) {
+      mergedProduct.variants[0] = {
+        ...mergedProduct.variants[0],
+        option_name: "Size",
+        option_value: htmlVolumeOptionValue,
+        hidden_from_selector: false,
+      };
+    }
 
     Object.assign(
       mergedProduct,

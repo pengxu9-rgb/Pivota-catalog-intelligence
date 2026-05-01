@@ -1935,6 +1935,104 @@ test("enrichDirectShopifyPdpResponse merges embedded product-json before browser
   );
 });
 
+test("enrichDirectShopifyPdpResponse upgrades generic single variants from HTML product volume before browser enrichment", async () => {
+  const logs: Array<{ type: string; msg: string }> = [];
+  const seedUrl = "https://us.laneige.com/products/bouncy-firm-eye-sleeping-mask";
+  const response = {
+    brand: "Laneige",
+    domain: "https://us.laneige.com",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Bouncy & Firm Eye Sleeping Mask",
+        url: seedUrl,
+        image_url: "https://cdn.example.com/bouncy-eye.jpg",
+        image_urls: ["https://cdn.example.com/bouncy-eye.jpg"],
+        variant_skus: ["270284032"],
+        variants: [
+          {
+            id: "42052027940916",
+            sku: "270284032",
+            url: seedUrl,
+            option_name: "Title",
+            option_value: "Default Title",
+            price: "32.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "An overnight eye treatment.",
+            image_url: "https://cdn.example.com/bouncy-eye.jpg",
+            image_urls: ["https://cdn.example.com/bouncy-eye.jpg"],
+            ad_copy: "",
+            hidden_from_selector: true,
+          },
+        ],
+        description_raw: "An overnight eye treatment.",
+        details_sections: [
+          {
+            heading: "Benefits",
+            body: "Hydration, PM",
+            source_kind: "embedded_product_json_tags",
+          },
+        ],
+        field_sources: {
+          description_raw: ["shopify_description"],
+          details_sections: ["embedded_product_json_tags"],
+          ingredients_raw: [],
+          active_ingredients_raw: [],
+          how_to_use_raw: [],
+          faq_items: [],
+        },
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 32, max: 32, avg: 32 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "us.laneige.com",
+      resolved_base_url: "https://us.laneige.com",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  await withMockFetch(
+    {
+      [seedUrl]: {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `<html><body><span class="product__volume">(0.70 fl. oz./20 mL)</span></body></html>`,
+      },
+    },
+    async () => {
+      const result = await enrichDirectShopifyPdpResponse({
+        brand: "Laneige",
+        baseUrl: "https://us.laneige.com",
+        seedUrl,
+        response,
+        diagnostics: response.diagnostics,
+        log: (type, msg) => logs.push({ type, msg }),
+        browserRunner: async () => {
+          throw new Error("browser should not run");
+        },
+      });
+
+      assert.equal(result.products[0]?.variants[0]?.option_name, "Size");
+      assert.equal(result.products[0]?.variants[0]?.option_value, "20ml");
+      assert.equal(result.products[0]?.variants[0]?.hidden_from_selector, false);
+    },
+  );
+});
+
 test("extractLikelyFullIngredientListText isolates full INCI from mixed accordion copy", () => {
   const text = `
     2% Tranexamic Acid helps reduce the appearance of hyperpigmentation and dark spots.

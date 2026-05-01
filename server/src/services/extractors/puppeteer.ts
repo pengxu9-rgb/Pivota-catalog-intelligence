@@ -2332,17 +2332,67 @@ export function buildProductPdpFields(params: {
   const quarantinedDetailsSections = detailsSections.filter((section) => isQuarantinedDetailSourceKind(section.source_kind));
   const surfacedFaqItems = faqItems.filter((item) => !isQuarantinedDetailSourceKind(item.source_kind));
   const quarantinedFaqItems = faqItems.filter((item) => isQuarantinedDetailSourceKind(item.source_kind));
-  const descriptionSummary = classifyPdpFieldQuality(fieldSources.description_raw);
+  const baseDescriptionSummary = classifyPdpFieldQuality(fieldSources.description_raw);
+  const baseIngredientsSummary = classifyPdpFieldQuality(fieldSources.ingredients_raw);
+  const baseActiveIngredientsSummary = classifyPdpFieldQuality(fieldSources.active_ingredients_raw);
+  const baseHowToUseSummary = classifyPdpFieldQuality(fieldSources.how_to_use_raw);
+  const surfacedDescriptionRaw =
+    baseDescriptionSummary.source_quality_status === "quarantined" ? "" : descriptionRaw;
+  const surfacedIngredientsRaw =
+    baseIngredientsSummary.source_quality_status === "quarantined" ? "" : ingredientsRaw;
+  const surfacedActiveIngredientsRaw =
+    baseActiveIngredientsSummary.source_quality_status === "quarantined" ? "" : activeIngredientsRaw;
+  const surfacedHowToUseRaw =
+    baseHowToUseSummary.source_quality_status === "quarantined" ? "" : howToUseRaw;
+  const surfacedFieldSources = {
+    description_raw: surfacedDescriptionRaw
+      ? fieldSources.description_raw.filter((kind) => !isQuarantinedDetailSourceKind(kind))
+      : [],
+    details_sections:
+      surfacedDetailsSections.length > 0
+        ? normalizePdpSourceKinds(surfacedDetailsSections.map((section) => section.source_kind))
+        : [],
+    ingredients_raw: surfacedIngredientsRaw
+      ? fieldSources.ingredients_raw.filter((kind) => !isQuarantinedDetailSourceKind(kind))
+      : [],
+    active_ingredients_raw: surfacedActiveIngredientsRaw
+      ? fieldSources.active_ingredients_raw.filter((kind) => !isQuarantinedDetailSourceKind(kind))
+      : [],
+    how_to_use_raw: surfacedHowToUseRaw
+      ? fieldSources.how_to_use_raw.filter((kind) => !isQuarantinedDetailSourceKind(kind))
+      : [],
+    faq_items:
+      surfacedFaqItems.length > 0
+        ? normalizePdpSourceKinds(surfacedFaqItems.map((item) => item.source_kind))
+        : [],
+  };
+  const descriptionSummary = classifyPdpFieldQuality(
+    surfacedDescriptionRaw ? surfacedFieldSources.description_raw : fieldSources.description_raw,
+  );
   const detailsSummary = classifyPdpFieldQuality(
     surfacedDetailsSections.length > 0
-      ? surfacedDetailsSections.map((section) => section.source_kind)
-      : fieldSources.details_sections,
+      ? surfacedFieldSources.details_sections
+      : quarantinedDetailsSections.length > 0
+        ? quarantinedDetailsSections.map((section) => section.source_kind)
+        : fieldSources.details_sections,
   );
-  const ingredientsSummary = classifyPdpFieldQuality(fieldSources.ingredients_raw);
-  const activeIngredientsSummary = classifyPdpFieldQuality(fieldSources.active_ingredients_raw);
-  const howToUseSummary = classifyPdpFieldQuality(fieldSources.how_to_use_raw);
+  const ingredientsSummary = classifyPdpFieldQuality(
+    surfacedIngredientsRaw ? surfacedFieldSources.ingredients_raw : fieldSources.ingredients_raw,
+  );
+  const activeIngredientsSummary = classifyPdpFieldQuality(
+    surfacedActiveIngredientsRaw
+      ? surfacedFieldSources.active_ingredients_raw
+      : fieldSources.active_ingredients_raw,
+  );
+  const howToUseSummary = classifyPdpFieldQuality(
+    surfacedHowToUseRaw ? surfacedFieldSources.how_to_use_raw : fieldSources.how_to_use_raw,
+  );
   const faqSummary = classifyPdpFieldQuality(
-    surfacedFaqItems.length > 0 ? surfacedFaqItems.map((item) => item.source_kind) : fieldSources.faq_items,
+    surfacedFaqItems.length > 0
+      ? surfacedFieldSources.faq_items
+      : quarantinedFaqItems.length > 0
+        ? quarantinedFaqItems.map((item) => item.source_kind)
+        : fieldSources.faq_items,
   );
   const quarantinedFields: ExtractedProduct["quarantined_pdp_fields"] = {};
   if (descriptionRaw && descriptionSummary.source_quality_status === "quarantined") {
@@ -2365,15 +2415,6 @@ export function buildProductPdpFields(params: {
     quarantinedFields.faq_items = quarantinedFaqItems.length > 0 ? quarantinedFaqItems : faqItems;
   }
 
-  const surfacedDescriptionRaw =
-    descriptionSummary.source_quality_status === "quarantined" ? "" : descriptionRaw;
-  const surfacedIngredientsRaw =
-    ingredientsSummary.source_quality_status === "quarantined" ? "" : ingredientsRaw;
-  const surfacedActiveIngredientsRaw =
-    activeIngredientsSummary.source_quality_status === "quarantined" ? "" : activeIngredientsRaw;
-  const surfacedHowToUseRaw =
-    howToUseSummary.source_quality_status === "quarantined" ? "" : howToUseRaw;
-
   return {
     ...(surfacedDescriptionRaw ? { description_raw: surfacedDescriptionRaw } : {}),
     ...(surfacedDetailsSections.length > 0 ? { details_sections: surfacedDetailsSections } : {}),
@@ -2390,12 +2431,12 @@ export function buildProductPdpFields(params: {
       faq_items: surfacedFaqItems.length > 0 ? "present" : "missing",
     } as const,
     field_sources: {
-      description_raw: fieldSources.description_raw,
-      details_sections: fieldSources.details_sections,
-      ingredients_raw: fieldSources.ingredients_raw,
-      active_ingredients_raw: fieldSources.active_ingredients_raw,
-      how_to_use_raw: fieldSources.how_to_use_raw,
-      faq_items: fieldSources.faq_items,
+      description_raw: surfacedFieldSources.description_raw,
+      details_sections: surfacedFieldSources.details_sections,
+      ingredients_raw: surfacedFieldSources.ingredients_raw,
+      active_ingredients_raw: surfacedFieldSources.active_ingredients_raw,
+      how_to_use_raw: surfacedFieldSources.how_to_use_raw,
+      faq_items: surfacedFieldSources.faq_items,
     },
     field_quality_summary: {
       description_raw: descriptionSummary,

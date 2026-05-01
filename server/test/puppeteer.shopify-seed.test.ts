@@ -1000,7 +1000,11 @@ test("enrichDirectShopifyPdpResponse recovers image-only Shopify PDP content thr
       assert.equal(result.products[0]?.how_to_use_raw, undefined);
       assert.equal(result.products[0]?.ingredients_raw, undefined);
       assert.deepEqual(result.products[0]?.details_sections?.map((section) => section.heading), ["Product Type"]);
+      assert.deepEqual(result.products[0]?.field_sources?.details_sections, []);
       assert.equal(result.products[0]?.field_quality_summary?.description_raw?.source_quality_status, "quarantined");
+      assert.deepEqual(result.products[0]?.field_quality_summary?.details_sections?.reason_codes, [
+        "quarantined_source_kind",
+      ]);
       assert.equal(result.products[0]?.field_quality_summary?.ingredients_raw?.source_origin, "image_vision");
       assert.match(result.products[0]?.quarantined_pdp_fields?.description_raw || "", /glow-priming base/);
       assert.deepEqual(result.products[0]?.quarantined_pdp_fields?.details_sections?.map((section) => section.heading), [

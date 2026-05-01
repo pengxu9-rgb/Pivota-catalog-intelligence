@@ -254,10 +254,35 @@ test("buildProductPdpFields quarantines low-trust fallback and image-vision fiel
   assert.equal(fields.field_quality_summary?.description_raw?.source_quality_status, "quarantined");
   assert.equal(fields.field_quality_summary?.ingredients_raw?.source_origin, "image_vision");
   assert.equal(fields.field_quality_summary?.faq_items?.source_quality_status, "medium");
+  assert.deepEqual(fields.field_sources?.details_sections, ["accordion_how_to_use"]);
+  assert.deepEqual(fields.field_sources?.faq_items, ["faq_section"]);
   assert.equal(fields.quarantined_pdp_fields?.description_raw, "Generated from image scan only.");
   assert.equal(fields.quarantined_pdp_fields?.ingredients_raw, "Niacinamide, Glycerin");
   assert.equal(fields.quarantined_pdp_fields?.details_sections?.length, 1);
   assert.equal(fields.quarantined_pdp_fields?.faq_items?.length, 1);
+});
+
+test("buildProductPdpFields keeps quarantined-only detail provenance out of surfaced field sources", () => {
+  const fields = buildProductPdpFields({
+    detailsSections: [
+      {
+        heading: "Clinical Test Results",
+        body: "Immediate temporary cooling effect.",
+        source_kind: "product_image_vision",
+      },
+    ],
+    fieldSources: {
+      details_sections: ["shopify_product_tags", "product_image_vision"],
+    },
+  });
+
+  assert.equal(fields.details_sections, undefined);
+  assert.equal(fields.field_capture_status?.details_sections, "missing");
+  assert.deepEqual(fields.field_sources?.details_sections, []);
+  assert.equal(fields.field_quality_summary?.details_sections?.source_quality_status, "quarantined");
+  assert.deepEqual(fields.field_quality_summary?.details_sections?.source_kinds, ["product_image_vision"]);
+  assert.deepEqual(fields.field_quality_summary?.details_sections?.reason_codes, ["quarantined_source_kind"]);
+  assert.equal(fields.quarantined_pdp_fields?.details_sections?.length, 1);
 });
 
 test("fetchOkendoFaqItemsFromMetafieldJson returns approved store-answered product questions", async () => {

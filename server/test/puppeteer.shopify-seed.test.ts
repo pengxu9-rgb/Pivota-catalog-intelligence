@@ -16,6 +16,7 @@ import {
   isNonProductRedirectForRequestedPdp,
   isShopifyDirectPdpFallbackUsable,
   mergeShopifyDirectPdpFallback,
+  normalizeStructuredProseDetailSections,
   normalizeImageVisionFields,
   pickBestJsonLdObjectForPage,
   productHasMissingPdpFields,
@@ -2033,6 +2034,68 @@ test("enrichDirectShopifyPdpResponse upgrades generic single variants from HTML 
   );
 });
 
+test("normalizeStructuredProseDetailSections preserves benefits while relabeling Anua prose results and how-to blocks", () => {
+  const result = normalizeStructuredProseDetailSections([
+    {
+      heading: "SOOTHES REDNESS",
+      body: "Designed to soothe, tone, and hydrate the skin.",
+      source_kind: "page_section_stack_prose",
+    },
+    {
+      heading: "BALANCES pH LEVEL OF SKIN",
+      body: "Helps maintain the skin's moisture barrier.",
+      source_kind: "page_section_stack_prose",
+    },
+    {
+      heading: "Skin Temperature Decreased by 14.52%",
+      body: "Clinical testing showed a soothing effect that supports the skin barrier.",
+      source_kind: "page_section_stack_prose",
+    },
+    {
+      heading: "Tone Up Your Routine",
+      body: "01 Cleanse your skin.\n02 Apply toner evenly.",
+      source_kind: "page_image_with_text_prose",
+    },
+  ]);
+
+  assert.deepEqual(result.map((section) => section.heading), [
+    "SOOTHES REDNESS",
+    "BALANCES pH LEVEL OF SKIN",
+    "Testing Results",
+    "How to Use",
+  ]);
+});
+
+test("normalizeStructuredProseDetailSections derives how-to from Anua image-with-text prose blocks", () => {
+  const result = normalizeStructuredProseDetailSections([
+    {
+      heading: "Niacinamide",
+      body: "Helps revitalize and revive dull-looking skin.",
+      source_kind: "page_section_stack_prose",
+    },
+    {
+      heading: "Tranexamic Acid (TXA)",
+      body: "Targets the appearance of post-breakout marks.",
+      source_kind: "page_section_stack_prose",
+    },
+    {
+      heading: "How to use",
+      body: "1. Apply to areas of concern after cleansing and leave on for 10–20 minutes like a mask.\n2. Gently swipe remaining essence.",
+      source_kind: "page_image_with_text_prose",
+    },
+  ]);
+
+  assert.deepEqual(result.map((section) => section.heading), [
+    "Niacinamide",
+    "Tranexamic Acid (TXA)",
+    "How to Use",
+  ]);
+  const howToSection = result.find((section) => section.heading === "How to Use");
+  assert.ok(howToSection);
+  assert.equal(howToSection.source_kind, "page_image_with_text_prose");
+  assert.match(howToSection.body, /leave on for 10–20 minutes/i);
+});
+
 test("extractLikelyFullIngredientListText isolates full INCI from mixed accordion copy", () => {
   const text = `
     2% Tranexamic Acid helps reduce the appearance of hyperpigmentation and dark spots.
@@ -2876,6 +2939,147 @@ test("mergeShopifyDirectPdpFallback quarantines fallback PDP fields even when no
   assert.equal(merged.products[0]?.quarantined_pdp_fields?.details_sections?.length, 2);
   assert.equal(merged.products[0]?.quarantined_pdp_fields?.faq_items?.length, 1);
   assert.equal(merged.products[0]?.image_url, "https://cdn.example.com/tomford-neroli-1.jpg");
+});
+
+test("mergeShopifyDirectPdpFallback can preserve same-PDP browser field provenance for authoritative DOM recovery", () => {
+  const response = {
+    brand: "Anua",
+    domain: "https://anua.com",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Heartleaf 77 Soothing Toner",
+        description_raw: "A calming toner for sensitive skin.",
+        details_sections: [],
+        ingredients_raw: undefined,
+        active_ingredients_raw: undefined,
+        how_to_use_raw: undefined,
+        faq_items: undefined,
+        field_sources: {
+          description_raw: ["shopify_description"],
+          details_sections: [],
+          ingredients_raw: [],
+          active_ingredients_raw: [],
+          how_to_use_raw: [],
+          faq_items: [],
+        },
+        field_quality_summary: undefined,
+        image_url: "https://cdn.example.com/anua-heartleaf77.jpg",
+        image_urls: ["https://cdn.example.com/anua-heartleaf77.jpg"],
+        title_override: undefined,
+        price_amount: "23.00",
+        price_currency: "USD" as const,
+        availability: "In Stock" as const,
+        url: "https://anua.com/products/heartleaf-77-soothing-toner",
+        variant_skus: ["AA000043"],
+        variants: [
+          {
+            id: "v1",
+            sku: "AA000043",
+            url: "https://anua.com/products/heartleaf-77-soothing-toner?variant=v1",
+            option_name: "Size",
+            option_value: "250ml",
+            price: "23.00",
+            currency: "USD" as const,
+            stock: "In Stock" as const,
+            description: "",
+            image_url: "https://cdn.example.com/anua-heartleaf77.jpg",
+            image_urls: ["https://cdn.example.com/anua-heartleaf77.jpg"],
+            ad_copy: "",
+          },
+        ],
+        simulated: false,
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD" as const, min: 23, max: 23, avg: 23 },
+    ad_copy: { by_variant_id: {} },
+    pagination: { offset: 0, limit: 1, next_offset: null, has_more: false, discovered_urls: 1 },
+    diagnostics: {
+      requested_domain: "anua.com",
+      resolved_base_url: "https://anua.com",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  const browserProduct = {
+    title: "Heartleaf 77 Soothing Toner",
+    url: "https://anua.com/products/heartleaf-77-soothing-toner",
+    image_url: "https://cdn.example.com/anua-heartleaf77.jpg",
+    image_urls: ["https://cdn.example.com/anua-heartleaf77.jpg"],
+    variant_skus: ["AA000043"],
+    details_sections: [
+      {
+        heading: "SOOTHES REDNESS",
+        body: "Designed to soothe, tone, and hydrate the skin.",
+        source_kind: "page_section_stack_prose" as const,
+      },
+      {
+        heading: "How to Use",
+        body: "01 Cleanse your skin. 02 Apply toner evenly.",
+        source_kind: "page_image_with_text_prose" as const,
+      },
+      {
+        heading: "Ingredients",
+        body: "Water, Butylene Glycol, Houttuynia Cordata Extract.",
+        source_kind: "details_summary" as const,
+      },
+    ],
+    ingredients_raw: "Water, Butylene Glycol, Houttuynia Cordata Extract.",
+    how_to_use_raw: "01 Cleanse your skin. 02 Apply toner evenly.",
+    faq_items: [
+      {
+        question: "Can I use this every day?",
+        answer: "Yes, use after cleansing.",
+        source_kind: "faq_section" as const,
+      },
+    ],
+    field_sources: {
+      description_raw: [],
+      details_sections: ["page_section_stack_prose", "page_image_with_text_prose", "details_summary"],
+      ingredients_raw: ["details_summary"],
+      active_ingredients_raw: [],
+      how_to_use_raw: ["page_image_with_text_prose"],
+      faq_items: ["faq_section"],
+    },
+    variants: [
+      {
+        id: "fallback-v1",
+        sku: "AA000043",
+        url: "https://anua.com/products/heartleaf-77-soothing-toner?variant=v1",
+        option_name: "Size",
+        option_value: "250ml",
+        price: "23.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "",
+        image_url: "https://cdn.example.com/anua-heartleaf77.jpg",
+        image_urls: ["https://cdn.example.com/anua-heartleaf77.jpg"],
+        ad_copy: "",
+      },
+    ],
+  };
+
+  const merged = mergeShopifyDirectPdpFallback("Anua", response, browserProduct, {
+    preservePdpFieldSourceKinds: true,
+  });
+
+  assert.equal(merged.products[0]?.field_quality_summary?.details_sections?.source_origin, "retail_pdp");
+  assert.equal(merged.products[0]?.field_quality_summary?.details_sections?.source_quality_status, "medium");
+  assert.equal(merged.products[0]?.field_quality_summary?.ingredients_raw?.source_origin, "retail_pdp");
+  assert.equal(merged.products[0]?.field_quality_summary?.how_to_use_raw?.source_origin, "retail_pdp");
+  assert.equal(merged.products[0]?.field_quality_summary?.faq_items?.source_origin, "retail_pdp");
+  assert.equal(merged.products[0]?.quarantined_pdp_fields?.details_sections?.length || 0, 0);
+  assert.equal(merged.products[0]?.how_to_use_raw, "01 Cleanse your skin. 02 Apply toner evenly.");
+  assert.deepEqual(merged.products[0]?.field_sources?.details_sections, [
+    "page_section_stack_prose",
+    "page_image_with_text_prose",
+    "details_summary",
+  ]);
 });
 
 test("choosePreferredProductOverview prefers expanded product details over short structured blurbs", () => {

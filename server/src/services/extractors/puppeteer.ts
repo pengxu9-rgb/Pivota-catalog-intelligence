@@ -568,6 +568,42 @@ function isTaxonomyOnlyDetailSection(section: ExtractedProductDetailSection | un
   return heading === "product type";
 }
 
+function isStructuredProseSourceKind(sourceKind: string | undefined) {
+  const normalized = cleanText(sourceKind).toLowerCase();
+  return normalized === "page_section_stack_prose" || normalized === "page_image_with_text_prose";
+}
+
+export function normalizeStructuredProseDetailSection(
+  section: ExtractedProductDetailSection,
+): ExtractedProductDetailSection {
+  if (!isStructuredProseSourceKind(section?.source_kind)) return section;
+  const heading = cleanText(section?.heading);
+  const body = cleanText(section?.body);
+  if (!heading || !body) return { ...section, heading, body };
+  const combined = `${heading}\n${body}`;
+  const normalizedHeading =
+    /^(?:how to use|how to apply|directions?|usage|suggested usage)$/i.test(heading) ||
+    /(?:^|\n)\s*(?:\d+[.)]\s*|step\s*\d+|use after|apply to|smooth(?: it)? over|leave on|massage|finish by)\b/i.test(combined) ||
+    /^tone up your routine$/i.test(heading)
+      ? "How to Use"
+      : /\b(?:clinical|testing?|results?|improvement|decrease(?:d)?|increase(?:d)?|after\s+\d+\s+(?:day|days|week|weeks)|study)\b/i.test(
+            `${heading} ${body}`,
+          )
+        ? "Testing Results"
+        : heading;
+  return {
+    ...section,
+    heading: normalizedHeading,
+    body,
+  };
+}
+
+export function normalizeStructuredProseDetailSections(
+  sections: ExtractedProductDetailSection[] | undefined,
+): ExtractedProductDetailSection[] {
+  return Array.isArray(sections) ? sections.map((section) => normalizeStructuredProseDetailSection(section)) : [];
+}
+
 function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
   const out: ExtractedProductDetailSection[] = [];
   const seen = new Set<string>();
@@ -673,6 +709,12 @@ function getDetailSectionSourcePriority(sourceKind: string | undefined) {
     normalized === "details_summary"
   ) {
     return 5;
+  }
+  if (
+    normalized === "page_section_stack_prose" ||
+    normalized === "page_image_with_text_prose"
+  ) {
+    return 4;
   }
   if (normalized === "accordion_control" || normalized === "pdp_content_heading" || normalized === "page_product_details") {
     return 4;
@@ -3946,7 +3988,9 @@ export async function enrichDirectShopifyPdpResponse(params: {
     return tryImageVisionEnrichment(response);
   }
 
-  const merged = mergeShopifyDirectPdpFallback(params.brand, response, browserRun.result);
+  const merged = mergeShopifyDirectPdpFallback(params.brand, response, browserRun.result, {
+    preservePdpFieldSourceKinds: true,
+  });
   if ((merged.products[0]?.image_urls.length || 0) > (product.image_urls.length || 0)) {
     params.log(
       "success",
@@ -4602,8 +4646,22 @@ export function mergeShopifyDirectPdpFallback(
   brand: string,
   response: Omit<ExtractResponse, "generated_at" | "logs">,
   fallbackProduct: ExtractedProduct,
+  options?: {
+    preservePdpFieldSourceKinds?: boolean;
+  },
 ): Omit<ExtractResponse, "generated_at" | "logs"> {
   if (!response.products[0]) return response;
+  const preservePdpFieldSourceKinds = Boolean(options?.preservePdpFieldSourceKinds);
+  const mapFallbackSection = (section: ExtractedProductDetailSection) => ({
+    ...section,
+    source_kind: preservePdpFieldSourceKinds ? cleanText(section.source_kind) || "unknown" : tagFallbackSourceKind(section.source_kind),
+  });
+  const mapFallbackFaqItem = (item: ExtractedProductFaqItem) => ({
+    ...item,
+    source_kind: preservePdpFieldSourceKinds ? cleanText(item.source_kind) || "unknown" : tagFallbackSourceKind(item.source_kind),
+  });
+  const mergeFallbackFieldSources = (sourceKinds: string[] | undefined, fallbackLabel: string) =>
+    preservePdpFieldSourceKinds ? normalizePdpSourceKinds(sourceKinds).filter(Boolean) : fallbackFieldSourceKinds(sourceKinds, fallbackLabel);
 
   const mergedProducts = response.products.map((product, idx) => {
     if (idx !== 0) return product;
@@ -4635,42 +4693,36 @@ export function mergeShopifyDirectPdpFallback(
         descriptionRaw: useFallbackDescription ? fallbackProduct.description_raw : product.description_raw,
         detailsSections: dedupeDetailSections([
           ...((Array.isArray(product.details_sections) ? product.details_sections : []) || []),
-          ...((Array.isArray(fallbackProduct.details_sections) ? fallbackProduct.details_sections : []) || []).map((section) => ({
-            ...section,
-            source_kind: tagFallbackSourceKind(section.source_kind),
-          })),
+          ...((Array.isArray(fallbackProduct.details_sections) ? fallbackProduct.details_sections : []) || []).map(mapFallbackSection),
         ]),
         ingredientsRaw: useFallbackIngredients ? fallbackProduct.ingredients_raw : product.ingredients_raw,
         activeIngredientsRaw:
           useFallbackActiveIngredients ? fallbackProduct.active_ingredients_raw : product.active_ingredients_raw,
         howToUseRaw: useFallbackHowToUse ? fallbackProduct.how_to_use_raw : product.how_to_use_raw,
         faqItems: useFallbackFaqItems
-          ? (fallbackProduct.faq_items || []).map((item) => ({
-              ...item,
-              source_kind: tagFallbackSourceKind(item.source_kind),
-            }))
+          ? (fallbackProduct.faq_items || []).map(mapFallbackFaqItem)
           : product.faq_items,
         fieldSources: {
           description_raw: [
             ...(product.field_sources?.description_raw || []),
             ...(useFallbackDescription
-              ? fallbackFieldSourceKinds(fallbackProduct.field_sources?.description_raw || [], "description_raw")
+              ? mergeFallbackFieldSources(fallbackProduct.field_sources?.description_raw || [], "description_raw")
               : []),
           ],
           details_sections: [
             ...(product.field_sources?.details_sections || []),
-            ...fallbackFieldSourceKinds(fallbackProduct.field_sources?.details_sections || [], "details_sections"),
+            ...mergeFallbackFieldSources(fallbackProduct.field_sources?.details_sections || [], "details_sections"),
           ],
           ingredients_raw: [
             ...(product.field_sources?.ingredients_raw || []),
             ...(useFallbackIngredients
-              ? fallbackFieldSourceKinds(fallbackProduct.field_sources?.ingredients_raw || [], "ingredients_raw")
+              ? mergeFallbackFieldSources(fallbackProduct.field_sources?.ingredients_raw || [], "ingredients_raw")
               : []),
           ],
           active_ingredients_raw: [
             ...(product.field_sources?.active_ingredients_raw || []),
             ...(useFallbackActiveIngredients
-              ? fallbackFieldSourceKinds(
+              ? mergeFallbackFieldSources(
                   fallbackProduct.field_sources?.active_ingredients_raw || [],
                   "active_ingredients_raw",
                 )
@@ -4679,13 +4731,13 @@ export function mergeShopifyDirectPdpFallback(
           how_to_use_raw: [
             ...(product.field_sources?.how_to_use_raw || []),
             ...(useFallbackHowToUse
-              ? fallbackFieldSourceKinds(fallbackProduct.field_sources?.how_to_use_raw || [], "how_to_use_raw")
+              ? mergeFallbackFieldSources(fallbackProduct.field_sources?.how_to_use_raw || [], "how_to_use_raw")
               : []),
           ],
           faq_items: [
             ...(product.field_sources?.faq_items || []),
             ...(useFallbackFaqItems
-              ? fallbackFieldSourceKinds(fallbackProduct.field_sources?.faq_items || [], "faq_items")
+              ? mergeFallbackFieldSources(fallbackProduct.field_sources?.faq_items || [], "faq_items")
               : []),
           ],
         },
@@ -5250,8 +5302,8 @@ function withBrowserishHtmlHeaders(context: FetchContext = {}): FetchContext {
   };
 }
 
-async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
-  return page.evaluate(() => {
+export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
+  const scraped = await page.evaluate(() => {
     const documentBase = document.baseURI || location.href;
     const title =
       document.querySelector("h1")?.textContent?.trim() ||
@@ -6016,6 +6068,44 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
           source_kind: sourceKind,
         });
       };
+      const pushStructuredProseSection = (headingRaw: string, bodyRaw: string, sourceKind: string) => {
+        const heading = normalizeSectionText(headingRaw);
+        const body = normalizeSectionText(bodyRaw);
+        if (!heading || !body) return;
+        const key = `${heading.toLowerCase()}|${body.toLowerCase()}|${sourceKind.toLowerCase()}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        sections.push({
+          heading,
+          body,
+          source_kind: sourceKind,
+        });
+      };
+      const extractStructuredProseSection = (container: Element | null | undefined, sourceKind: string) => {
+        if (!(container instanceof HTMLElement) || shouldSkipSectionNode(container)) return;
+        const headingNode = container.querySelector(
+          ".section-title, h1, h2, h3, h4, h5, h6, p.h1, p.h2, p.h3, p.h4, p.h5, p.h6, p strong, strong",
+        ) as HTMLElement | null;
+        const heading = normalizeSectionText(headingNode?.innerText || headingNode?.textContent || "");
+        if (!heading) return;
+
+        const paragraphParts = Array.from(container.querySelectorAll("p, li"))
+          .map((node) => normalizeSectionText((node as HTMLElement).innerText || node.textContent || ""))
+          .filter(Boolean)
+          .filter((text) => text !== heading);
+        let body = normalizeSectionText(paragraphParts.join("\n\n"));
+        if (body.startsWith(heading)) {
+          body = normalizeSectionText(body.slice(heading.length));
+        }
+        if (!body) {
+          const fullText = normalizeSectionText(container.innerText || container.textContent || "");
+          body = fullText.startsWith(heading)
+            ? normalizeSectionText(fullText.slice(heading.length))
+            : fullText.replace(heading, "").trim();
+        }
+        if (!body) return;
+        pushStructuredProseSection(heading, body, sourceKind);
+      };
 
       if (productDetailsText) {
         pushSection("Details", productDetailsText, "page_product_details");
@@ -6178,6 +6268,15 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
         pushSection(heading, body, "details_summary");
       }
 
+      const sectionStackProseNodes = Array.from(
+        document.querySelectorAll(".section-stack .prose, image-with-text .prose, .image-with-text .prose"),
+      ) as HTMLElement[];
+      for (const proseNode of sectionStackProseNodes.slice(0, 32)) {
+        const sourceKind =
+          proseNode.closest("image-with-text, .image-with-text") ? "page_image_with_text_prose" : "page_section_stack_prose";
+        extractStructuredProseSection(proseNode, sourceKind);
+      }
+
       const productModalNodes = Array.from(document.querySelectorAll("product-modal")) as HTMLElement[];
       for (const productModal of productModalNodes.slice(0, 16)) {
         const heading =
@@ -6247,6 +6346,10 @@ async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
       okendoMetafieldJson,
     };
   });
+  return {
+    ...scraped,
+    detailsSections: normalizeStructuredProseDetailSections(scraped.detailsSections),
+  };
 }
 
 export function buildProductFromPageSignals(params: {

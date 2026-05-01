@@ -252,6 +252,104 @@ test("PuppeteerExtractor retries canonical Shopify handle for duplicate copy PDP
   );
 });
 
+test("PuppeteerExtractor recovers direct Shopify PDP via browser when .js feed is gone but browser PDP still resolves", async () => {
+  const browserRecoveredProduct = {
+    title: "Lip Sleeping Mask Topper",
+    url: "https://us.laneige.com/products/lip-sleeping-mask-topper",
+    description_raw: "A glossy lip topper with a cushiony shine.",
+    details_sections: [
+      { heading: "How to Use", body: "Apply to lips.", source_kind: "page_how_to_use_section" },
+      { heading: "Key Ingredients", body: "Shea Butter", source_kind: "details_summary" },
+    ],
+    ingredients_raw: "Polybutene, Shea Butter",
+    active_ingredients_raw: "",
+    how_to_use_raw: "Apply to lips.",
+    faq_items: [],
+    field_sources: {
+      description_raw: ["shopify_description"],
+      details_sections: ["page_how_to_use_section", "details_summary"],
+      ingredients_raw: ["details_section_ingredients"],
+      active_ingredients_raw: [],
+      how_to_use_raw: ["page_how_to_use_section"],
+      faq_items: [],
+    },
+    image_url: "https://cdn.example.com/topper-main.jpg",
+    image_urls: ["https://cdn.example.com/topper-main.jpg"],
+    variant_skus: ["LAN-TOPPER-1", "LAN-TOPPER-2"],
+    variants: [
+      {
+        id: "47231057854516",
+        sku: "LAN-TOPPER-1",
+        title: "Pumpkin Pie",
+        option_name: "Shade",
+        option_value: "Pumpkin Pie",
+        price: 24,
+        currency: "USD",
+        availability: "in_stock",
+        image_url: "https://cdn.example.com/topper-pumpkin.jpg",
+        image_urls: ["https://cdn.example.com/topper-pumpkin.jpg"],
+      },
+      {
+        id: "47231057887284",
+        sku: "LAN-TOPPER-2",
+        title: "Hot Cocoa",
+        option_name: "Shade",
+        option_value: "Hot Cocoa",
+        price: 24,
+        currency: "USD",
+        availability: "in_stock",
+        image_url: "https://cdn.example.com/topper-cocoa.jpg",
+        image_urls: ["https://cdn.example.com/topper-cocoa.jpg"],
+      },
+    ],
+  } as any;
+
+  const extractor = new PuppeteerExtractor((async (_task, _options) => ({
+    mode: "managed",
+    result: browserRecoveredProduct,
+  })) as any);
+
+  await withMockFetch(
+    {
+      "https://us.laneige.com/products/lip-sleeping-mask-topper.js": {
+        status: 404,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ status: 404, message: "Not Found" }),
+      },
+      "https://us.laneige.com/products/lip-sleeping-mask-topper": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        responseUrl: "https://us.laneige.com/collections/merch",
+        body: "<html><body>merch redirect shell</body></html>",
+      },
+      "https://us.laneige.com/search/suggest.json?q=Lip%20Sleeping%20Mask%20Topper&resources[type]=product&resources[limit]=8": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ resources: { results: { products: [] } } }),
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "LANEIGE",
+        domain: "https://us.laneige.com/products/lip-sleeping-mask-topper",
+        product_title: "Lip Sleeping Mask Topper",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.title, "Lip Sleeping Mask Topper");
+      assert.equal(result.products[0]?.details_sections.length, 2);
+      assert.equal(result.products[0]?.variants.length, 2);
+      assert.equal(result.diagnostics?.discovery_strategy, "managed_browser");
+      assert.match(
+        result.logs.map((entry) => entry.msg).join("\n"),
+        /Recovered Shopify direct PDP via browser scrape/,
+      );
+    },
+  );
+});
+
 test("PuppeteerExtractor turns single default Shopify size evidence into a Size option", async () => {
   const extractor = new PuppeteerExtractor();
 
@@ -2306,6 +2404,72 @@ test("PuppeteerExtractor supports string-based Shopify direct PDP image arrays",
   );
 });
 
+test("PuppeteerExtractor collapses Shopify CDN size variants and rejects cross-product support images", async () => {
+  const extractor = new PuppeteerExtractor();
+  const directProduct = {
+    id: 8052355530952,
+    title: "Supersize Omega Water Cream - 100ml",
+    handle: "omega-water-cream-100ml",
+    body_html:
+      "<p>Oil-free hydration.</p><p>How to Use: Apply after cleansing.</p><p>Ingredients: Water, Betaine, Niacinamide.</p>",
+    variants: [
+      {
+        id: 91001,
+        sku: "INK-OMEGA-100",
+        title: "Default Title",
+        option1: "Default Title",
+        price: 1500,
+        available: true,
+        inventory_quantity: 12,
+      },
+    ],
+    options: [{ name: "Title" }],
+    featured_image: "https://www.theinkeylist.com/cdn/shop/files/OMEGASUPERSIZE_Packshot.png?v=1727108488",
+    images: [
+      "https://www.theinkeylist.com/cdn/shop/files/OMEGASUPERSIZE_Packshot.png?v=1727108488",
+      "https://www.theinkeylist.com/cdn/shop/files/OMEGASUPERSIZE_Packshot_grande.png?v=1727108488",
+      "https://www.theinkeylist.com/cdn/shop/files/Hero_026c776c-16f5-483e-861b-331dea8c6a2f.jpg?v=1730483258",
+      "https://www.theinkeylist.com/cdn/shop/files/Omega100_How_to_use_OptB_2000x2000_030fc11d-00c4-4749-a1e5-91b55b0782d5.jpg?v=1759262701",
+      "https://www.theinkeylist.com/cdn/shop/files/ROW_Hydrocolloid_Invisible_Pimple_Patches_key_Claims_2000x2000_5ddcb091-d228-43aa-9cca-97c96797f481.jpg?v=1759262701",
+    ],
+  };
+
+  await withMockFetch(
+    {
+      "https://www.theinkeylist.com/products/omega-water-cream-100ml.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify(directProduct),
+      },
+      "https://www.theinkeylist.com/products/omega-water-cream-100ml": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "The Inkey List",
+        domain: "https://www.theinkeylist.com/products/omega-water-cream-100ml",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.deepEqual(result.products[0]?.image_urls, [
+        "https://www.theinkeylist.com/cdn/shop/files/OMEGASUPERSIZE_Packshot_grande.png?v=1727108488",
+        "https://www.theinkeylist.com/cdn/shop/files/Hero_026c776c-16f5-483e-861b-331dea8c6a2f.jpg?v=1730483258",
+        "https://www.theinkeylist.com/cdn/shop/files/Omega100_How_to_use_OptB_2000x2000_030fc11d-00c4-4749-a1e5-91b55b0782d5.jpg?v=1759262701",
+      ]);
+      assert.ok(
+        !result.products[0]?.image_urls.some((url) => url.includes("Hydrocolloid_Invisible_Pimple_Patches")),
+      );
+      assert.equal(result.products[0]?.variants.length, 1);
+      assert.equal(result.products[0]?.variants[0]?.hidden_from_selector, false);
+    },
+  );
+});
+
 test("PuppeteerExtractor does not fabricate template descriptions when Shopify direct PDP overview is missing", async () => {
   const extractor = new PuppeteerExtractor();
   const directProduct = {
@@ -2808,6 +2972,120 @@ test("mergeShopifyDirectPdpFallback discards unrelated fallback page images", ()
     merged.variants[0]?.image_url,
     "https://patyka.com/cdn/shop/files/02-RechargePeeling-beauty.jpg?v=1",
   );
+});
+
+test("mergeShopifyDirectPdpFallback collapses Shopify CDN resized derivatives from browser enrichment", () => {
+  const response = {
+    brand: "The Inkey List",
+    domain: "www.theinkeylist.com",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Supersize Omega Water Cream - 100ml",
+        url: "https://www.theinkeylist.com/products/omega-water-cream-100ml",
+        image_url: "https://www.theinkeylist.com/cdn/shop/files/OMEGASUPERSIZE_Packshot.png?v=1727108488",
+        image_urls: ["https://www.theinkeylist.com/cdn/shop/files/OMEGASUPERSIZE_Packshot.png?v=1727108488"],
+        variant_skus: ["INK-OMEGA-100"],
+        variants: [
+          {
+            id: "v1",
+            sku: "INK-OMEGA-100",
+            url: "https://www.theinkeylist.com/products/omega-water-cream-100ml",
+            option_name: "Size",
+            option_value: "100ml",
+            price: "15.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "desc",
+            image_url: "https://www.theinkeylist.com/cdn/shop/files/OMEGASUPERSIZE_Packshot.png?v=1727108488",
+            image_urls: ["https://www.theinkeylist.com/cdn/shop/files/OMEGASUPERSIZE_Packshot.png?v=1727108488"],
+            ad_copy: "copy",
+          },
+        ],
+      },
+    ],
+    variants: [
+      {
+        id: "v1",
+        sku: "INK-OMEGA-100",
+        url: "https://www.theinkeylist.com/products/omega-water-cream-100ml",
+        option_name: "Size",
+        option_value: "100ml",
+        price: "15.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "desc",
+        image_url: "https://www.theinkeylist.com/cdn/shop/files/OMEGASUPERSIZE_Packshot.png?v=1727108488",
+        image_urls: ["https://www.theinkeylist.com/cdn/shop/files/OMEGASUPERSIZE_Packshot.png?v=1727108488"],
+        ad_copy: "copy",
+        brand: "The Inkey List",
+        product_title: "Supersize Omega Water Cream - 100ml",
+        product_url: "https://www.theinkeylist.com/products/omega-water-cream-100ml",
+        deep_link: "https://www.theinkeylist.com/products/omega-water-cream-100ml?variant=v1",
+        simulated: false,
+      },
+    ],
+    pricing: { currency: "USD" as const, min: 15, max: 15, avg: 15 },
+    ad_copy: { by_variant_id: { v1: "copy" } },
+    pagination: { offset: 0, limit: 1, next_offset: null, has_more: false, discovered_urls: 1 },
+    diagnostics: {
+      requested_domain: "www.theinkeylist.com",
+      resolved_base_url: "https://www.theinkeylist.com",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  const fallbackProduct = {
+    title: "Supersize Omega Water Cream - 100ml",
+    url: "https://www.theinkeylist.com/products/omega-water-cream-100ml",
+    image_url:
+      "https://www.theinkeylist.com/cdn/shop/files/Omega_Water_Cream_Size_Range_2000x2000_1a037cd9-3bfb-476f-b36e-0b30a39876e5_300x_crop_center.png?v=1759406160",
+    image_urls: [
+      "https://www.theinkeylist.com/cdn/shop/files/Omega_Water_Cream_Size_Range_2000x2000_1a037cd9-3bfb-476f-b36e-0b30a39876e5_300x_crop_center.png?v=1759406160",
+      "https://www.theinkeylist.com/cdn/shop/files/Omega_Water_Cream_Size_Range_2000x2000_1a037cd9-3bfb-476f-b36e-0b30a39876e5_600x_crop_center.png?v=1759406160",
+      "https://www.theinkeylist.com/cdn/shop/files/Omega_Water_Cream_Size_Range_2000x2000_1a037cd9-3bfb-476f-b36e-0b30a39876e5_1600x.png?v=1759406160",
+      "https://www.theinkeylist.com/cdn/shop/files/03_KAFFYA_07_HOLDING_OMEGA_SUPERSIZE_001_300x_crop_center.jpg?v=1759406160",
+      "https://www.theinkeylist.com/cdn/shop/files/03_KAFFYA_07_HOLDING_OMEGA_SUPERSIZE_001_1600x.jpg?v=1759406160",
+    ],
+    variant_skus: ["INK-OMEGA-100"],
+    variants: [
+      {
+        id: "fallback-v1",
+        sku: "INK-OMEGA-100",
+        url: "https://www.theinkeylist.com/products/omega-water-cream-100ml",
+        option_name: "Size",
+        option_value: "100ml",
+        price: "15.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "desc",
+        image_url:
+          "https://www.theinkeylist.com/cdn/shop/files/Omega_Water_Cream_Size_Range_2000x2000_1a037cd9-3bfb-476f-b36e-0b30a39876e5_300x_crop_center.png?v=1759406160",
+        image_urls: [
+          "https://www.theinkeylist.com/cdn/shop/files/Omega_Water_Cream_Size_Range_2000x2000_1a037cd9-3bfb-476f-b36e-0b30a39876e5_300x_crop_center.png?v=1759406160",
+          "https://www.theinkeylist.com/cdn/shop/files/Omega_Water_Cream_Size_Range_2000x2000_1a037cd9-3bfb-476f-b36e-0b30a39876e5_3200x_crop_center.png?v=1759406160",
+        ],
+        ad_copy: "copy",
+      },
+    ],
+  };
+
+  const merged = mergeShopifyDirectPdpFallback("The Inkey List", response, fallbackProduct);
+
+  assert.deepEqual(merged.products[0]?.image_urls, [
+    "https://www.theinkeylist.com/cdn/shop/files/OMEGASUPERSIZE_Packshot.png?v=1727108488",
+    "https://www.theinkeylist.com/cdn/shop/files/03_KAFFYA_07_HOLDING_OMEGA_SUPERSIZE_001_1600x.jpg?v=1759406160",
+    "https://www.theinkeylist.com/cdn/shop/files/Omega_Water_Cream_Size_Range_2000x2000_1a037cd9-3bfb-476f-b36e-0b30a39876e5_3200x_crop_center.png?v=1759406160",
+  ]);
+  assert.deepEqual(merged.products[0]?.variants[0]?.image_urls, [
+    "https://www.theinkeylist.com/cdn/shop/files/OMEGASUPERSIZE_Packshot.png?v=1727108488",
+    "https://www.theinkeylist.com/cdn/shop/files/03_KAFFYA_07_HOLDING_OMEGA_SUPERSIZE_001_1600x.jpg?v=1759406160",
+    "https://www.theinkeylist.com/cdn/shop/files/Omega_Water_Cream_Size_Range_2000x2000_1a037cd9-3bfb-476f-b36e-0b30a39876e5_3200x_crop_center.png?v=1759406160",
+  ]);
 });
 
 test("mergeShopifyDirectPdpFallback quarantines fallback PDP fields even when no new images are contributed", () => {

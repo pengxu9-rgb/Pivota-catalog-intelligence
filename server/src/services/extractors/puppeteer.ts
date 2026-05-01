@@ -62,7 +62,11 @@ const DEFAULT_IMAGE_VISION_MAX_IMAGE_BYTES = 5_000_000;
 const DEFAULT_BROWSERISH_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
+type BrowserTaskRunner = typeof runBrowserTaskWithFallback;
+
 export class PuppeteerExtractor implements Extractor {
+  constructor(private readonly browserRunner: BrowserTaskRunner = runBrowserTaskWithFallback) {}
+
   async extract(input: ExtractInput): Promise<ExtractResponse> {
     const generatedAt = new Date().toISOString();
 
@@ -121,6 +125,7 @@ export class PuppeteerExtractor implements Extractor {
         limit: batchLimit,
         diagnostics,
         log,
+        browserRunner: this.browserRunner,
       });
       if (shopify) {
         return {
@@ -182,7 +187,7 @@ export class PuppeteerExtractor implements Extractor {
       const navigationTimeoutMs = clampIntShared(process.env.PUPPETEER_NAV_TIMEOUT_MS, DEFAULT_NAV_TIMEOUT_MS, 5_000, 120_000);
       const scrapeTimeoutMs = clampIntShared(process.env.PUPPETEER_SCRAPE_TIMEOUT_MS, DEFAULT_SCRAPE_TIMEOUT_MS, 10_000, 300_000);
 
-      const browserRun = await runBrowserTaskWithFallback(
+      const browserRun = await this.browserRunner(
         async (browser) =>
           withTimeoutShared(
             mapWithConcurrencyShared(batchCandidates, concurrency, async (url, idx) => {
@@ -3266,6 +3271,59 @@ const IMAGE_HINT_STOPWORDS = new Set([
   "collections",
 ]);
 
+const SHOPIFY_IMAGE_CONTENT_HINT_FRAGMENTS = [
+  "why_we_love",
+  "why_it_works",
+  "how_to",
+  "how-to",
+  "how_to_layer",
+  "claim",
+  "claims",
+  "ingredient",
+  "ingredients",
+  "faq",
+  "routine",
+  "compare",
+] as const;
+
+const SHOPIFY_IMAGE_GENERIC_VISUAL_FRAGMENTS = [
+  "packshot",
+  "swatch",
+  "hero",
+  "model",
+  "texture",
+  "holding",
+  "before_after",
+  "before-after",
+  "size_range",
+  "whitebg",
+] as const;
+
+const SHOPIFY_IMAGE_GENERIC_SUPPORT_TOKENS = new Set([
+  "claim",
+  "claims",
+  "ingredient",
+  "ingredients",
+  "how",
+  "layer",
+  "love",
+  "works",
+  "before",
+  "after",
+  "size",
+  "range",
+  "routine",
+  "compare",
+  "whitebg",
+  "serum",
+  "cream",
+  "cleanser",
+  "moisturizer",
+  "moisturiser",
+]);
+
+const SHOPIFY_IMAGE_SIZE_SUFFIX_RE = /_(?:\d{2,5}x\d{0,5}(?:_crop_center)?|pico|icon|thumb|small|compact|medium|large|grande|master)$/i;
+
 function tokenizeImageHints(values: Array<string | undefined | null>) {
   const tokens = new Set<string>();
   for (const value of values) {
@@ -3296,8 +3354,16 @@ function preferredImageVariant(existingUrl: string | undefined, candidateUrl: st
   const readWidth = (rawUrl: string) => {
     try {
       const parsed = new URL(rawUrl);
-      const width = Number(parsed.searchParams.get("width") || parsed.searchParams.get("w") || parsed.searchParams.get("sw") || 0);
-      return Number.isFinite(width) ? width : 0;
+      const queryWidth = Number(parsed.searchParams.get("width") || parsed.searchParams.get("w") || parsed.searchParams.get("sw") || 0);
+      if (Number.isFinite(queryWidth) && queryWidth > 0) return queryWidth;
+      const filename = parsed.pathname.split("/").pop() || "";
+      const stem = filename.replace(/\.[a-z0-9]+$/i, "");
+      const sizeMatch = stem.match(/_(\d{2,5})x\d{0,5}(?:_crop_center)?$/i);
+      if (sizeMatch) {
+        const pathWidth = Number(sizeMatch[1] || 0);
+        return Number.isFinite(pathWidth) ? pathWidth : 0;
+      }
+      return 0;
     } catch {
       return 0;
     }
@@ -3306,7 +3372,51 @@ function preferredImageVariant(existingUrl: string | undefined, candidateUrl: st
   return readWidth(candidateUrl) >= readWidth(existingUrl) ? candidateUrl : existingUrl;
 }
 
-function selectRelevantFallbackImageUrls(product: { title: string; url: string }, candidates: string[]) {
+function canonicalizeShopifyImageUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.delete("width");
+    parsed.searchParams.delete("w");
+    parsed.searchParams.delete("sw");
+    parsed.searchParams.delete("height");
+    parsed.searchParams.delete("h");
+    parsed.searchParams.delete("sh");
+
+    const lastSlash = parsed.pathname.lastIndexOf("/");
+    const dirname = lastSlash >= 0 ? parsed.pathname.slice(0, lastSlash + 1) : "";
+    const filename = lastSlash >= 0 ? parsed.pathname.slice(lastSlash + 1) : parsed.pathname;
+    const extIndex = filename.lastIndexOf(".");
+    if (extIndex > 0) {
+      const stem = filename.slice(0, extIndex);
+      const ext = filename.slice(extIndex);
+      let normalizedStem = stem;
+      while (SHOPIFY_IMAGE_SIZE_SUFFIX_RE.test(normalizedStem)) {
+        normalizedStem = normalizedStem.replace(SHOPIFY_IMAGE_SIZE_SUFFIX_RE, "");
+      }
+      let normalizedPath = `${dirname}${normalizedStem}${ext}`;
+      const filesIndex = normalizedPath.lastIndexOf("/files/");
+      const productsIndex = normalizedPath.lastIndexOf("/products/");
+      if (filesIndex >= 0) {
+        normalizedPath = normalizedPath.slice(filesIndex);
+      } else if (productsIndex >= 0) {
+        normalizedPath = normalizedPath.slice(productsIndex);
+      }
+      parsed.pathname = normalizedPath;
+    }
+
+    if (parsed.hostname.includes("shopify.com") || parsed.pathname.startsWith("/files/") || parsed.pathname.startsWith("/products/")) {
+      parsed.protocol = "https:";
+      parsed.hostname = "shopify-cdn.invalid";
+      parsed.port = "";
+    }
+
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function getProductImageHintTokens(product: { title: string; url: string }) {
   const hintValues = [product.title];
   try {
     const parsed = new URL(product.url);
@@ -3314,8 +3424,43 @@ function selectRelevantFallbackImageUrls(product: { title: string; url: string }
   } catch {
     hintValues.push(product.url);
   }
+  return tokenizeImageHints(hintValues);
+}
 
-  const hintTokens = tokenizeImageHints(hintValues);
+function dedupeShopifyImageUrls(urls: string[]) {
+  const bestByCanonical = new Map<string, string>();
+  for (const candidate of urls) {
+    const normalized = cleanText(candidate);
+    if (!normalized) continue;
+    const canonical = canonicalizeShopifyImageUrl(normalized);
+    bestByCanonical.set(canonical, preferredImageVariant(bestByCanonical.get(canonical), normalized));
+  }
+  return Array.from(bestByCanonical.values());
+}
+
+function shouldRejectShopifyCrossProductImage(product: { title: string; url: string }, imageUrl: string) {
+  const normalized = safeDecodeURIComponent(imageUrl.toLowerCase());
+  const productTokens = getProductImageHintTokens(product);
+  if (imageUrlMatchScore(imageUrl, productTokens) > 0) return false;
+
+  const contentLike = SHOPIFY_IMAGE_CONTENT_HINT_FRAGMENTS.some((fragment) => normalized.includes(fragment));
+  if (!contentLike) return false;
+
+  if (SHOPIFY_IMAGE_GENERIC_VISUAL_FRAGMENTS.some((fragment) => normalized.includes(fragment))) return false;
+
+  const informativeTokens = tokenizeImageHints([imageUrl]).filter((token) => !SHOPIFY_IMAGE_GENERIC_SUPPORT_TOKENS.has(token));
+  if (informativeTokens.length === 0) return false;
+  return true;
+}
+
+function filterShopifyProductImageUrls(product: { title: string; url: string }, urls: string[]) {
+  const cleaned = dedupeShopifyImageUrls(urls);
+  const filtered = cleaned.filter((candidate) => !shouldRejectShopifyCrossProductImage(product, candidate));
+  return filtered.length > 0 ? filtered : cleaned;
+}
+
+function selectRelevantFallbackImageUrls(product: { title: string; url: string }, candidates: string[]) {
+  const hintTokens = getProductImageHintTokens(product);
   if (hintTokens.length === 0) return [];
 
   const bestByCanonical = new Map<string, { url: string; score: number }>();
@@ -3324,14 +3469,7 @@ function selectRelevantFallbackImageUrls(product: { title: string; url: string }
     if (score <= 0) continue;
 
     try {
-      const parsed = new URL(candidate);
-      parsed.searchParams.delete("width");
-      parsed.searchParams.delete("w");
-      parsed.searchParams.delete("sw");
-      parsed.searchParams.delete("height");
-      parsed.searchParams.delete("h");
-      parsed.searchParams.delete("sh");
-      const canonical = parsed.toString();
+      const canonical = canonicalizeShopifyImageUrl(candidate);
       const prev = bestByCanonical.get(canonical);
       if (!prev) {
         bestByCanonical.set(canonical, { url: candidate, score });
@@ -3672,6 +3810,7 @@ async function tryExtractShopify(params: {
   limit: number;
   diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
   log: Logger;
+  browserRunner?: BrowserTaskRunner;
 }): Promise<Omit<ExtractResponse, "generated_at" | "logs"> | null> {
   const log = params.log;
   const directHandles = buildShopifyDirectHandleCandidates(params.seedUrl, params.baseUrl, params.productTitle);
@@ -3723,9 +3862,9 @@ async function tryExtractShopify(params: {
       context: shopifyContext,
       diagnostics: params.diagnostics,
     });
-    if (directSeedStatus === "not_found" || directSeedStatus === "non_product_redirect") {
-      const recoveredProduct = await recoverShopifyDirectProductViaSearch({
-        baseUrl: params.baseUrl,
+      if (directSeedStatus === "not_found" || directSeedStatus === "non_product_redirect") {
+        const recoveredProduct = await recoverShopifyDirectProductViaSearch({
+          baseUrl: params.baseUrl,
         productTitle: params.productTitle,
         context: shopifyContext,
         diagnostics: params.diagnostics,
@@ -3748,11 +3887,30 @@ async function tryExtractShopify(params: {
           diagnostics: params.diagnostics,
           log,
           context: shopifyContext,
+          });
+        }
+        const browserRecoveredProduct = await recoverShopifyDirectProductViaBrowser({
+          brand: params.brand,
+          baseUrl: params.baseUrl,
+          seedUrl: params.seedUrl,
+          directHandle,
+          productTitle: params.productTitle,
+          context: shopifyContext,
+          diagnostics: params.diagnostics,
+          log,
+          browserRunner: params.browserRunner,
         });
-      }
-      log(
-        "warn",
-        `Shopify direct product feed not found for handle: ${directHandle}; seed status=${directSeedStatus}. Skipping generic rediscovery.`,
+        if (browserRecoveredProduct) {
+          setDiscoveryStrategy(params.diagnostics!, "managed_browser");
+          return buildDirectRecoveredShopifyBrowserResponse({
+            ...params,
+            platformLabel: "Shopify (Direct PDP Browser Recovery)",
+            product: browserRecoveredProduct,
+          });
+        }
+        log(
+          "warn",
+          `Shopify direct product feed not found for handle: ${directHandle}; seed status=${directSeedStatus}. Skipping generic rediscovery.`,
       );
       setDiscoveryStrategy(params.diagnostics!, "shopify_json");
       if (!params.diagnostics.failure_category) {
@@ -3762,8 +3920,43 @@ async function tryExtractShopify(params: {
     }
 
     log("warn", `Shopify direct product feed not found for handle: ${directHandle}. Falling back to direct page discovery.`);
-    return null;
-  }
+  return null;
+}
+
+function buildDirectRecoveredShopifyBrowserResponse(params: {
+  brand: string;
+  domain: string;
+  offset: number;
+  limit: number;
+  diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
+  platformLabel: string;
+  product: ExtractedProduct;
+}): Omit<ExtractResponse, "generated_at" | "logs"> {
+  const products = [withProductPdpProfile(params.product)];
+  const { variants, adCopyById } = flattenVariants({
+    brand: params.brand,
+    products,
+    simulated: false,
+  });
+  return {
+    brand: params.brand,
+    domain: params.domain,
+    mode: "puppeteer" as const,
+    platform: params.platformLabel,
+    products,
+    variants,
+    pricing: computePricingStats(variants),
+    ad_copy: { by_variant_id: adCopyById },
+    pagination: {
+      offset: params.offset,
+      limit: params.limit,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: params.diagnostics,
+  };
+}
 
   const probeUrl = params.collectionHandle
     ? `${params.baseUrl}/collections/${params.collectionHandle}/products.json?limit=1`
@@ -4003,6 +4196,62 @@ export async function enrichDirectShopifyPdpResponse(params: {
   return merged;
 }
 
+async function recoverShopifyDirectProductViaBrowser(params: {
+  brand: string;
+  baseUrl: string;
+  seedUrl?: string;
+  directHandle: string;
+  productTitle?: string;
+  context: FetchContext;
+  diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
+  log: Logger;
+  browserRunner?: BrowserTaskRunner;
+}): Promise<ExtractedProduct | null> {
+  if (!params.seedUrl) return null;
+
+  const navigationTimeoutMs = clampIntShared(
+    process.env.PUPPETEER_DIRECT_PDP_ENRICH_NAV_TIMEOUT_MS,
+    Math.max(DEFAULT_NAV_TIMEOUT_MS, 15_000),
+    5_000,
+    120_000,
+  );
+  const scrapeTimeoutMs = clampIntShared(process.env.PUPPETEER_SCRAPE_TIMEOUT_MS, DEFAULT_SCRAPE_TIMEOUT_MS, 10_000, 300_000);
+
+  try {
+    const browserRunner = params.browserRunner || runBrowserTaskWithFallback;
+    const browserRun = await browserRunner(
+      async (browser) =>
+        withTimeoutShared(
+          scrapeProductPage({
+            browser,
+            url: params.seedUrl!,
+            baseUrl: params.baseUrl,
+            navigationTimeoutMs,
+            verbose: false,
+            log: params.log,
+            diagnostics: params.diagnostics,
+            context: params.context,
+          }),
+          scrapeTimeoutMs,
+          "Shopify direct PDP browser recovery",
+        ),
+      { diagnostics: params.diagnostics, log: params.log },
+    );
+    const recovered = browserRun.result;
+    if (!recovered) return null;
+    if (!isUsableRecoveredShopifyDirectBrowserProduct(recovered, params.productTitle, params.directHandle, params.seedUrl, params.baseUrl)) {
+      params.log("warn", `Discarding Shopify direct PDP browser recovery because recovered page identity did not match: ${params.seedUrl}`);
+      return null;
+    }
+    params.log("success", `Recovered Shopify direct PDP via browser scrape: ${params.seedUrl}`);
+    return recovered;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error || "unknown_error");
+    params.log("warn", `Shopify direct PDP browser recovery failed; continuing without browser recovery: ${msg}`);
+    return null;
+  }
+}
+
 function extractShopifyProductHandle(seedUrl: string | undefined, baseUrl: string): string | null {
   if (!seedUrl) return null;
   try {
@@ -4049,6 +4298,48 @@ function buildShopifyDirectHandleCandidates(
 
 export function isNonProductRedirectForRequestedPdp(requestedUrl: string, finalUrl: string, baseUrl: string): boolean {
   return isLikelyProductUrlShared(requestedUrl, baseUrl) && !isLikelyProductUrlShared(finalUrl, baseUrl);
+}
+
+function isUsableRecoveredShopifyDirectBrowserProduct(
+  recovered: ExtractedProduct,
+  requestedTitle: string | undefined,
+  directHandle: string,
+  seedUrl: string,
+  baseUrl: string,
+): boolean {
+  if (!cleanText(recovered.title)) return false;
+  const recoveredUrl = cleanText(recovered.url || seedUrl);
+  if (!isLikelyProductUrlShared(recoveredUrl, baseUrl)) return false;
+  if (recovered.variants.length === 0 && recovered.image_urls.length === 0 && !recovered.description_raw) return false;
+
+  const recoveredTitle = normalizeProductIdentityText(recovered.title);
+  const expectedTitle = normalizeProductIdentityText(requestedTitle);
+  if (expectedTitle) {
+    if (recoveredTitle === expectedTitle || recoveredTitle.includes(expectedTitle) || expectedTitle.includes(recoveredTitle)) {
+      return true;
+    }
+    const recoveredTokens = productIdentityTokens(recovered.title);
+    const expectedTokens = productIdentityTokens(requestedTitle);
+    let overlap = 0;
+    for (const token of recoveredTokens) {
+      if (expectedTokens.has(token)) overlap += 1;
+    }
+    if (overlap >= Math.min(2, expectedTokens.size || 0)) return true;
+  }
+
+  const handleTokens = new Set(
+    directHandle
+      .toLowerCase()
+      .split(/[^a-z0-9]+/i)
+      .map((token) => token.trim())
+      .filter((token) => token.length > 2),
+  );
+  const recoveredTokens = productIdentityTokens(recovered.title);
+  let handleOverlap = 0;
+  for (const token of recoveredTokens) {
+    if (handleTokens.has(token)) handleOverlap += 1;
+  }
+  return handleOverlap >= Math.min(2, handleTokens.size || 0);
 }
 
 function normalizeProductIdentityText(value: string | undefined): string {
@@ -4276,7 +4567,7 @@ function buildShopifyResponse(params: {
       seenVariants.add(key);
       existing.variants.push(variant);
     }
-    existing.image_urls = dedupeStringList([
+    existing.image_urls = dedupeShopifyImageUrls([
       ...existing.image_urls,
       ...productImageUrls,
       ...extractedVariants.flatMap((variant) => variant.image_urls),
@@ -4744,7 +5035,7 @@ export function mergeShopifyDirectPdpFallback(
       }),
     );
 
-    const rawFallbackProductImages = dedupeStringList([
+    const rawFallbackProductImages = dedupeShopifyImageUrls([
       ...fallbackProduct.image_urls,
       fallbackProduct.image_url,
       ...fallbackProduct.variants.flatMap((variant) => variant.image_urls),
@@ -4789,14 +5080,14 @@ export function mergeShopifyDirectPdpFallback(
           title: [mergedProduct.title, variant.option_name, variant.option_value].filter(Boolean).join(" "),
           url: variant.url || mergedProduct.url,
         },
-        dedupeStringList([
+        dedupeShopifyImageUrls([
           ...(matchedFallback?.image_urls || []),
           matchedFallback?.image_url,
           ...fallbackProductImages,
         ]),
       );
 
-      const mergedVariantImages = dedupeStringList([
+      const mergedVariantImages = dedupeShopifyImageUrls([
         ...variant.image_urls,
         variant.image_url,
         ...relevantVariantFallbackImages,
@@ -4815,7 +5106,7 @@ export function mergeShopifyDirectPdpFallback(
       };
     });
 
-    mergedProduct.image_urls = dedupeStringList([
+    mergedProduct.image_urls = dedupeShopifyImageUrls([
       ...mergedProduct.image_urls,
       mergedProduct.image_url,
       ...fallbackProductImages,
@@ -4847,7 +5138,13 @@ export function mergeShopifyDirectPdpFallback(
 }
 
 function resolveShopifyProductImageUrls(baseUrl: string, product: ShopifyProduct) {
-  return dedupeStringList(resolveStructuredImageUrls(baseUrl, [product.featured_image, product.images]));
+  return filterShopifyProductImageUrls(
+    {
+      title: product.title,
+      url: `${baseUrl}/products/${product.handle}`,
+    },
+    resolveStructuredImageUrls(baseUrl, [product.featured_image, product.images]),
+  );
 }
 
 function resolveShopifyVariantImageUrls(baseUrl: string, product: ShopifyProduct, variant: ShopifyVariant) {
@@ -4855,7 +5152,7 @@ function resolveShopifyVariantImageUrls(baseUrl: string, product: ShopifyProduct
   const matchedImages = images
     .filter((image) => typeof image === "object" && image !== null && (image.variant_ids || []).includes(variant.id));
 
-  return dedupeStringList([
+  return dedupeShopifyImageUrls([
     ...resolveStructuredImageUrls(baseUrl, variant.featured_image),
     ...resolveStructuredImageUrls(baseUrl, matchedImages),
     ...resolveShopifyProductImageUrls(baseUrl, product),

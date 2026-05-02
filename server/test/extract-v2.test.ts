@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildShopifyDirectHandleCandidates,
   buildOffersFromScrapedPage,
   buildSourceProductId,
   computeCounters,
@@ -41,6 +42,24 @@ test("source_product_id generation is stable and does not embed price", () => {
   assert.equal(id2.includes("19.99"), false);
   assert.notEqual(id1.length, 0);
   assert.notEqual(id2.length, 0);
+});
+
+test("buildShopifyDirectHandleCandidates extracts direct PDP handles", () => {
+  const handles = buildShopifyDirectHandleCandidates(
+    "https://kravebeauty.com/products/oat-so-simple-water-cream",
+    "https://kravebeauty.com",
+  );
+
+  assert.deepEqual(handles, ["oat-so-simple-water-cream"]);
+});
+
+test("buildShopifyDirectHandleCandidates strips duplicate Shopify suffixes", () => {
+  const handles = buildShopifyDirectHandleCandidates(
+    "https://anua.com/products/peach-77-niacin-enriched-cream-copy-1",
+    "https://anua.com",
+  );
+
+  assert.deepEqual(handles, ["peach-77-niacin-enriched-cream-copy-1", "peach-77-niacin-enriched-cream"]);
 });
 
 test("market mismatch flags JP expected JPY but observed non-JPY", () => {

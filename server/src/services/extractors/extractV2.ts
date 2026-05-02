@@ -113,6 +113,18 @@ type ShopifyVariant = {
   inventory_quantity?: number | null;
 };
 
+function dedupeStringList(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const normalized = typeof value === "string" ? value.trim() : "";
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
 export type ScrapedPageData = {
   title: string;
   canonical: string;
@@ -377,6 +389,7 @@ async function extractSingleMarket(params: {
   const shopifyResult = await tryExtractShopifyOffersV2({
     baseUrl: params.baseUrl,
     sourceSite: params.sourceSite,
+    seedUrl: params.seedUrl,
     collectionHandle: params.collectionHandle,
     context: params.context,
     batchOffset: params.batchOffset,
@@ -476,6 +489,7 @@ async function extractSingleMarket(params: {
 async function tryExtractShopifyOffersV2(params: {
   baseUrl: string;
   sourceSite: string;
+  seedUrl?: string;
   collectionHandle?: string;
   context: RequestContext;
   batchOffset: number;
@@ -483,6 +497,21 @@ async function tryExtractShopifyOffersV2(params: {
   diagnostics: ExtractV2Response["diagnostics"];
   log: Logger;
 }): Promise<ShopifyExtractionResult | null> {
+  const directHandles = buildShopifyDirectHandleCandidates(params.seedUrl, params.baseUrl);
+  if (!params.collectionHandle && directHandles.length > 0) {
+    for (const handle of directHandles) {
+      const directUrl = `${params.baseUrl}/products/${handle}.js`;
+      const directProduct = await fetchJsonTracked<ShopifyProduct>(directUrl, params.context, params.diagnostics!);
+      if (!directProduct.data || typeof directProduct.data.id !== "number") continue;
+      const hintedCurrency = await fetchCurrencyHint(params.baseUrl, params.context, params.diagnostics!);
+      return buildShopifyOffersFromProducts({
+        products: [directProduct.data],
+        params,
+        hintedCurrency,
+      });
+    }
+  }
+
   const probeUrl = params.collectionHandle
     ? `${params.baseUrl}/collections/${params.collectionHandle}/products.json?limit=1`
     : `${params.baseUrl}/products.json?limit=1`;
@@ -506,16 +535,36 @@ async function tryExtractShopifyOffersV2(params: {
   }
 
   const hintedCurrency = await fetchCurrencyHint(params.baseUrl, params.context, params.diagnostics!);
+  return buildShopifyOffersFromProducts({
+    products: allProducts,
+    params,
+    hintedCurrency,
+  });
+}
+
+function buildShopifyOffersFromProducts(params: {
+  products: ShopifyProduct[];
+  hintedCurrency: string | null;
+  params: {
+    baseUrl: string;
+    sourceSite: string;
+    context: RequestContext;
+    batchOffset: number;
+    batchLimit: number;
+    log: Logger;
+  };
+}): ShopifyExtractionResult {
   const capturedAt = new Date().toISOString();
 
   const offers: OfferV2[] = [];
-  for (const product of allProducts.slice(params.batchOffset, params.batchOffset + params.batchLimit)) {
+  const allProducts = Array.isArray(params.products) ? params.products : [];
+  for (const product of allProducts.slice(params.params.batchOffset, params.params.batchOffset + params.params.batchLimit)) {
     const productHandle = (product.handle || "").trim();
     if (!productHandle) continue;
     const productTitle = (product.title || "").trim() || productHandle;
     const productDescription = normalizeDescriptionText(product.body_html);
 
-    const canonicalProductUrl = canonicalizeUrl(`${params.baseUrl}/products/${productHandle}`, params.baseUrl);
+    const canonicalProductUrl = canonicalizeUrl(`${params.params.baseUrl}/products/${productHandle}`, params.params.baseUrl);
     const siteProductId = typeof product.id === "number" ? String(product.id) : "";
 
     for (const variant of product.variants || []) {
@@ -527,16 +576,16 @@ async function tryExtractShopifyOffersV2(params: {
       const compareAtParsed = parsePrice(rawCompareAt || null);
       const resolvedCurrency = resolveCurrency({
         structuredCurrency: null,
-        metaCurrencyCandidates: hintedCurrency ? [hintedCurrency] : [],
+        metaCurrencyCandidates: params.hintedCurrency ? [params.hintedCurrency] : [],
         priceDisplayRaw,
-        marketId: params.context.market_id,
+        marketId: params.params.context.market_id,
       });
-      const status = resolveMarketSwitchStatus(resolvedCurrency.code, params.context.expected_currency, false);
+      const status = resolveMarketSwitchStatus(resolvedCurrency.code, params.params.context.expected_currency, false);
       const sku = (variant.sku || "").trim();
       const variantSku = sku || (typeof variant.id === "number" ? String(variant.id) : "");
 
       const sourceProductId = buildSourceProductId({
-        sourceSite: params.sourceSite,
+        sourceSite: params.params.sourceSite,
         siteProductId,
         canonicalUrl: canonicalProductUrl,
         sku,
@@ -550,13 +599,13 @@ async function tryExtractShopifyOffersV2(params: {
       const availability = normalizeAvailabilityFromBoolean(variant.available, variant.inventory_quantity);
 
       const offer: OfferV2 = {
-        source_site: params.sourceSite,
+        source_site: params.params.sourceSite,
         source_product_id: sourceProductId,
         url_canonical: canonicalProductUrl,
         product_title: productTitle || null,
         product_description: productDescription,
         variant_sku: variantSku || null,
-        market_id: params.context.market_id,
+        market_id: params.params.context.market_id,
         price_amount: priceParsed.price_amount,
         price_currency: resolvedCurrency.code,
         price_display_raw: priceDisplayRaw,
@@ -572,17 +621,17 @@ async function tryExtractShopifyOffersV2(params: {
         currency_confidence: resolvedCurrency.confidence,
         market_switch_status: status,
         market_context_debug: {
-          headers: { ...params.context.headers },
-          cookies: { ...params.context.cookies },
-          url_params: { ...params.context.url_params },
-          geo_hint: params.context.geo_hint,
-          expected_currency: params.context.expected_currency,
+          headers: { ...params.params.context.headers },
+          cookies: { ...params.params.context.cookies },
+          url_params: { ...params.params.context.url_params },
+          geo_hint: params.params.context.geo_hint,
+          expected_currency: params.params.context.expected_currency,
           observed_currency: resolvedCurrency.code,
         },
       };
       offer.commerce_facts_v1 = buildCommerceFactsV1({
         offerUrl: offer.url_canonical,
-        context: params.context,
+        context: params.params.context,
         capturedAt,
         priceAmount: offer.price_amount,
         priceCurrency: offer.price_currency,
@@ -602,10 +651,70 @@ async function tryExtractShopifyOffersV2(params: {
     }
   }
 
-  params.log("data", `Shopify V2 offers=${offers.length} market=${params.context.market_id}`);
-  return {
+  return buildShopifyResult({
     offers,
     totalProducts: allProducts.length,
+    log: params.params.log,
+    marketId: params.params.context.market_id,
+  });
+}
+
+function extractShopifyProductHandle(seedUrl: string | undefined, baseUrl: string): string | undefined {
+  if (!seedUrl) return undefined;
+  try {
+    const parsed = new URL(seedUrl, baseUrl);
+    const match = parsed.pathname.match(/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?products?\/([^/?#]+)/i);
+    return match?.[1] ? decodeURIComponent(match[1]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const SHOPIFY_DUPLICATE_COPY_HANDLE_SUFFIX_RE = /-copy(?:-\d+)?$/i;
+const SHOPIFY_DUPLICATE_COUNTER_HANDLE_SUFFIX_RE = /-(\d{1,2})$/;
+
+function stripShopifyDuplicateHandleSuffix(handle: string): string | null {
+  const normalized = handle.trim().toLowerCase();
+  if (!normalized) return null;
+
+  const withoutCopySuffix = normalized.replace(SHOPIFY_DUPLICATE_COPY_HANDLE_SUFFIX_RE, "");
+  if (withoutCopySuffix && withoutCopySuffix !== normalized) return withoutCopySuffix;
+
+  const counterMatch = normalized.match(SHOPIFY_DUPLICATE_COUNTER_HANDLE_SUFFIX_RE);
+  if (!counterMatch) return null;
+  const baseHandle = normalized.slice(0, -counterMatch[0].length);
+  return baseHandle || null;
+}
+
+export function buildShopifyDirectHandleCandidates(seedUrl: string | undefined, baseUrl: string): string[] {
+  const directHandle = extractShopifyProductHandle(seedUrl, baseUrl);
+  if (!directHandle) return [];
+  const canonicalHandle = stripShopifyDuplicateHandleSuffix(directHandle);
+  return dedupeStringList([directHandle, canonicalHandle]);
+}
+
+function finalizeShopifyExtractionLog(params: {
+  log: Logger;
+  offerCount: number;
+  marketId: MarketId;
+}) {
+  params.log("data", `Shopify V2 offers=${params.offerCount} market=${params.marketId}`);
+}
+
+function buildShopifyResult(params: {
+  offers: OfferV2[];
+  totalProducts: number;
+  log: Logger;
+  marketId: MarketId;
+}): ShopifyExtractionResult {
+  finalizeShopifyExtractionLog({
+    log: params.log,
+    offerCount: params.offers.length,
+    marketId: params.marketId,
+  });
+  return {
+    offers: params.offers,
+    totalProducts: params.totalProducts,
   };
 }
 

@@ -85,6 +85,7 @@ export type ExtractedProductDetailSection = {
   heading: string;
   body: string;
   source_kind: string;
+  media_urls?: string[];
 };
 
 export type ExtractedProductFaqItem = {

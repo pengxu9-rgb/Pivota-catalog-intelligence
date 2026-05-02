@@ -554,6 +554,12 @@ function isLowQualityDetailSectionText(heading?: string, body?: string) {
   if (/^(?:tell us about yourself|write a review|submit your review|privacy settings|cookie settings)$/.test(normalizedHeading)) {
     return true;
   }
+  if (
+    normalizedHeading === "less details" &&
+    /\bage\b.*\bskin type\b|\bi was incentivized\b|\bskin concern\b/.test(normalizedBody)
+  ) {
+    return true;
+  }
   if (/^ingredients?$/.test(normalizedHeading) && /^see full ingredients?$/.test(normalizedBody)) {
     return true;
   }
@@ -609,13 +615,25 @@ export function normalizeStructuredProseDetailSections(
   return Array.isArray(sections) ? sections.map((section) => normalizeStructuredProseDetailSection(section)) : [];
 }
 
+function normalizeDetailSectionMediaUrls(section: ExtractedProductDetailSection | undefined) {
+  return dedupeStringList(
+    [
+      ...(Array.isArray(section?.media_urls) ? section.media_urls : []),
+      ...((section as { mediaUrls?: string[] } | undefined)?.mediaUrls || []),
+    ]
+      .map((value) => cleanText(value))
+      .filter(Boolean),
+  );
+}
+
 function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
   const out: ExtractedProductDetailSection[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   for (const section of Array.isArray(sections) ? sections : []) {
     let heading = normalizeDetailSectionHeading(section?.heading);
     const body = cleanText(section?.body);
     const sourceKind = cleanText(section?.source_kind) || "unknown";
+    const mediaUrls = normalizeDetailSectionMediaUrls(section);
     if (!heading || !body) continue;
     if (heading === "Ingredients" && !looksLikeFullIngredientListText(body)) {
       heading = "Key Ingredients";
@@ -624,12 +642,23 @@ function dedupeDetailSections(sections: ExtractedProductDetailSection[]) {
     if (isLowQualityDetailSectionText(heading, body)) continue;
     const keyBody = heading === "Ingredients" ? cleanText(body.replace(/^full ingredients?\s*/i, "")) : body;
     const key = `${heading.toLowerCase()}|${keyBody.toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const existingIndex = seen.get(key);
+    if (existingIndex != null) {
+      const existing = out[existingIndex];
+      if (!existing) continue;
+      const mergedMediaUrls = dedupeStringList([
+        ...normalizeDetailSectionMediaUrls(existing),
+        ...mediaUrls,
+      ]);
+      if (mergedMediaUrls.length > 0) existing.media_urls = mergedMediaUrls;
+      continue;
+    }
+    seen.set(key, out.length);
     out.push({
       heading,
       body,
       source_kind: sourceKind,
+      ...(mediaUrls.length > 0 ? { media_urls: mediaUrls } : {}),
     });
   }
   return out;
@@ -2564,7 +2593,14 @@ function buildPdpCompletenessIdentityText(product: ExtractedProduct): string {
   return [
     product.title,
     product.url,
-    ...(product.details_sections || []).flatMap((section) => [section.heading, section.body]),
+    ...(product.details_sections || []).flatMap((section) => {
+      const heading = normalizeDetailSectionHeading(section.heading);
+      return heading === "Details" ? [] : [section.heading, section.body];
+    }),
+    product.description_raw,
+    product.how_to_use_raw,
+    product.ingredients_raw,
+    product.active_ingredients_raw,
     ...(product.variants || []).flatMap((variant) => [
       variant.option_name,
       variant.option_value,
@@ -2592,11 +2628,12 @@ function inferPdpCompletenessRequirements(product: ExtractedProduct) {
   const text = buildPdpCompletenessIdentityText(product);
   const titleText = buildPdpCompletenessTitleText(product);
   const accessory = PDP_COMPLETENESS_ACCESSORY_RE.test(titleText);
-  const bundle =
+  const bundleSignals =
     PDP_COMPLETENESS_BUNDLE_RE.test(text) ||
     PDP_COMPLETENESS_WEAK_BUNDLE_RE.test(titleText) ||
     (!accessory && PDP_COMPLETENESS_FORMULA_PAIR_RE.test(text)) ||
     PDP_COMPLETENESS_LOOK_BUNDLE_RE.test(text);
+  const bundle = !accessory && bundleSignals;
   const skincare = PDP_COMPLETENESS_SKINCARE_RE.test(text);
   const makeup = PDP_COMPLETENESS_MAKEUP_RE.test(text);
   const hair = PDP_COMPLETENESS_HAIR_RE.test(text);
@@ -2769,6 +2806,120 @@ export function getMissingPdpFieldReasons(product: ExtractedProduct): MissingPdp
 
 export function productHasMissingPdpFields(product: ExtractedProduct) {
   return getMissingPdpFieldReasons(product).length > 0;
+}
+
+type ShopifyDirectPdpThinReason =
+  | "structured_sections"
+  | "faq"
+  | "content_images"
+  | "gallery_depth"
+  | "variant_gallery_depth";
+
+type ShopifyDirectPdpHtmlSignals = {
+  hasFaqHeading: boolean;
+  hasHowToUseHeading: boolean;
+  hasIngredientsHeading: boolean;
+  hasClinicalHeading: boolean;
+  candidateImageUrls: string[];
+};
+
+const SHOPIFY_HTML_IMAGE_URL_RE =
+  /(?:https?:)?\/\/cdn\.shopify\.com\/s\/files\/[^"'()\s>]+\.(?:png|jpe?g|webp|gif|avif)(?:\?[^"'()\s>]*)?/gi;
+const SHOPIFY_HTML_NON_PRODUCT_IMAGE_RE =
+  /\b(?:logo|icon|badge|sprite|payment|klarna|affirm|afterpay|font|gotham|visa|mastercard|amex|paypal|facebook|instagram|tiktok|youtube|pinterest)\b/i;
+
+function extractShopifyDirectPdpHtmlImageUrls(
+  html: string | undefined,
+  baseUrl: string,
+  product: ExtractedProduct,
+): string[] {
+  if (!html) return [];
+  const rawUrls = Array.from(html.matchAll(SHOPIFY_HTML_IMAGE_URL_RE))
+    .map((match) => cleanText(match[0]))
+    .filter(Boolean);
+  const normalized = dedupeStringList(
+    resolveStructuredImageUrls(
+      baseUrl,
+      rawUrls.map((url) => (url.startsWith("//") ? `https:${url}` : url)),
+    ),
+  ).filter((url) => !SHOPIFY_HTML_NON_PRODUCT_IMAGE_RE.test(url));
+  if (normalized.length === 0) return [];
+
+  const skuTokens = dedupeStringList(
+    [product.variant_skus || [], (product.variants || []).map((variant) => variant.sku)]
+      .flat()
+      .map((value) => extractSkuImageToken(value))
+      .filter(Boolean) as string[],
+  );
+  const scopedBySku = skuTokens.length
+    ? normalized.filter((url) => {
+        const token = extractSkuImageToken(url);
+        return token ? skuTokens.includes(token) : false;
+      })
+    : [];
+  if (scopedBySku.length > 0) return scopedBySku;
+
+  const handle = extractShopifyProductHandle(product.url, baseUrl);
+  const handleTokens = cleanText(handle)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 4);
+  const scopedByHandle = handleTokens.length
+    ? normalized.filter((url) => {
+        const lower = url.toLowerCase();
+        return handleTokens.filter((token) => lower.includes(token)).length >= Math.min(2, handleTokens.length);
+      })
+    : [];
+  return scopedByHandle.length > 0 ? scopedByHandle : normalized;
+}
+
+function inspectShopifyDirectPdpHtmlSignals(
+  html: string | undefined,
+  baseUrl: string,
+  product: ExtractedProduct,
+): ShopifyDirectPdpHtmlSignals {
+  const text = cleanText(
+    String(html || "")
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " "),
+  );
+  return {
+    hasFaqHeading: /\b(?:frequently asked questions|routine faq|faqs?|questions & answers|questions and answers)\b/i.test(text),
+    hasHowToUseHeading: /\b(?:how to use|how to apply|directions)\b/i.test(text),
+    hasIngredientsHeading: /\b(?:ingredients|full ingredients|key ingredients)\b/i.test(text),
+    hasClinicalHeading: /\b(?:clinical results|clinically proven|proven effective|results)\b/i.test(text),
+    candidateImageUrls: extractShopifyDirectPdpHtmlImageUrls(html, baseUrl, product),
+  };
+}
+
+function getShopifyDirectPdpThinReasons(
+  product: ExtractedProduct,
+  htmlSignals: ShopifyDirectPdpHtmlSignals,
+): ShopifyDirectPdpThinReason[] {
+  const reasons: ShopifyDirectPdpThinReason[] = [];
+  const detailsSections = Array.isArray(product.details_sections)
+    ? product.details_sections.filter((section) => !isTaxonomyOnlyDetailSection(section))
+    : [];
+  const faqItems = Array.isArray(product.faq_items) ? product.faq_items : [];
+  const contentImageCount = Array.isArray(product.content_image_urls) ? product.content_image_urls.length : 0;
+  const productImageCount = Array.isArray(product.image_urls) ? product.image_urls.length : 0;
+  const maxVariantImageCount = Math.max(0, ...(product.variants || []).map((variant) => variant.image_urls.length));
+  const htmlImageCount = htmlSignals.candidateImageUrls.length;
+  const htmlShowsStructuredContent =
+    htmlSignals.hasFaqHeading ||
+    htmlSignals.hasHowToUseHeading ||
+    htmlSignals.hasIngredientsHeading ||
+    htmlSignals.hasClinicalHeading;
+
+  if (detailsSections.length === 0 && htmlShowsStructuredContent) reasons.push("structured_sections");
+  if (faqItems.length === 0 && htmlSignals.hasFaqHeading) reasons.push("faq");
+  if (contentImageCount === 0 && htmlImageCount >= Math.max(3, productImageCount + 2)) reasons.push("content_images");
+  if (productImageCount <= 1 && htmlImageCount >= 3) reasons.push("gallery_depth");
+  if (maxVariantImageCount <= 1 && htmlImageCount >= 3) reasons.push("variant_gallery_depth");
+
+  return dedupeStringList(reasons) as ShopifyDirectPdpThinReason[];
 }
 
 export type ImageVisionPdpFields = {
@@ -4107,19 +4258,28 @@ export async function enrichDirectShopifyPdpResponse(params: {
   const productMissingImages = currentProduct.image_urls.length === 0;
   const variantMissingImages = currentProduct.variants.some((variant) => variant.image_urls.length === 0);
   const missingPdpFieldReasons = getMissingPdpFieldReasons(currentProduct);
-  const productMissingPdpFields = missingPdpFieldReasons.length > 0;
-  if (!productMissingImages && !variantMissingImages && !productMissingPdpFields) return response;
-  const enrichmentReasons = [
-    productMissingImages ? "product_images" : "",
-    variantMissingImages ? "variant_images" : "",
-    ...missingPdpFieldReasons.map((reason) => `pdp_${reason}`),
-  ].filter(Boolean);
-
-  params.log(
-    "info",
-    `Shopify direct PDP requires browser enrichment for ${enrichmentReasons.join(", ")} (product_kind=${currentProduct.product_kind || classifyExtractedProductKind(currentProduct)}): ${params.seedUrl}`,
-  );
-
+  const pageHtmlForSignals =
+    missingPdpFieldReasons.length > 0 ||
+    currentProduct.image_urls.length <= 1 ||
+    currentProduct.variants.every((variant) => variant.image_urls.length <= 1) ||
+    !Array.isArray(currentProduct.details_sections) ||
+    currentProduct.details_sections.length === 0 ||
+    !Array.isArray(currentProduct.faq_items) ||
+    currentProduct.faq_items.length === 0 ||
+    !Array.isArray(currentProduct.content_image_urls) ||
+    currentProduct.content_image_urls.length === 0
+      ? await fetchSeedPageHtml()
+      : undefined;
+  const htmlSignals = inspectShopifyDirectPdpHtmlSignals(pageHtmlForSignals, params.baseUrl, currentProduct);
+  const thinPdpReasons = getShopifyDirectPdpThinReasons(currentProduct, htmlSignals);
+  const detailsSections = Array.isArray(currentProduct.details_sections) ? currentProduct.details_sections : [];
+  const onlyTaxonomyDetails =
+    detailsSections.length > 0 && detailsSections.every((section) => isTaxonomyOnlyDetailSection(section));
+  const candidateImageUrls = getImageVisionCandidateUrls(currentProduct);
+  const canAttemptImageOnlyRecovery =
+    shouldAttemptShopifyImageVisionEnrichment(currentProduct) &&
+    candidateImageUrls.length >= 3 &&
+    (detailsSections.length === 0 || onlyTaxonomyDetails);
   const tryImageVisionEnrichment = async (fallbackResponse: Omit<ExtractResponse, "generated_at" | "logs">) => {
     const productForVision = fallbackResponse.products[0];
     return enrichShopifyDirectPdpWithImageVision({
@@ -4132,6 +4292,26 @@ export async function enrichDirectShopifyPdpResponse(params: {
       imageVisionClient: params.imageVisionClient,
     });
   };
+  const enrichmentReasons = [
+    productMissingImages ? "product_images" : "",
+    variantMissingImages ? "variant_images" : "",
+    ...thinPdpReasons.map((reason) => `pdp_${reason}`),
+  ].filter(Boolean);
+  if (enrichmentReasons.length === 0) {
+    if (canAttemptImageOnlyRecovery) {
+      params.log(
+        "info",
+        `Shopify direct PDP requires image-only enrichment for missing structured PDP fields (product_kind=${currentProduct.product_kind || classifyExtractedProductKind(currentProduct)}): ${params.seedUrl}`,
+      );
+      return tryImageVisionEnrichment(response);
+    }
+    return response;
+  }
+
+  params.log(
+    "info",
+    `Shopify direct PDP requires browser enrichment for ${enrichmentReasons.join(", ")} (product_kind=${currentProduct.product_kind || classifyExtractedProductKind(currentProduct)}): ${params.seedUrl}`,
+  );
 
   const navigationTimeoutMs = clampIntShared(
     process.env.PUPPETEER_DIRECT_PDP_ENRICH_NAV_TIMEOUT_MS,
@@ -4960,6 +5140,10 @@ export function mergeShopifyDirectPdpFallback(
     const mergedProduct: ExtractedProduct = {
       ...product,
       image_urls: [...product.image_urls],
+      content_image_urls: dedupeStringList([
+        ...((product.content_image_urls || []) as string[]),
+        ...((fallbackProduct.content_image_urls || []) as string[]),
+      ]),
       variant_skus: [...product.variant_skus],
       variants: product.variants.map((variant) => ({
         ...variant,
@@ -5041,13 +5225,15 @@ export function mergeShopifyDirectPdpFallback(
       ...fallbackProduct.variants.flatMap((variant) => variant.image_urls),
       ...fallbackProduct.variants.map((variant) => variant.image_url),
     ]);
-    const fallbackProductImages = selectRelevantFallbackImageUrls(
-      {
-        title: mergedProduct.title,
-        url: mergedProduct.url,
-      },
-      rawFallbackProductImages,
-    );
+    const fallbackProductImages = preservePdpFieldSourceKinds
+      ? dedupeShopifyImageUrls(rawFallbackProductImages)
+      : selectRelevantFallbackImageUrls(
+          {
+            title: mergedProduct.title,
+            url: mergedProduct.url,
+          },
+          rawFallbackProductImages,
+        );
 
     if (fallbackProductImages.length === 0) return withProductPdpProfile(mergedProduct);
 
@@ -5075,17 +5261,20 @@ export function mergeShopifyDirectPdpFallback(
       const useFallbackVariantDisplay = Boolean(
         matchedFallback && directVariantOptionGeneric && !fallbackVariantOptionGeneric,
       );
-      const relevantVariantFallbackImages = selectRelevantFallbackImageUrls(
-        {
-          title: [mergedProduct.title, variant.option_name, variant.option_value].filter(Boolean).join(" "),
-          url: variant.url || mergedProduct.url,
-        },
-        dedupeShopifyImageUrls([
-          ...(matchedFallback?.image_urls || []),
-          matchedFallback?.image_url,
-          ...fallbackProductImages,
-        ]),
-      );
+      const rawVariantFallbackImages = dedupeShopifyImageUrls([
+        ...(matchedFallback?.image_urls || []),
+        matchedFallback?.image_url,
+        ...fallbackProductImages,
+      ]);
+      const relevantVariantFallbackImages = preservePdpFieldSourceKinds
+        ? rawVariantFallbackImages
+        : selectRelevantFallbackImageUrls(
+            {
+              title: [mergedProduct.title, variant.option_name, variant.option_value].filter(Boolean).join(" "),
+              url: variant.url || mergedProduct.url,
+            },
+            rawVariantFallbackImages,
+          );
 
       const mergedVariantImages = dedupeShopifyImageUrls([
         ...variant.image_urls,
@@ -6323,6 +6512,36 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         collectFaqItemsFromRoot(document, "accordion_question_answer", "FAQ");
       }
 
+      if (items.length === 0 && /drjart\.com$/i.test(location.hostname)) {
+        const root = document.querySelector("main") || document.body;
+        const lines = normalizeSectionText((root as HTMLElement).innerText || root.textContent || "")
+          .split("\n")
+          .map((line) => normalizeSectionText(line))
+          .filter(Boolean);
+        const faqStart = lines.findIndex((line) =>
+          /\b(?:routine faq|frequently asked questions?|faqs?)\b/i.test(line),
+        );
+        if (faqStart >= 0) {
+          let currentQuestion = "";
+          let answerLines: string[] = [];
+          const flush = () => {
+            if (!currentQuestion || answerLines.length === 0) return;
+            pushFaqItem(currentQuestion, answerLines.join(" "), "faq_linear_text", "FAQ");
+          };
+          for (const line of lines.slice(faqStart + 1)) {
+            if (/^(?:shop|social|need help\?|need help|dr\.?\s*jart\b|back to top|top)$/i.test(line)) break;
+            if (/^(?:\d+\.\s+|q:\s*)/i.test(line) || /\?$/.test(line)) {
+              flush();
+              currentQuestion = line.replace(/^\d+\.\s+/, "").replace(/^q:\s*/i, "");
+              answerLines = [];
+              continue;
+            }
+            if (currentQuestion) answerLines.push(line.replace(/^a:\s*/i, ""));
+          }
+          flush();
+        }
+      }
+
       return items;
     })();
     const faqHtmlSnippets = Array.from(
@@ -6352,30 +6571,92 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
             "header, nav, footer, .header__dropdown, .drawer__inner, .predictive-search, [class*='comparison'], [id*='comparison']",
           ),
         );
-      const pushSection = (headingRaw: string, bodyRaw: string, sourceKind: string) => {
+      const sectionImageInvalidUrlRe =
+        /(placeholder\.svg|\/favicon|\/apple-touch-icon|\/logo(?:[._/-]|$)|\/sprite(?:[._/-]|$)|tracking|teads\.tv|\/MenuBanner\/|\/Library-Sites-|data:image\/svg)/i;
+      const normalizeSectionImageCandidates = (raw: string | null | undefined) => {
+        const trimmed = typeof raw === "string" ? raw.trim() : "";
+        if (!trimmed) return [];
+        return trimmed
+          .split(",")
+          .map((part) => part.trim().split(/\s+/)[0] || "")
+          .filter(Boolean);
+      };
+      const collectSectionMediaUrls = (roots: Array<Element | null | undefined>) => {
+        const seenMedia = new Set<string>();
+        const out: string[] = [];
+        const pushMediaUrl = (raw: string | null | undefined) => {
+          for (const candidate of normalizeSectionImageCandidates(raw)) {
+            try {
+              const absolute = new URL(candidate, documentBase).toString();
+              if (!/^https?:\/\//i.test(absolute)) continue;
+              if (sectionImageInvalidUrlRe.test(absolute)) continue;
+              if (seenMedia.has(absolute)) continue;
+              seenMedia.add(absolute);
+              out.push(absolute);
+            } catch {
+              // ignore invalid image candidates
+            }
+          }
+        };
+
+        for (const root of roots) {
+          if (!(root instanceof Element) || shouldSkipSectionNode(root)) continue;
+          const imageNodes = [
+            ...(root instanceof HTMLImageElement ? [root] : []),
+            ...Array.from(root.querySelectorAll("img")),
+          ] as HTMLImageElement[];
+          for (const imageNode of imageNodes) {
+            if (shouldSkipSectionNode(imageNode)) continue;
+            const width = Number(imageNode.getAttribute("width") || imageNode.naturalWidth || 0);
+            const height = Number(imageNode.getAttribute("height") || imageNode.naturalHeight || 0);
+            if (width > 0 && height > 0 && width < 72 && height < 72) continue;
+            pushMediaUrl(imageNode.currentSrc || "");
+            pushMediaUrl(imageNode.getAttribute("data-src"));
+            pushMediaUrl(imageNode.getAttribute("srcset"));
+            pushMediaUrl(imageNode.getAttribute("src"));
+            if (out.length >= 8) return out;
+          }
+        }
+        return out;
+      };
+      const pushSection = (
+        headingRaw: string,
+        bodyRaw: string,
+        sourceKind: string,
+        mediaRoots: Array<Element | null | undefined> = [],
+      ) => {
         const heading = normalizeSectionText(headingRaw);
         const body = normalizeSectionText(bodyRaw);
         if (!heading || !body || !looksRelevantHeading(heading)) return;
         const key = `${heading.toLowerCase()}|${body.toLowerCase()}|${sourceKind.toLowerCase()}`;
         if (seen.has(key)) return;
         seen.add(key);
+        const mediaUrls = collectSectionMediaUrls(mediaRoots);
         sections.push({
           heading,
           body,
           source_kind: sourceKind,
+          ...(mediaUrls.length > 0 ? { media_urls: mediaUrls } : {}),
         });
       };
-      const pushStructuredProseSection = (headingRaw: string, bodyRaw: string, sourceKind: string) => {
+      const pushStructuredProseSection = (
+        headingRaw: string,
+        bodyRaw: string,
+        sourceKind: string,
+        mediaRoots: Array<Element | null | undefined> = [],
+      ) => {
         const heading = normalizeSectionText(headingRaw);
         const body = normalizeSectionText(bodyRaw);
         if (!heading || !body) return;
         const key = `${heading.toLowerCase()}|${body.toLowerCase()}|${sourceKind.toLowerCase()}`;
         if (seen.has(key)) return;
         seen.add(key);
+        const mediaUrls = collectSectionMediaUrls(mediaRoots);
         sections.push({
           heading,
           body,
           source_kind: sourceKind,
+          ...(mediaUrls.length > 0 ? { media_urls: mediaUrls } : {}),
         });
       };
       const extractStructuredProseSection = (container: Element | null | undefined, sourceKind: string) => {
@@ -6401,17 +6682,22 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
             : fullText.replace(heading, "").trim();
         }
         if (!body) return;
-        pushStructuredProseSection(heading, body, sourceKind);
+        pushStructuredProseSection(heading, body, sourceKind, [
+          container.closest("image-with-text, .image-with-text, .section-stack") || container.parentElement || container,
+        ]);
       };
 
       if (productDetailsText) {
         pushSection("Details", productDetailsText, "page_product_details");
       }
       if (howToUseText) {
-        pushSection("How to Use", howToUseText, "accordion_how_to_use");
+        pushSection("How to Use", howToUseText, "accordion_how_to_use", [howToUseContent, howToUseAccordion.container]);
       }
       if (ingredientsMarkdownText) {
-        pushSection("Ingredients", ingredientsMarkdownText, "accordion_ingredients");
+        pushSection("Ingredients", ingredientsMarkdownText, "accordion_ingredients", [
+          ingredientsContent,
+          ingredientsAccordion.container,
+        ]);
       }
       if (!ingredientsMarkdownText && ingredientFlyoutText) {
         pushSection("Ingredients", ingredientFlyoutText, "ingredients_flyout");
@@ -6462,13 +6748,17 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
           if (shouldSkipSectionNode(headingNode)) continue;
           const heading = headingNode.textContent || "";
           const bodyParts: string[] = [];
+          const mediaRoots: Element[] = [];
           let cursor = headingNode.nextElementSibling;
           let guard = 0;
           while (cursor && guard < 6) {
             if (/^H[2-4]$/i.test(cursor.tagName)) break;
             if (!shouldSkipSectionNode(cursor)) {
               const text = (cursor as HTMLElement).innerText || cursor.textContent || "";
-              if (normalizeSectionText(text)) bodyParts.push(text);
+              if (normalizeSectionText(text)) {
+                bodyParts.push(text);
+                mediaRoots.push(cursor);
+              }
             }
             cursor = cursor.nextElementSibling;
             guard += 1;
@@ -6479,11 +6769,14 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
             const parentText = normalizeSectionText(parent?.innerText || parent?.textContent || "");
             const headingText = normalizeSectionText(heading);
             const body = parentText.replace(headingText, "").trim();
-            if (body) bodyParts.push(body);
+            if (body) {
+              bodyParts.push(body);
+              if (parent) mediaRoots.push(parent);
+            }
           }
 
           if (bodyParts.length > 0) {
-            pushSection(heading, bodyParts.join("\n\n"), "pdp_content_heading");
+            pushSection(heading, bodyParts.join("\n\n"), "pdp_content_heading", mediaRoots);
           }
         }
       }
@@ -6503,7 +6796,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         const target = document.getElementById(targetId);
         if (!target) continue;
         const body = (target as HTMLElement).innerText || target.textContent || "";
-        pushSection(heading, body, "accordion_control");
+        pushSection(heading, body, "accordion_control", [target, control.parentElement]);
       }
 
       const accordionButtons = Array.from(
@@ -6538,7 +6831,15 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
             button.nextElementSibling;
           body = (content as HTMLElement | null)?.innerText || content?.textContent || "";
         }
-        pushSection(heading, body, "accordion_button");
+        pushSection(heading, body, "accordion_button", [
+          targetId ? document.getElementById(targetId) : null,
+          button.closest("accordion-wrap") ||
+            button.closest(".pv-extra-details__accordion") ||
+            button.closest(".module-accordion .item") ||
+            button.closest(".acc") ||
+            button.parentElement,
+          button.nextElementSibling,
+        ]);
       }
 
       const detailSummaries = Array.from(document.querySelectorAll("details > summary")) as HTMLElement[];
@@ -6562,7 +6863,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
           const content = summary.nextElementSibling;
           body = (content as HTMLElement | null)?.innerText || content?.textContent || "";
         }
-        pushSection(heading, body, "details_summary");
+        pushSection(heading, body, "details_summary", [details, summary.nextElementSibling]);
       }
 
       const sectionStackProseNodes = Array.from(
@@ -6584,7 +6885,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
           "dialog .product-modal__content, dialog, .product-modal__content, [class*='modal__content']",
         );
         const body = (bodyNode as HTMLElement | null)?.innerText || bodyNode?.textContent || "";
-        pushSection(heading, body, "product_modal_content");
+        pushSection(heading, body, "product_modal_content", [bodyNode, productModal]);
       }
 
       const modalNodes = Array.from(
@@ -6595,7 +6896,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
           modal.querySelector(".modal__header h1, .modal__header h2, .modal__header h3, h1, h2, h3")?.textContent || "";
         const bodyNode = modal.querySelector(".modal__content, .modal-content, [class*='modal__content']");
         const body = (bodyNode as HTMLElement | null)?.innerText || bodyNode?.textContent || "";
-        pushSection(heading, body, "modal_content");
+        pushSection(heading, body, "modal_content", [bodyNode, modal]);
       }
 
       const headingNodes = Array.from(document.querySelectorAll("h2, h3, h4"));
@@ -6603,17 +6904,200 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         if (shouldSkipSectionNode(headingNode)) continue;
         const heading = headingNode.textContent || "";
         const bodyParts: string[] = [];
+        const mediaRoots: Element[] = [];
         let cursor = headingNode.nextElementSibling;
         let guard = 0;
         while (cursor && guard < 4) {
           if (/^H[2-4]$/i.test(cursor.tagName)) break;
           const text = (cursor as HTMLElement).innerText || cursor.textContent || "";
-          if (normalizeSectionText(text)) bodyParts.push(text);
+          if (normalizeSectionText(text)) {
+            bodyParts.push(text);
+            mediaRoots.push(cursor);
+          }
           cursor = cursor.nextElementSibling;
           guard += 1;
         }
         if (bodyParts.length > 0) {
-          pushSection(heading, bodyParts.join("\n\n"), "heading_sibling");
+          pushSection(heading, bodyParts.join("\n\n"), "heading_sibling", mediaRoots);
+        }
+      }
+
+      if (/drjart\.com$/i.test(location.hostname)) {
+        const root = (document.querySelector("main") as HTMLElement | null) || document.body;
+        const linearLines = normalizeSectionText(root.innerText || root.textContent || "")
+          .split("\n")
+          .map((line) => normalizeSectionText(line))
+          .filter(Boolean);
+        const narrativeImages = collectSectionMediaUrls(
+          Array.from(root.querySelectorAll("img")).filter((node) => {
+            if (!(node instanceof HTMLImageElement)) return false;
+            const rect = node.getBoundingClientRect();
+            const width = Number(node.getAttribute("width") || node.naturalWidth || rect.width || 0);
+            const height = Number(node.getAttribute("height") || node.naturalHeight || rect.height || 0);
+            return rect.top > 1000 && width >= 160 && height >= 160;
+          }),
+        );
+        const uniquePreserveOrder = (values: string[]) => {
+          const out: string[] = [];
+          const seenValues = new Set<string>();
+          for (const value of values) {
+            const normalized = normalizeSectionText(value);
+            if (!normalized) continue;
+            const key = normalized.toLowerCase();
+            if (seenValues.has(key)) continue;
+            seenValues.add(key);
+            out.push(normalized);
+          }
+          return out;
+        };
+        const clinicalNarrativeImages = narrativeImages.filter((url) =>
+          /(?:testingresults|claims|clinical|claim|results|desktop_ba|module_03|_test\/|cryosorbet_model)/i.test(url),
+        );
+        const regimenNarrativeImages = narrativeImages.filter((url) =>
+          /(?:regimen[_-]?step|routine|module_01|texture|howto|how-to|step)/i.test(url),
+        );
+        const concernNarrativeImages = narrativeImages.filter((url) => /Concern_Icon/i.test(url));
+        const treatmentNarrativeImages = narrativeImages.filter((url) => /Treatment_Icon/i.test(url));
+        const resultNarrativeImages = narrativeImages.filter((url) => /Result_Icon/i.test(url));
+        const pushLinearSection = (
+          headingRaw: string,
+          bodyLines: string[],
+          sourceKind: string,
+          mediaUrls: string[] = [],
+        ) => {
+          const heading = normalizeSectionText(headingRaw);
+          const body = normalizeSectionText(uniquePreserveOrder(bodyLines).join("\n"));
+          if (!heading || !body || !looksRelevantHeading(heading)) return;
+          const key = `${heading.toLowerCase()}|${body.toLowerCase()}|${sourceKind.toLowerCase()}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          sections.push({
+            heading,
+            body,
+            source_kind: sourceKind,
+            ...(mediaUrls.length > 0 ? { media_urls: mediaUrls } : {}),
+          });
+        };
+
+        const productDetailsIndices = linearLines.reduce<number[]>((acc, line, index) => {
+          if (/^product details$/i.test(line)) acc.push(index);
+          return acc;
+        }, []);
+        const labelDrivenDetailsIndex = linearLines.findIndex((line) =>
+          /^(?:clinical results:?|sensory results:?|results:?|what makes it unique:?|what(?:'|’)s in it:?|free from:?)$/i.test(line),
+        );
+        const firstDetailsIndex = productDetailsIndices[0] ?? labelDrivenDetailsIndex;
+        const detailStopIndex = linearLines.findIndex(
+          (line, index) =>
+            index > firstDetailsIndex &&
+            (/^\$\d/.test(line) ||
+              /^qty:?$/i.test(line) ||
+              /^\d+\s*mL\b/i.test(line) ||
+              /^how to use$/i.test(line) ||
+              /^ingredients$/i.test(line) ||
+              /\b(?:routine faq|frequently asked questions?|faqs?)\b/i.test(line) ||
+              /^proven\. effective\.?$/i.test(line)),
+        );
+        if (firstDetailsIndex >= 0) {
+          const detailLines = linearLines.slice(
+            firstDetailsIndex,
+            detailStopIndex > firstDetailsIndex ? detailStopIndex : Math.min(linearLines.length, firstDetailsIndex + 48),
+          );
+          const captureLabelBlock = (heading: string, labelRe: RegExp, nextLabelRes: RegExp[]) => {
+            const startIndex = detailLines.findIndex((line) => labelRe.test(line));
+            if (startIndex < 0) return;
+            const endIndex = detailLines.findIndex(
+              (line, index) => index > startIndex && nextLabelRes.some((pattern) => pattern.test(line)),
+            );
+            const bodyLines = detailLines
+              .slice(startIndex + 1, endIndex > startIndex ? endIndex : undefined)
+              .filter((line) => !labelRe.test(line));
+            pushLinearSection(heading, bodyLines, "drjart_linear_details");
+          };
+          captureLabelBlock(
+            "Clinical Results",
+            /^(?:clinical results:?|results:?)$/i,
+            [/^sensory results:?$/i, /^what makes it unique:?$/i, /^what(?:'|’)s in it:?$/i, /^free from:?$/i],
+          );
+          captureLabelBlock(
+            "Sensory Results",
+            /^sensory results:?$/i,
+            [/^what makes it unique:?$/i, /^what(?:'|’)s in it:?$/i, /^free from:?$/i],
+          );
+          captureLabelBlock("Benefits", /^what makes it unique:?$/i, [/^what(?:'|’)s in it:?$/i, /^free from:?$/i]);
+          captureLabelBlock("Key Ingredients", /^what(?:'|’)s in it:?$/i, [/^free from:?$/i]);
+          captureLabelBlock("Free Of", /^free from:?$/i, []);
+        }
+
+        const faqStart = linearLines.findIndex((line, index) => index > firstDetailsIndex && /\b(?:routine faq|frequently asked questions?|faqs?)\b/i.test(line));
+        const storyStartIndex = linearLines.findIndex(
+          (line, index) =>
+            index > firstDetailsIndex &&
+            (/^proven\. effective\.?$/i.test(line) ||
+              /^rapid results you can see\.?$/i.test(line) ||
+              /^how to use your /i.test(line) ||
+              /^korean skincare routine/i.test(line) ||
+              /^concern$/i.test(line) ||
+              /^treatment$/i.test(line) ||
+              /^result$/i.test(line)),
+        );
+        const storyLines = storyStartIndex >= 0
+          ? linearLines.slice(storyStartIndex, faqStart > storyStartIndex ? faqStart : linearLines.length)
+          : [];
+        if (storyLines.length > 0) {
+          const storySectionDefs = [
+            {
+              match: /^proven\. effective\.?$/i,
+              heading: "Clinical Results",
+              resolveMedia: () => clinicalNarrativeImages.slice(0, 2),
+            },
+            {
+              match: /^rapid results you can see\.?$/i,
+              heading: "Clinical Results",
+              resolveMedia: () => clinicalNarrativeImages.slice(0, 2),
+            },
+            {
+              match: /^how to use your /i,
+              heading: "How to Use",
+              resolveMedia: () => regimenNarrativeImages.slice(0, 2),
+            },
+            {
+              match: /^korean skincare routine/i,
+              heading: "How to Use",
+              resolveMedia: () => regimenNarrativeImages.slice(0, 3),
+            },
+            {
+              match: /^concern$/i,
+              heading: "Best For",
+              resolveMedia: () => concernNarrativeImages.slice(0, 1),
+            },
+            {
+              match: /^treatment$/i,
+              heading: "Key Ingredients",
+              resolveMedia: () => treatmentNarrativeImages.slice(0, 1),
+            },
+            {
+              match: /^result$/i,
+              heading: "Benefits",
+              resolveMedia: () => resultNarrativeImages.slice(0, 1),
+            },
+          ] as const;
+          for (let index = 0; index < storyLines.length; index += 1) {
+            const def = storySectionDefs.find((entry) => entry.match.test(storyLines[index] || ""));
+            if (!def) continue;
+            const bodyLines: string[] = [];
+            let cursor = index + 1;
+            while (cursor < storyLines.length) {
+              const nextLine = storyLines[cursor] || "";
+              if (storySectionDefs.some((entry) => entry.match.test(nextLine))) break;
+              if (/^(?:more moisture\. more strength\. now bounce\.?|we love a good skincare post\.?)$/i.test(nextLine)) break;
+              bodyLines.push(nextLine);
+              cursor += 1;
+            }
+            const mediaUrls = def.resolveMedia();
+            pushLinearSection(def.heading, bodyLines, "drjart_linear_story", mediaUrls);
+            index = cursor - 1;
+          }
         }
       }
 
@@ -6647,6 +7131,33 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
     ...scraped,
     detailsSections: normalizeStructuredProseDetailSections(scraped.detailsSections),
   };
+}
+
+function extractSkuImageToken(value: string | undefined) {
+  const normalized = cleanText(value);
+  if (!normalized) return "";
+  const match = normalized.match(/sku_([A-Z0-9]{4,12})_/i) || normalized.match(/\b([A-Z0-9]{4,12})\b/i);
+  return match?.[1]?.toUpperCase() || "";
+}
+
+function buildSkuScopedImageUrlMap(imageUrls: string[]) {
+  const out = new Map<string, string[]>();
+  for (const imageUrl of imageUrls) {
+    const normalized = cleanText(imageUrl);
+    if (!normalized || /PosterImage_videos|\/videos\//i.test(normalized)) continue;
+    const token = extractSkuImageToken(normalized);
+    if (!token) continue;
+    const existing = out.get(token) || [];
+    if (!existing.includes(normalized)) existing.push(normalized);
+    out.set(token, existing);
+  }
+  return out;
+}
+
+function parseComparablePrice(raw: unknown) {
+  const normalized = normalizePrice(raw);
+  const parsed = Number.parseFloat(String(normalized).replace(/[^0-9.]+/g, ""));
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
 }
 
 export function buildProductFromPageSignals(params: {
@@ -6898,8 +7409,9 @@ export function buildProductFromPageSignals(params: {
     productUrl,
     ...productImageUrls,
   );
+  const skuScopedProductImages = buildSkuScopedImageUrlMap(productImageUrls);
 
-  const variants: ExtractedVariant[] = finalizeExtractedVariants(
+  let variants: ExtractedVariant[] = finalizeExtractedVariants(
     variantProducts.length > 1
       ? variantProducts.map((variantProduct, idx) => {
           const variantOffer = normalizeJsonLdOffers(variantProduct.offers)[0];
@@ -6935,11 +7447,28 @@ export function buildProductFromPageSignals(params: {
           const stock = stockFromAvailability(variantOffer?.availability);
           const id = stableId(`${productUrl}|${sku}|${price}`);
           const variantImageRaw = variantProduct.image;
-          const variantImageUrls = dedupeStringList([
+          const variantSpecificImageUrls = dedupeStringList([
             ...resolveStructuredImageUrls(params.baseUrl, [variantImageRaw, variantOffer?.image]),
             ...resolveStructuredImageUrls(params.baseUrl, [domMeta?.image_urls, domMeta?.image_url]),
-            ...productImageUrls,
           ]);
+          const variantImageTokens = dedupeStringList(
+            [extractSkuImageToken(sku), ...variantSpecificImageUrls.map((url) => extractSkuImageToken(url))]
+              .filter(Boolean) as string[],
+          );
+          const skuScopedVariantImages = dedupeStringList(
+            variantImageTokens.flatMap((token) => skuScopedProductImages.get(token) || []),
+          );
+          const variantImageUrls = dedupeStringList(
+            variantSpecificImageUrls.length > 1
+              ? variantSpecificImageUrls
+              : variantSpecificImageUrls.length > 0 && skuScopedVariantImages.length > 0
+                ? [...variantSpecificImageUrls, ...skuScopedVariantImages]
+                : skuScopedVariantImages.length > 0
+                  ? skuScopedVariantImages
+                  : variantSpecificImageUrls.length > 0
+                    ? variantSpecificImageUrls
+                    : productImageUrls,
+          );
           const variantImageUrl = variantImageUrls[0] || imageUrl;
 
           return {
@@ -6991,10 +7520,31 @@ export function buildProductFromPageSignals(params: {
             (typeof offer.name === "string" ? offer.name.trim() : "") ||
             (typeof offer.description === "string" ? offer.description.trim() : "");
           const offerImageRaw = offer.image;
-          const offerImageUrls = dedupeStringList([
-            ...resolveStructuredImageUrls(params.baseUrl, [offerImageRaw, domMeta?.image_urls, domMeta?.image_url, imageRaw, extracted.imageCandidates]),
+          const offerSpecificImageUrls = dedupeStringList([
+            ...resolveStructuredImageUrls(params.baseUrl, [offerImageRaw, domMeta?.image_urls, domMeta?.image_url]),
+          ]);
+          const offerImageTokens = dedupeStringList(
+            [extractSkuImageToken(sku), ...offerSpecificImageUrls.map((url) => extractSkuImageToken(url))]
+              .filter(Boolean) as string[],
+          );
+          const skuScopedOfferImages = dedupeStringList(
+            offerImageTokens.flatMap((token) => skuScopedProductImages.get(token) || []),
+          );
+          const offerFallbackImageUrls = dedupeStringList([
+            ...resolveStructuredImageUrls(params.baseUrl, [imageRaw, extracted.imageCandidates]),
             ...productImageUrls,
           ]);
+          const offerImageUrls = dedupeStringList(
+            offerSpecificImageUrls.length > 1
+              ? offerSpecificImageUrls
+              : offerSpecificImageUrls.length > 0 && skuScopedOfferImages.length > 0
+                ? [...offerSpecificImageUrls, ...skuScopedOfferImages]
+                : skuScopedOfferImages.length > 0
+                  ? skuScopedOfferImages
+                  : offerSpecificImageUrls.length > 0
+                    ? offerSpecificImageUrls
+                    : offerFallbackImageUrls,
+          );
           const displayableDomOptionValue =
             domMeta?.option_value && !isGenericOfferOptionValue(domMeta.option_value, productTitle)
               ? domMeta.option_value
@@ -7074,12 +7624,44 @@ export function buildProductFromPageSignals(params: {
         ],
   );
 
-  const finalProductImageUrls = dedupeStringList([
-    ...productImageUrls,
-    ...variants.flatMap((variant) => variant.image_urls),
-    ...variants.map((variant) => variant.image_url),
-  ]);
+  if (variants.length > 1) {
+    const pagePrice = parseComparablePrice(extracted.priceTexts[0]);
+    const priceMatchedIndices =
+      pagePrice == null
+        ? []
+        : variants
+            .map((variant, index) => ({ index, price: parseComparablePrice(variant.price) }))
+            .filter((entry) => entry.price != null && Math.abs((entry.price as number) - pagePrice) < 0.001)
+            .map((entry) => entry.index);
+    const densestVariantIndex = variants.reduce((bestIndex, variant, index, all) => {
+      const bestImages = Array.isArray(all[bestIndex]?.image_urls) ? all[bestIndex].image_urls.length : 0;
+      const currentImages = Array.isArray(variant.image_urls) ? variant.image_urls.length : 0;
+      return currentImages > bestImages ? index : bestIndex;
+    }, 0);
+    const selectedVariantIndex =
+      priceMatchedIndices.length === 1
+        ? priceMatchedIndices[0]
+        : densestVariantIndex;
+    if (selectedVariantIndex > 0 && selectedVariantIndex < variants.length) {
+      variants = [variants[selectedVariantIndex], ...variants.filter((_, index) => index !== selectedVariantIndex)];
+    }
+  }
+
+  const primaryVariantImageUrls = Array.isArray(variants[0]?.image_urls) ? variants[0].image_urls.filter(Boolean) : [];
+  const finalProductImageUrls =
+    primaryVariantImageUrls.length > 1
+      ? dedupeStringList(primaryVariantImageUrls)
+      : dedupeStringList([
+          ...productImageUrls,
+          ...variants.flatMap((variant) => variant.image_urls),
+          ...variants.map((variant) => variant.image_url),
+        ]);
   const finalProductImageUrl = finalProductImageUrls[0] || imageUrl;
+  const contentImageUrls = dedupeStringList(
+    mergedDetailsSections
+      .flatMap((section) => (Array.isArray(section.media_urls) ? section.media_urls : []))
+      .filter((url) => !finalProductImageUrls.includes(url)),
+  );
 
   if (params.verbose) {
     if (productObj) {
@@ -7095,6 +7677,7 @@ export function buildProductFromPageSignals(params: {
     url: productUrl,
     image_url: finalProductImageUrl,
     image_urls: finalProductImageUrls,
+    ...(contentImageUrls.length > 0 ? { content_image_urls: contentImageUrls } : {}),
     variant_skus: dedupeStringList(variants.map((variant) => variant.sku)),
     variants,
     ...productPdpFields,

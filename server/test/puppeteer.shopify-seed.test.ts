@@ -535,6 +535,116 @@ test("buildProductFromPageSignals reads single default size evidence from produc
   assert.equal(product?.variants[0]?.option_value, "20ml");
 });
 
+test("buildProductFromPageSignals keeps exact-item variant gallery and surfaces section media separately", () => {
+  const product = buildProductFromPageSignals({
+    extracted: {
+      title: "Ceramidin Skin Barrier Moisturizing Cream",
+      canonical: "https://www.drjart.com/product/28258/111504/moisturizers/ceramidintm-skin-barrier-moisturizing-cream",
+      metaDescription: "Barrier moisturizing cream.",
+      priceTexts: ["$48"],
+      imageCandidates: [
+        "https://www.drjart.com/media/group-hero.jpg",
+        "https://www.drjart.com/media/dj_sku_H6MM01_1000x1000_0.jpg",
+        "https://www.drjart.com/media/dj_sku_H6MM01_1000x1000_1.jpg",
+        "https://www.drjart.com/media/dj_sku_H6MM01_1000x1000_2.jpg",
+        "https://www.drjart.com/media/dj_sku_H6MN01_1000x1000_0.jpg",
+        "https://www.drjart.com/media/dj_sku_H7T901_1000x1000_0.jpg",
+      ],
+      scripts: [
+        JSON.stringify({
+          "@context": "https://schema.org",
+          "@type": "ProductGroup",
+          name: "Ceramidin Skin Barrier Moisturizing Cream",
+          image: ["https://www.drjart.com/media/group-hero.jpg"],
+          hasVariant: [
+            {
+              "@type": "Product",
+              name: "Ceramidin Skin Barrier Moisturizing Cream 50ml",
+              sku: "DJ-50ML",
+              size: "50ml",
+              url: "https://www.drjart.com/product/28258/111504/moisturizers/ceramidintm-skin-barrier-moisturizing-cream?size=50ml",
+              image: "https://www.drjart.com/media/dj_sku_H6MM01_1000x1000_0.jpg",
+              offers: {
+                "@type": "Offer",
+                price: "48.00",
+                priceCurrency: "USD",
+                availability: "https://schema.org/InStock",
+              },
+            },
+            {
+              "@type": "Product",
+              name: "Ceramidin Skin Barrier Moisturizing Cream 15ml",
+              sku: "DJ-15ML",
+              size: "15ml",
+              url: "https://www.drjart.com/product/28258/111504/moisturizers/ceramidintm-skin-barrier-moisturizing-cream?size=15ml",
+              image: "https://www.drjart.com/media/dj_sku_H6MN01_1000x1000_0.jpg",
+              offers: {
+                "@type": "Offer",
+                price: "22.00",
+                priceCurrency: "USD",
+                availability: "https://schema.org/InStock",
+              },
+            },
+          ],
+        }),
+      ],
+      embeddedProductScripts: [],
+      domVariants: [],
+      productVolumeText: "",
+      productDetailsText: "Barrier-supporting moisturizer.",
+      detailsSections: [
+        {
+          heading: "Overview",
+          body: "Ceramide-rich cream that helps reinforce the skin barrier.",
+          source_kind: "heading_sibling",
+          media_urls: ["https://www.drjart.com/media/regimen-step-1.jpg"],
+        },
+        {
+          heading: "How to Use",
+          body: "Apply morning and night after serum.",
+          source_kind: "accordion_button",
+          media_urls: ["https://www.drjart.com/media/how-to-apply.jpg"],
+        },
+      ],
+      faqItems: [],
+      faqHtmlSnippets: [],
+    },
+    pageLooksLikeProduct: true,
+    sourceUrl: "https://www.drjart.com/product/28258/111504/moisturizers/ceramidintm-skin-barrier-moisturizing-cream?size=50ml",
+    baseUrl: "https://www.drjart.com",
+    verbose: false,
+    log: () => {},
+  });
+
+  assert.ok(product);
+  assert.deepEqual(product?.image_urls, [
+    "https://www.drjart.com/media/dj_sku_H6MM01_1000x1000_0.jpg",
+    "https://www.drjart.com/media/dj_sku_H6MM01_1000x1000_1.jpg",
+    "https://www.drjart.com/media/dj_sku_H6MM01_1000x1000_2.jpg",
+  ]);
+  assert.equal(product?.variants[0]?.option_value, "50ml");
+  assert.deepEqual(product?.variants[0]?.image_urls, product?.image_urls);
+  assert.equal(product?.variants.length, 2);
+  assert.deepEqual(product?.variants[1]?.image_urls, [
+    "https://www.drjart.com/media/dj_sku_H6MN01_1000x1000_0.jpg",
+  ]);
+  assert.ok(
+    !product?.variants.some((variant) =>
+      (variant.image_urls || []).includes("https://www.drjart.com/media/dj_sku_H7T901_1000x1000_0.jpg"),
+    ),
+  );
+  assert.deepEqual(product?.content_image_urls, [
+    "https://www.drjart.com/media/regimen-step-1.jpg",
+    "https://www.drjart.com/media/how-to-apply.jpg",
+  ]);
+  assert.deepEqual(product?.details_sections?.[0]?.media_urls, [
+    "https://www.drjart.com/media/regimen-step-1.jpg",
+  ]);
+  assert.deepEqual(product?.details_sections?.[1]?.media_urls, [
+    "https://www.drjart.com/media/how-to-apply.jpg",
+  ]);
+});
+
 test("isNonProductRedirectForRequestedPdp catches product URLs redirected to homepage", () => {
   assert.equal(
     isNonProductRedirectForRequestedPdp(
@@ -1180,12 +1290,11 @@ test("enrichDirectShopifyPdpResponse recovers image-only Shopify PDP content thr
           };
         },
       });
-
       assert.equal(result.products[0]?.description_raw, undefined);
       assert.equal(result.products[0]?.how_to_use_raw, undefined);
       assert.equal(result.products[0]?.ingredients_raw, undefined);
       assert.deepEqual(result.products[0]?.details_sections?.map((section) => section.heading), ["Product Type"]);
-      assert.deepEqual(result.products[0]?.field_sources?.details_sections, []);
+      assert.deepEqual(result.products[0]?.field_sources?.details_sections || [], []);
       assert.equal(result.products[0]?.field_quality_summary?.description_raw?.source_quality_status, "quarantined");
       assert.deepEqual(result.products[0]?.field_quality_summary?.details_sections?.reason_codes, [
         "quarantined_source_kind",
@@ -1460,6 +1569,200 @@ test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enr
       });
       assert.doesNotMatch(logs.map((entry) => entry.msg).join("\n"), /Attempting browser enrichment/);
       assert.match(logs.map((entry) => entry.msg).join("\n"), /merchant review previews via Okendo reviews/);
+    },
+  );
+});
+
+test("enrichDirectShopifyPdpResponse escalates thin direct Shopify PDPs when page HTML shows richer product content", async () => {
+  const logs: Array<{ type: string; msg: string }> = [];
+  const seedUrl = "https://www.tomfordbeauty.com/products/tom-ford-research-eye-repair-concentrate";
+  const fallbackProduct = {
+    title: "TOM FORD RESEARCH Eye Repair Concentrate",
+    url: seedUrl,
+    description_raw:
+      "A moisturizing multi-tasker that visibly refreshes and depuffs the eye area while helping tired-looking eyes appear more awake.",
+    details_sections: [
+      {
+        heading: "How to Use",
+        body: "Pat gently around the eye area morning and night.",
+        source_kind: "accordion_button",
+        media_urls: ["https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf-eye-how-to-step.jpg?v=1"],
+      },
+      {
+        heading: "Clinical Results",
+        body: "Helps reduce the look of puffiness and refreshes tired-looking eyes.",
+        source_kind: "heading_sibling",
+        media_urls: ["https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf-eye-clinical.jpg?v=1"],
+      },
+    ],
+    faq_items: [
+      {
+        question: "Can it be used day and night?",
+        answer: "Yes. Apply morning and evening around the eye contour.",
+        source_kind: "faq_linear_text",
+        source_url: seedUrl,
+        source_title: "FAQ",
+      },
+    ],
+    content_image_urls: [
+      "https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf-eye-how-to-step.jpg?v=1",
+      "https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf-eye-clinical.jpg?v=1",
+    ],
+    image_url: "https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_0.png?v=1",
+    image_urls: [
+      "https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_0.png?v=1",
+      "https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_1.png?v=1",
+      "https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_2.png?v=1",
+    ],
+    variant_skus: ["TAGL01"],
+    variants: [
+      {
+        id: "52015786131669",
+        sku: "TAGL01",
+        url: seedUrl,
+        option_name: "Size",
+        option_value: "15.0 ml",
+        price: "295.00",
+        currency: "USD",
+        stock: "In Stock",
+        description: "",
+        image_url: "https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_0.png?v=1",
+        image_urls: [
+          "https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_0.png?v=1",
+          "https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_1.png?v=1",
+          "https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_2.png?v=1",
+        ],
+        ad_copy: "",
+      },
+    ],
+    field_sources: {
+      description_raw: ["shopify_body_html"],
+      details_sections: ["accordion_button", "heading_sibling"],
+      ingredients_raw: [],
+      active_ingredients_raw: [],
+      how_to_use_raw: ["accordion_button"],
+      faq_items: ["faq_linear_text"],
+    },
+  } as any;
+
+  const response = {
+    brand: "Tom Ford Beauty",
+    domain: "https://www.tomfordbeauty.com",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "TOM FORD RESEARCH Eye Repair Concentrate",
+        url: seedUrl,
+        image_url: "https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_0.png?v=1",
+        image_urls: ["https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_0.png?v=1"],
+        variant_skus: ["TAGL01"],
+        variants: [
+          {
+            id: "52015786131669",
+            sku: "TAGL01",
+            url: seedUrl,
+            option_name: "Size",
+            option_value: "15.0 ml",
+            price: "295.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "",
+            image_url: "https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_0.png?v=1",
+            image_urls: ["https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_0.png?v=1"],
+            ad_copy: "",
+          },
+        ],
+        description_raw:
+          "A moisturizing multi-tasker that instantly and effectively works to refresh, renew and depuff the eye area.",
+        details_sections: [],
+        faq_items: [],
+        field_capture_status: {
+          description_raw: "present" as const,
+          details_sections: "missing" as const,
+          ingredients_raw: "missing" as const,
+          active_ingredients_raw: "missing" as const,
+          how_to_use_raw: "missing" as const,
+          faq_items: "missing" as const,
+        },
+        field_sources: {
+          description_raw: ["shopify_body_html"],
+          details_sections: [],
+          ingredients_raw: [],
+          active_ingredients_raw: [],
+          how_to_use_raw: [],
+          faq_items: [],
+        },
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 295, max: 295, avg: 295 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "www.tomfordbeauty.com",
+      resolved_base_url: "https://www.tomfordbeauty.com",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  await withMockFetch(
+    {
+      [seedUrl]: {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `
+          <html>
+            <body>
+              <section>
+                <h2>How to Use</h2>
+                <p>Pat gently around the eye area morning and night.</p>
+              </section>
+              <section>
+                <h2>FAQ</h2>
+                <p>Can it be used day and night?</p>
+              </section>
+              <img src="https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_0.png?v=1" />
+              <img src="https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_1.png?v=1" />
+              <img src="https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf_sku_TAGL01_2000x2000_2.png?v=1" />
+              <img src="https://cdn.shopify.com/s/files/1/0761/9690/5173/files/tf-eye-how-to-step.jpg?v=1" />
+            </body>
+          </html>
+        `,
+      },
+    },
+    async () => {
+      const result = await enrichDirectShopifyPdpResponse({
+        brand: "Tom Ford Beauty",
+        baseUrl: "https://www.tomfordbeauty.com",
+        seedUrl,
+        response,
+        diagnostics: response.diagnostics,
+        log: (type, msg) => logs.push({ type, msg }),
+        browserRunner: async () => ({
+          mode: "managed",
+          result: fallbackProduct,
+        }),
+      });
+
+      assert.equal(result.products[0]?.details_sections?.length, 2);
+      assert.equal(result.products[0]?.faq_items?.length, 1);
+      assert.deepEqual(result.products[0]?.content_image_urls, fallbackProduct.content_image_urls);
+      assert.equal(result.products[0]?.image_urls?.length, 3);
+      assert.equal(result.products[0]?.variants[0]?.image_urls?.length, 3);
+      assert.match(
+        logs.map((entry) => entry.msg).join("\n"),
+        /requires browser enrichment for .*pdp_structured_sections.*pdp_faq.*pdp_content_images.*pdp_gallery_depth/i,
+      );
     },
   );
 });

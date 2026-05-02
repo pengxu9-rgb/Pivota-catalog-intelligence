@@ -467,6 +467,19 @@ export function scoreProductCandidateUrl(rawUrl: string, baseUrl: string): numbe
   return score;
 }
 
+export function hasExplicitProductPath(rawUrl: string, baseUrl: string): boolean {
+  const parsed = parseHttpUrl(rawUrl, baseUrl);
+  if (!parsed) return false;
+  const path = parsed.pathname.toLowerCase();
+  return (
+    /\/products?\/[^/]+/.test(path) ||
+    /\/item\/(?:[^/]+\/){2,}[^/]+/.test(path) ||
+    /\/p\/[^/]+$/.test(path) ||
+    /[-_]\d{4,}\.html$/.test(path) ||
+    /\.html$/.test(path)
+  );
+}
+
 function tokenizePathSegment(value: string): string[] {
   return value
     .toLowerCase()
@@ -686,12 +699,19 @@ export function looksLikeProductPageHtml(html: string): boolean {
   return score >= 4;
 }
 
-function scoreBrowserCandidate(candidate: AnchorCandidate, baseUrl: string): number {
+export function scoreBrowserCandidate(candidate: AnchorCandidate, baseUrl: string): number {
+  if (looksLikeKnownNonProductUrl(candidate.href, baseUrl)) return Number.NEGATIVE_INFINITY;
   let score = scoreProductCandidateUrl(candidate.href, baseUrl);
   const text = `${candidate.text} ${candidate.contextText || ""}`.toLowerCase();
-  if (PRICE_SIGNAL_RE.test(text)) score += 3;
-  if (/add to cart|buy now|quick shop|learn more|shop now|details/i.test(text)) score += 2;
-  if (/in stock|out of stock|shade|size/i.test(text)) score += 1;
+  const hasPriceSignal = PRICE_SIGNAL_RE.test(text);
+  const hasBuySignal = /add to cart|buy now|quick shop|learn more|shop now|details/i.test(text);
+  const hasVariantSignal = /in stock|out of stock|shade|size/i.test(text);
+  if (!hasExplicitProductPath(candidate.href, baseUrl) && !hasPriceSignal && !hasBuySignal) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  if (hasPriceSignal) score += 3;
+  if (hasBuySignal) score += 2;
+  if (hasVariantSignal) score += 1;
   return score;
 }
 

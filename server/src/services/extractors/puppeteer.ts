@@ -3900,7 +3900,7 @@ function scoreShopifySearchSuggestion(candidate: ShopifySearchSuggestProduct, ex
   return Math.min(recall, precision);
 }
 
-function extractShopifySuggestHandle(candidate: ShopifySearchSuggestProduct, baseUrl: string): string | null {
+function extractShopifySuggestHandle(candidate: ShopifySearchSuggestProduct, baseUrl: string): string | undefined {
   const directHandle = String(candidate.handle || "").trim();
   if (directHandle) return directHandle;
   const candidateUrl = String(candidate.url || "").trim();
@@ -4432,14 +4432,14 @@ async function recoverShopifyDirectProductViaBrowser(params: {
   }
 }
 
-function extractShopifyProductHandle(seedUrl: string | undefined, baseUrl: string): string | null {
-  if (!seedUrl) return null;
+function extractShopifyProductHandle(seedUrl: string | undefined, baseUrl: string): string | undefined {
+  if (!seedUrl) return undefined;
   try {
     const parsed = new URL(seedUrl, baseUrl);
     const match = parsed.pathname.match(/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?products?\/([^/?#]+)/i);
-    return match?.[1] ? decodeURIComponent(match[1]) : null;
+    return match?.[1] ? decodeURIComponent(match[1]) : undefined;
   } catch {
-    return null;
+    return undefined;
   }
 }
 

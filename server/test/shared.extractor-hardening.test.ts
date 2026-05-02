@@ -10,6 +10,7 @@ import {
   createDiagnostics,
   detectBlockProvider,
   discoverProductUrls,
+  scoreBrowserCandidate,
   isCookieActionLabel,
   isUnsafeSeedLocaleRedirect,
   looksLikeStorefrontPasswordPage,
@@ -1513,6 +1514,41 @@ test("looksLikeProductPageHtml distinguishes PDPs from price-only non-product pa
       "<html><head><title>Spa Vinotherapie</title></head><body><h1>Spa Vinotherapie</h1><p>Starting at $250</p></body></html>",
     ),
     false,
+  );
+});
+
+test("scoreBrowserCandidate rejects shallow non-product slugs without commerce signals", () => {
+  assert.equal(
+    scoreBrowserCandidate(
+      {
+        href: "https://www.drjart.com/consumer-health-data-privacy-statement",
+        text: "Consumer Health Data Privacy Statement",
+        contextText: "Consumer Health Data Privacy Statement",
+      },
+      "https://www.drjart.com",
+    ),
+    Number.NEGATIVE_INFINITY,
+  );
+  assert.equal(
+    scoreBrowserCandidate(
+      {
+        href: "https://www.drjart.com/mothers-day-skincare-gifts",
+        text: "Mother’s Day Gift Guide",
+        contextText: "Mother’s Day Gift Guide",
+      },
+      "https://www.drjart.com",
+    ),
+    Number.NEGATIVE_INFINITY,
+  );
+  assert.ok(
+    scoreBrowserCandidate(
+      {
+        href: "https://www.drjart.com/product/28258/111504/moisturizers/ceramidintm-skin-barrier-moisturizing-cream",
+        text: "$48.00",
+        contextText: "Ceramidin Moisturizing Cream $48.00 ADD TO BAG",
+      },
+      "https://www.drjart.com",
+    ) >= 6,
   );
 });
 

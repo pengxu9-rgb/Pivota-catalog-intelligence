@@ -6,6 +6,7 @@ import {
   buildOffersFromScrapedPage,
   buildSourceProductId,
   computeCounters,
+  normalizeShopifyMoneyRaw,
   parsePrice,
   resolveCurrency,
   resolveMarketSwitchStatus,
@@ -60,6 +61,11 @@ test("buildShopifyDirectHandleCandidates strips duplicate Shopify suffixes", () 
   );
 
   assert.deepEqual(handles, ["peach-77-niacin-enriched-cream-copy-1", "peach-77-niacin-enriched-cream"]);
+});
+
+test("normalizeShopifyMoneyRaw converts Shopify direct PDP cents into decimal strings", () => {
+  assert.equal(normalizeShopifyMoneyRaw(2800), "28.00");
+  assert.equal(normalizeShopifyMoneyRaw(5100), "51.00");
 });
 
 test("market mismatch flags JP expected JPY but observed non-JPY", () => {

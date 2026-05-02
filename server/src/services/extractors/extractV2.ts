@@ -107,8 +107,8 @@ type ShopifyProduct = {
 type ShopifyVariant = {
   id?: number;
   sku?: string | null;
-  price?: string;
-  compare_at_price?: string | null;
+  price?: string | number;
+  compare_at_price?: string | number | null;
   available?: boolean;
   inventory_quantity?: number | null;
 };
@@ -123,6 +123,14 @@ function dedupeStringList(values: Array<string | null | undefined>): string[] {
     out.push(normalized);
   }
   return out;
+}
+
+export function normalizeShopifyMoneyRaw(value: string | number | null | undefined): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return (value / 100).toFixed(2);
+  }
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return null;
 }
 
 export type ScrapedPageData = {
@@ -568,12 +576,10 @@ function buildShopifyOffersFromProducts(params: {
     const siteProductId = typeof product.id === "number" ? String(product.id) : "";
 
     for (const variant of product.variants || []) {
-      const rawPrice = typeof variant.price === "string" ? variant.price.trim() : "";
-      const priceDisplayRaw = rawPrice || null;
-      const priceParsed = parsePrice(rawPrice || null);
-      const rawCompareAt = typeof variant.compare_at_price === "string" ? variant.compare_at_price.trim() : "";
-      const compareAtDisplayRaw = rawCompareAt || null;
-      const compareAtParsed = parsePrice(rawCompareAt || null);
+      const priceDisplayRaw = normalizeShopifyMoneyRaw(variant.price);
+      const priceParsed = parsePrice(priceDisplayRaw);
+      const compareAtDisplayRaw = normalizeShopifyMoneyRaw(variant.compare_at_price);
+      const compareAtParsed = parsePrice(compareAtDisplayRaw);
       const resolvedCurrency = resolveCurrency({
         structuredCurrency: null,
         metaCurrencyCandidates: params.hintedCurrency ? [params.hintedCurrency] : [],

@@ -643,6 +643,8 @@ test("buildProductFromPageSignals keeps exact-item variant gallery and surfaces 
   assert.deepEqual(product?.details_sections?.[1]?.media_urls, [
     "https://www.drjart.com/media/how-to-apply.jpg",
   ]);
+  assert.equal(product?.field_quality_summary?.details_sections?.source_origin, "retail_pdp");
+  assert.equal(product?.field_quality_summary?.details_sections?.source_quality_status, "medium");
 });
 
 test("isNonProductRedirectForRequestedPdp catches product URLs redirected to homepage", () => {

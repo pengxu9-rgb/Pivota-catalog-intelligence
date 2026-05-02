@@ -811,6 +811,7 @@ const QUARANTINED_PDP_SOURCE_KIND_RE =
 const SHOPIFY_PDP_SOURCE_KIND_RE =
   /^(?:shopify_|embedded_shopify|embedded_product_json|shopify_body_html|structured_overview)/i;
 const JSONLD_PDP_SOURCE_KIND_RE = /^jsonld/i;
+const LINEAR_NARRATIVE_PDP_SOURCE_KIND_RE = /^(?:drjart_linear_(?:details|story))$/i;
 const RETAIL_PDP_SOURCE_KIND_RE =
   /^(?:page_|accordion_|details_|faq_|merchant_faq|inline_html_faq|okendo_|modal_content|pdp_content_heading|custom_metafield_|embedded_custom_metafield_)/i;
 
@@ -876,6 +877,14 @@ function classifyPdpFieldQuality(sourceKinds: string[] | undefined) {
     return {
       source_origin: "jsonld" as const,
       source_quality_status: "high" as const,
+      source_kinds: normalized,
+      reason_codes: reasonCodes,
+    };
+  }
+  if (basis.some((kind) => LINEAR_NARRATIVE_PDP_SOURCE_KIND_RE.test(kind))) {
+    return {
+      source_origin: "retail_pdp" as const,
+      source_quality_status: "medium" as const,
       source_kinds: normalized,
       reason_codes: reasonCodes,
     };

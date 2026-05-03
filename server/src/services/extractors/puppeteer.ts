@@ -15,6 +15,7 @@ import type {
   Extractor,
   StockStatus,
 } from "./types";
+import { reviewedVariantOverrides } from "./reviewedVariantOverrides";
 import {
   BotChallengeError,
   canonicalizeUrl as canonicalizeUrlShared,
@@ -532,6 +533,72 @@ function isGenericOfferOptionValue(value: string | undefined, productTitle: stri
   if (!option) return true;
   if (/^(?:default|default title|offer|variant)$/i.test(option)) return true;
   return option === cleanText(productTitle).toLowerCase();
+}
+
+function findReviewedVariantOverride(product: ExtractedProduct) {
+  const productUrl = canonicalizeUrlShared(product.url || "");
+  const productTitle = cleanText(product.title).toLowerCase();
+  const variantSku = cleanText(product.variants[0]?.sku).toLowerCase();
+  return reviewedVariantOverrides.find((override) => {
+    if (canonicalizeUrlShared(override.product_url) !== productUrl) return false;
+    if (cleanText(override.product_title).toLowerCase() !== productTitle) return false;
+    if (override.sku && cleanText(override.sku).toLowerCase() !== variantSku) return false;
+    return true;
+  });
+}
+
+function applyReviewedVariantOverride(
+  response: Omit<ExtractResponse, "generated_at" | "logs">,
+  seedUrl: string | undefined,
+  log?: Logger,
+): Omit<ExtractResponse, "generated_at" | "logs"> {
+  const canonicalSeedUrl = canonicalizeUrlShared(seedUrl || "");
+  if (!canonicalSeedUrl || !response.products[0]) return response;
+
+  let changed = false;
+  const products = response.products.map((product, idx) => {
+    if (idx !== 0 || canonicalizeUrlShared(product.url || "") !== canonicalSeedUrl) return product;
+    if (product.variants.length !== 1) return product;
+    const onlyVariant = product.variants[0];
+    if (!isGenericOfferOptionValue(onlyVariant?.option_value, product.title)) return product;
+
+    const override = findReviewedVariantOverride(product);
+    if (!override) return product;
+    changed = true;
+    return {
+      ...product,
+      variants: [
+        {
+          ...onlyVariant,
+          option_name: override.option_name,
+          option_value: override.option_value,
+          source_origin: "manual_override" as const,
+          source_quality_status: "medium" as const,
+          hidden_from_selector: false,
+        },
+      ],
+    };
+  });
+
+  if (!changed) return response;
+  const { variants, adCopyById } = flattenVariants({
+    brand: response.brand,
+    products,
+    simulated: false,
+  });
+  const override = reviewedVariantOverrides.find((item) => canonicalizeUrlShared(item.product_url) === canonicalSeedUrl);
+  if (override && log) {
+    log(
+      "info",
+      `Applied reviewed variant override for Shopify PDP: ${override.product_title} -> ${override.option_name}: ${override.option_value}`,
+    );
+  }
+  return {
+    ...response,
+    products,
+    variants,
+    ad_copy: { by_variant_id: adCopyById },
+  };
 }
 
 function isPdpContentNoiseText(text?: string) {
@@ -4261,6 +4328,8 @@ export async function enrichDirectShopifyPdpResponse(params: {
       }
     }
   }
+
+  response = applyReviewedVariantOverride(response, params.seedUrl, params.log);
 
   const currentProduct = response.products[0];
   if (!currentProduct) return response;

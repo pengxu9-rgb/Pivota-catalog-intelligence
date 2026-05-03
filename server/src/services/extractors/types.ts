@@ -57,6 +57,7 @@ export type ExtractedFieldSourceOrigin =
   | "shopify_json"
   | "jsonld"
   | "retail_pdp"
+  | "manual_override"
   | "browser_fallback"
   | "image_vision"
   | "simulation"

@@ -505,6 +505,62 @@ test("PuppeteerExtractor reads single default Shopify pack-count evidence from p
   );
 });
 
+test("PuppeteerExtractor applies reviewed variant override when official Shopify PDP omits single-SKU size", async () => {
+  const extractor = new PuppeteerExtractor();
+
+  await withMockFetch(
+    {
+      "https://tirtir.global/products/reflect-glow-prep-primer.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          id: 9302049784027,
+          title: "Reflect Glow Prep Primer",
+          handle: "reflect-glow-prep-primer",
+          body_html: "",
+          variants: [
+            {
+              id: 48631508795611,
+              sku: "01TTF0862",
+              title: "Default Title",
+              option1: "Default Title",
+              price: "1760",
+              available: true,
+              inventory_quantity: 5,
+              barcode: "8800349020538",
+            },
+          ],
+          options: [{ name: "Title" }],
+          images: [{ src: "https://cdn.example.com/reflect-glow-prep-primer.jpg" }],
+        }),
+      },
+      "https://tirtir.global/products/reflect-glow-prep-primer": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "TIRTIR Global",
+        domain: "https://tirtir.global/products/reflect-glow-prep-primer",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.variants.length, 1);
+      assert.equal(result.products[0]?.variants[0]?.option_name, "Size");
+      assert.equal(result.products[0]?.variants[0]?.option_value, "30ml");
+      assert.equal(result.products[0]?.variants[0]?.source_origin, "manual_override");
+      assert.equal(result.products[0]?.variants[0]?.source_quality_status, "medium");
+      assert.equal(result.products[0]?.variants[0]?.hidden_from_selector, false);
+      assert.equal(result.variants[0]?.option_name, "Size");
+      assert.equal(result.variants[0]?.option_value, "30ml");
+    },
+  );
+});
+
 test("buildProductFromPageSignals reads single default size evidence from product volume text", () => {
   const product = buildProductFromPageSignals({
     extracted: {

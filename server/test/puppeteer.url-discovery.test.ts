@@ -64,6 +64,20 @@ test("isLikelyProductUrl supports .html and /products/ PDP URLs", () => {
   assert.equal(isLikelyProductUrl("https://theordinary.com/", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://theordinary.com/en-us", BASE_URL), false);
   assert.equal(isLikelyProductUrl("https://cdn.example.com/de-de/foo-100436.html", BASE_URL), false);
+  assert.equal(
+    isLikelyProductUrl(
+      "https://www.rarebeauty.com/products/always-an-optimist-pore-diffusing-primer-mini",
+      "https://rarebeauty.com",
+    ),
+    true,
+  );
+  assert.equal(
+    isLikelyProductUrl(
+      "https://rarebeauty.com/products/always-an-optimist-pore-diffusing-primer-mini",
+      "https://www.rarebeauty.com",
+    ),
+    true,
+  );
 });
 
 test("extractProductUrlsFromHtml prioritizes anchor links and filters non-product/static links", () => {

@@ -1026,6 +1026,60 @@ export function parseRenderedBazaarvoiceReviewSummary(
   };
 }
 
+const CROSS_PRODUCT_MISMATCH_HOST_RE = /(?:^|\.)theordinary\.com$/i;
+const PRODUCT_SLUG_STOPWORDS = new Set([
+  "the",
+  "ordinary",
+  "serum",
+  "solution",
+  "cream",
+  "cleanser",
+  "moisturizer",
+  "moisturiser",
+  "treatment",
+  "face",
+  "spf",
+  "and",
+  "with",
+  "for",
+  "plus",
+  "ml",
+  "oz",
+]);
+
+function extractMeaningfulProductTokens(raw: string | undefined) {
+  return dedupeStringList(
+    cleanText(raw)
+      .toLowerCase()
+      .replace(/https?:\/\/[^/]+/g, " ")
+      .replace(/\.html?$/g, " ")
+      .split(/[^a-z0-9]+/i)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3 && !PRODUCT_SLUG_STOPWORDS.has(token) && !/^\d+$/.test(token)),
+  );
+}
+
+export function isKnownCrossProductResolutionMismatch(params: {
+  sourceUrl: string;
+  extractedUrl?: string;
+  extractedTitle?: string;
+}) {
+  try {
+    const source = new URL(params.sourceUrl);
+    const extracted = params.extractedUrl ? new URL(params.extractedUrl) : null;
+    if (!CROSS_PRODUCT_MISMATCH_HOST_RE.test(source.hostname)) return false;
+    if (!extracted || !CROSS_PRODUCT_MISMATCH_HOST_RE.test(extracted.hostname)) return false;
+    const sourceSlug = decodeURIComponent(source.pathname.split("/").filter(Boolean).pop() || "");
+    const extractedSlug = decodeURIComponent(extracted.pathname.split("/").filter(Boolean).pop() || "");
+    const sourceTokens = extractMeaningfulProductTokens(sourceSlug);
+    const extractedTokens = extractMeaningfulProductTokens(`${extractedSlug} ${params.extractedTitle || ""}`);
+    if (sourceTokens.length === 0 || extractedTokens.length === 0) return false;
+    return sourceTokens.every((token) => !extractedTokens.includes(token));
+  } catch {
+    return false;
+  }
+}
+
 const QUARANTINED_PDP_SOURCE_KIND_RE =
   /^(?:product_image_vision|simulation|browser_fallback(?::.*|$)|.*(?:mock|synthetic).*)$/i;
 const SHOPIFY_PDP_SOURCE_KIND_RE =
@@ -5672,6 +5726,42 @@ async function fetchText(url: string): Promise<string | null> {
   }
 }
 
+async function fetchTextWithFinalUrl(url: string): Promise<{ status: number | null; body: string | null; finalUrl: string }> {
+  const timeoutMs = clampInt(process.env.PUPPETEER_FETCH_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, 2_000, 120_000);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        accept: "text/plain,text/html,application/xml;q=0.9,*/*;q=0.8",
+        "user-agent": process.env.PUPPETEER_USER_AGENT || "PivotaCatalogIntelligence/1.0",
+      },
+    });
+    if (!res.ok) {
+      return {
+        status: res.status,
+        body: null,
+        finalUrl: res.url || url,
+      };
+    }
+    return {
+      status: res.status,
+      body: await res.text(),
+      finalUrl: res.url || url,
+    };
+  } catch {
+    return {
+      status: null,
+      body: null,
+      finalUrl: url,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function extractProductUrlsFromHtml(html: string, baseUrl: string) {
   return extractProductUrlsFromHtmlShared(html, baseUrl);
 }
@@ -5720,9 +5810,31 @@ function extractLocUrlsFromSitemap(xml: string) {
 async function discoverProductUrls(params: { baseUrl: string; maxProducts: number; seedUrl?: string; log: Logger }) {
   if (params.seedUrl) {
     params.log("info", `GET ${params.seedUrl}`);
-    const seedHtml = await fetchText(params.seedUrl);
-    if (seedHtml) {
+    const seed = await fetchTextWithFinalUrl(params.seedUrl);
+    if (
+      isKnownCrossProductResolutionMismatch({
+        sourceUrl: params.seedUrl,
+        extractedUrl: seed.finalUrl,
+      })
+    ) {
+      params.log("warn", `Seed URL resolved to incompatible product page; skipping seed-page discovery: ${params.seedUrl} -> ${seed.finalUrl}`);
+      return { sitemapUrl: undefined, productUrls: [] as string[] };
+    } else if (seed.body) {
+      const seedHtml = seed.body;
       const seedUrls = extractProductUrlsFromHtml(seedHtml, params.baseUrl);
+      if (
+        seedUrls.length > 0 &&
+        isKnownCrossProductResolutionMismatch({
+          sourceUrl: params.seedUrl,
+          extractedUrl: seedUrls[0],
+        })
+      ) {
+        params.log(
+          "warn",
+          `Seed page surfaced an incompatible PDP candidate; skipping seed-page discovery: ${params.seedUrl} -> ${seedUrls[0]}`,
+        );
+        return { sitemapUrl: undefined, productUrls: [] as string[] };
+      } else
       if (seedUrls.length > 0) {
         params.log("success", `Seed page yielded ${seedUrls.length} product links.`);
         return { sitemapUrl: undefined, productUrls: seedUrls.slice(0, params.maxProducts) };
@@ -7519,6 +7631,21 @@ export function buildProductFromPageSignals(params: {
     ),
     params.baseUrl,
   );
+  if (
+    isKnownCrossProductResolutionMismatch({
+      sourceUrl: params.sourceUrl,
+      extractedUrl: productUrl,
+      extractedTitle: productTitle,
+    })
+  ) {
+    if (params.verbose) {
+      params.log(
+        "warn",
+        `> Rejecting cross-product resolution mismatch for seed URL: ${params.sourceUrl} -> ${productUrl} (${productTitle})`,
+      );
+    }
+    return null;
+  }
 
   const imageRaw = primaryProductObj?.image ?? productGroupObj?.image;
   const embeddedShopifyPayloadFields = extractShopifyEmbeddedProductPayloadPdpFields(extracted.embeddedProductScripts);

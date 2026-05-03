@@ -316,6 +316,58 @@ export function isUnsafeSeedLocaleRedirect(requestedUrl: string, resolvedUrl: st
   return Boolean(requestedLanguage && resolvedLanguage && requestedLanguage !== resolvedLanguage);
 }
 
+const CROSS_PRODUCT_MISMATCH_HOST_RE = /(?:^|\.)theordinary\.com$/i;
+const PRODUCT_SLUG_STOPWORDS = new Set([
+  "the",
+  "ordinary",
+  "serum",
+  "solution",
+  "cream",
+  "cleanser",
+  "moisturizer",
+  "moisturiser",
+  "treatment",
+  "face",
+  "spf",
+  "and",
+  "with",
+  "for",
+  "plus",
+  "ml",
+  "oz",
+]);
+
+function extractMeaningfulProductTokens(raw: string | undefined) {
+  return Array.from(
+    new Set(
+      String(raw || "")
+        .toLowerCase()
+        .replace(/https?:\/\/[^/]+/g, " ")
+        .replace(/\.html?$/g, " ")
+        .split(/[^a-z0-9]+/i)
+        .map((token: string) => token.trim())
+        .filter((token) => token.length >= 3 && !PRODUCT_SLUG_STOPWORDS.has(token) && !/^\d+$/.test(token)),
+    ),
+  );
+}
+
+function isKnownCrossProductResolutionMismatch(requestedUrl: string, resolvedUrl: string) {
+  try {
+    const requested = new URL(requestedUrl);
+    const resolved = new URL(resolvedUrl);
+    if (!CROSS_PRODUCT_MISMATCH_HOST_RE.test(requested.hostname)) return false;
+    if (!CROSS_PRODUCT_MISMATCH_HOST_RE.test(resolved.hostname)) return false;
+    const requestedSlug = decodeURIComponent(requested.pathname.split("/").filter(Boolean).pop() || "");
+    const resolvedSlug = decodeURIComponent(resolved.pathname.split("/").filter(Boolean).pop() || "");
+    const requestedTokens = extractMeaningfulProductTokens(requestedSlug);
+    const resolvedTokens = extractMeaningfulProductTokens(resolvedSlug);
+    if (requestedTokens.length === 0 || resolvedTokens.length === 0) return false;
+    return requestedTokens.every((token) => !resolvedTokens.includes(token));
+  } catch {
+    return false;
+  }
+}
+
 function buildFetchHeaders(context: FetchContext, accept: string): Record<string, string> {
   const headers: Record<string, string> = {
     accept,
@@ -437,12 +489,26 @@ function parseHttpUrl(rawUrl: string, baseUrl: string): URL | null {
   }
 }
 
+function normalizeStorefrontHost(host: string | undefined): string {
+  return String(host || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^www\./, "");
+}
+
+function isEquivalentStorefrontHost(leftHost: string | undefined, rightHost: string | undefined): boolean {
+  const left = normalizeStorefrontHost(leftHost);
+  const right = normalizeStorefrontHost(rightHost);
+  if (!left || !right) return false;
+  return left === right;
+}
+
 export function scoreProductCandidateUrl(rawUrl: string, baseUrl: string): number {
   const parsed = parseHttpUrl(rawUrl, baseUrl);
   if (!parsed) return Number.NEGATIVE_INFINITY;
 
   const baseHost = parseHttpUrl(baseUrl, baseUrl)?.host.toLowerCase();
-  if (baseHost && parsed.host.toLowerCase() !== baseHost) return Number.NEGATIVE_INFINITY;
+  if (baseHost && !isEquivalentStorefrontHost(parsed.host, baseHost)) return Number.NEGATIVE_INFINITY;
   if (isStaticAssetUrl(parsed.toString(), baseUrl)) return Number.NEGATIVE_INFINITY;
 
   const path = parsed.pathname.toLowerCase();
@@ -617,7 +683,7 @@ function isLikelyCategoryUrl(rawUrl: string, baseUrl: string): boolean {
   const parsed = parseHttpUrl(rawUrl, baseUrl);
   if (!parsed) return false;
   const baseHost = parseHttpUrl(baseUrl, baseUrl)?.host.toLowerCase();
-  if (baseHost && parsed.host.toLowerCase() !== baseHost) return false;
+  if (baseHost && !isEquivalentStorefrontHost(parsed.host, baseHost)) return false;
   if (isStaticAssetUrl(parsed.toString(), baseUrl)) return false;
   if (NEGATIVE_PATH_RE.test(parsed.pathname)) return false;
   if (isLikelyProductUrl(parsed.toString(), baseUrl)) return false;
@@ -1390,6 +1456,7 @@ export async function discoverProductUrls(params: {
   let staleDirectSeedCandidate = false;
   const seedDiscoveryUrl = params.seedUrl || params.baseUrl;
   const directSeedCandidate = Boolean(params.seedUrl && scoreProductCandidateUrl(seedDiscoveryUrl, params.baseUrl) >= 4);
+  const hasRequestedSeedUrl = Boolean(params.seedUrl);
 
   if (seedDiscoveryUrl) {
     const seed = await fetchTextTracked(seedDiscoveryUrl, params.context, params.diagnostics);
@@ -1412,6 +1479,19 @@ export async function discoverProductUrls(params: {
       const requestedSeedUrl = canonicalizeUrl(seedDiscoveryUrl, params.baseUrl);
       const resolvedSeedUrl = canonicalizeUrl(seed.finalUrl || seedDiscoveryUrl, params.baseUrl);
       const resolvedSeedLooksProductLike = scoreProductCandidateUrl(resolvedSeedUrl, params.baseUrl) >= 4;
+      if (hasRequestedSeedUrl && isKnownCrossProductResolutionMismatch(requestedSeedUrl, resolvedSeedUrl)) {
+        setDiscoveryStrategy(params.diagnostics, "seed_page");
+        if (!params.diagnostics.failure_category) {
+          setFailureCategory(params.diagnostics, "no_product_urls");
+        }
+        params.log?.("warn", `Direct PDP resolved to an incompatible product slug; rejecting seed: ${requestedSeedUrl} -> ${resolvedSeedUrl}`);
+        return {
+          sitemapUrl: undefined,
+          productUrls: [],
+          deadSitemapDetected,
+          challengeDetected,
+        };
+      }
       if (directSeedCandidate && requestedSeedUrl !== resolvedSeedUrl && isUnsafeSeedLocaleRedirect(requestedSeedUrl, resolvedSeedUrl, params.baseUrl)) {
         setDiscoveryStrategy(params.diagnostics, "seed_page");
         if (!params.diagnostics.failure_category) {
@@ -1462,6 +1542,19 @@ export async function discoverProductUrls(params: {
             : extractProductUrlsFromHtml(seed.body, params.baseUrl)
           ).slice(0, params.maxProducts)
         : [];
+      if (hasRequestedSeedUrl && requestedSeedUrl && seedUrls[0] && isKnownCrossProductResolutionMismatch(requestedSeedUrl, seedUrls[0])) {
+        setDiscoveryStrategy(params.diagnostics, "seed_page");
+        if (!params.diagnostics.failure_category) {
+          setFailureCategory(params.diagnostics, "no_product_urls");
+        }
+        params.log?.("warn", `Seed HTML surfaced an incompatible product candidate; rejecting seed: ${requestedSeedUrl} -> ${seedUrls[0]}`);
+        return {
+          sitemapUrl: undefined,
+          productUrls: [],
+          deadSitemapDetected,
+          challengeDetected,
+        };
+      }
       if (seedUrls.length > 0) {
         setDiscoveryStrategy(params.diagnostics, "seed_page");
         return {
@@ -1514,6 +1607,10 @@ export async function discoverProductUrls(params: {
         params.maxProducts,
       );
       if (rankedSearchUrls.length === 0) continue;
+      if (params.seedUrl && isKnownCrossProductResolutionMismatch(params.seedUrl, rankedSearchUrls[0]!)) {
+        params.log?.("warn", `Site search surfaced an incompatible product candidate; rejecting seed: ${params.seedUrl} -> ${rankedSearchUrls[0]}`);
+        continue;
+      }
 
       setDiscoveryStrategy(params.diagnostics, "site_search");
       return {
@@ -1576,6 +1673,19 @@ export async function discoverProductUrls(params: {
   const rankedProductLike =
     directSeedCandidate && params.seedUrl ? rankProductUrlsForSeed(productLike, params.seedUrl, params.baseUrl) : productLike;
   const selected = rankedProductLike.slice(0, params.maxProducts);
+  if (params.seedUrl && selected[0] && isKnownCrossProductResolutionMismatch(params.seedUrl, selected[0])) {
+    setDiscoveryStrategy(params.diagnostics, "seed_page");
+    if (!params.diagnostics.failure_category) {
+      setFailureCategory(params.diagnostics, "no_product_urls");
+    }
+    params.log?.("warn", `Sitemap discovery surfaced an incompatible product candidate; rejecting seed: ${params.seedUrl} -> ${selected[0]}`);
+    return {
+      sitemapUrl: chosenSitemap,
+      productUrls: [],
+      deadSitemapDetected,
+      challengeDetected,
+    };
+  }
   if (selected.length > 0) {
     setDiscoveryStrategy(params.diagnostics, "sitemap");
     return {

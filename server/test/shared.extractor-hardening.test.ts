@@ -33,6 +33,7 @@ import {
   extractShopifyBodyHtmlPdpFields,
   extractVariantScopedIngredientListText,
   filterUsefulFaqItems,
+  isKnownCrossProductResolutionMismatch,
   looksLikeFullIngredientListText,
   parseRenderedBazaarvoiceReviewSummary,
   productHasMissingPdpFields,
@@ -796,6 +797,25 @@ test("parseRenderedBazaarvoiceReviewSummary reads aggregate from rendered summar
   });
 });
 
+test("isKnownCrossProductResolutionMismatch fails closed for The Ordinary cross-product redirects", () => {
+  assert.equal(
+    isKnownCrossProductResolutionMismatch({
+      sourceUrl: "https://theordinary.com/en-us/amino-acids-b5-serum-100403.html",
+      extractedUrl: "https://theordinary.com/en-us/argireline-solution-10-serum-100403.html",
+      extractedTitle: "Argireline Solution 10%",
+    }),
+    true,
+  );
+  assert.equal(
+    isKnownCrossProductResolutionMismatch({
+      sourceUrl: "https://theordinary.com/en-us/uv-filters-spf-45-serum-100720.html",
+      extractedUrl: "https://theordinary.com/en-us/uv-filters-spf-45-serum-100720.html",
+      extractedTitle: "UV Filters SPF 45 Serum",
+    }),
+    false,
+  );
+});
+
 test("deriveProductPdpModuleBodies extracts Tom Ford-style details summary accordions", () => {
   const bodies = deriveProductPdpModuleBodies({
     detailsSections: [
@@ -1365,6 +1385,42 @@ test("discoverProductUrls treats a direct PDP input as a product page", async ()
 
       assert.equal(diagnostics.discovery_strategy, "seed_page");
       assert.deepEqual(discovered.productUrls, ["https://augustinusbader.com/the-rich-cream"]);
+    },
+  );
+});
+
+test("discoverProductUrls fails closed on The Ordinary cross-product PDP resolution", async () => {
+  const diagnostics = createDiagnostics("theordinary.com", "https://theordinary.com");
+
+  await withMockFetch(
+    {
+      "https://theordinary.com/en-us/amino-acids-b5-serum-100403.html": {
+        status: 200,
+        responseUrl: "https://theordinary.com/en-us/argireline-solution-10-serum-100403.html",
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `
+          <html>
+            <head>
+              <link rel="canonical" href="https://theordinary.com/en-us/argireline-solution-10-serum-100403.html" />
+              <script type="application/ld+json">{"@type":"Product","name":"Argireline Solution 10%"}</script>
+            </head>
+            <body><button>Add to cart</button></body>
+          </html>
+        `,
+      },
+    },
+    async () => {
+      const discovered = await discoverProductUrls({
+        baseUrl: "https://theordinary.com",
+        seedUrl: "https://theordinary.com/en-us/amino-acids-b5-serum-100403.html",
+        maxProducts: 5,
+        context: {},
+        diagnostics,
+      });
+
+      assert.equal(diagnostics.discovery_strategy, "seed_page");
+      assert.equal(diagnostics.failure_category, "no_product_urls");
+      assert.deepEqual(discovered.productUrls, []);
     },
   );
 });

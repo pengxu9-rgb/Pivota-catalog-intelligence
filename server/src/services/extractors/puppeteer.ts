@@ -318,6 +318,11 @@ type ScrapedPageSignals = {
   faqItems: ExtractedProductFaqItem[];
   faqHtmlSnippets: string[];
   okendoMetafieldJson?: string;
+  renderedReviewSummary?: ExtractedProductReviewSummary;
+};
+
+type RawScrapedPageSignals = Omit<ScrapedPageSignals, "renderedReviewSummary"> & {
+  renderedReviewSummary?: RenderedReviewSummarySignal;
 };
 
 function clampInt(value: string | undefined, fallback: number, min: number, max: number) {
@@ -957,6 +962,19 @@ function isLowQualityFaqItem(item: ExtractedProductFaqItem) {
   ) {
     return true;
   }
+  if (
+    /\b(?:are you sure you want to quit|booking request will be made|your current selections will be lost|review our privacy policy)\b/.test(
+      `${question} ${answer}`,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^(?:how to build a skincare(?: regimen)?|regimen guide)\b/.test(question) &&
+    /^(?:regimen guide\.?)$/i.test(answer)
+  ) {
+    return true;
+  }
   if (/\b(?:shop now|save \d+%|sign up|subscribe|newsletter|join our list|text .*join)\b/.test(`${question} ${answer}`)) {
     return true;
   }
@@ -966,6 +984,46 @@ function isLowQualityFaqItem(item: ExtractedProductFaqItem) {
 
 export function filterUsefulFaqItems(items: ExtractedProductFaqItem[]) {
   return dedupeFaqItems(items).filter((item) => !isLowQualityFaqItem(item));
+}
+
+type RenderedReviewSummarySignal = {
+  text?: string;
+  aria_labels?: string[];
+};
+
+export function parseRenderedBazaarvoiceReviewSummary(
+  signal: RenderedReviewSummarySignal | null | undefined,
+): ExtractedProductReviewSummary | undefined {
+  const text = cleanText(signal?.text);
+  const ariaLabels = dedupeStringList(
+    (Array.isArray(signal?.aria_labels) ? signal!.aria_labels : []).map((item) => cleanText(item)),
+  );
+  const corpus = [text, ...ariaLabels].filter(Boolean).join(" | ");
+  if (!corpus) return undefined;
+
+  const ariaMatch = corpus.match(/(\d+(?:\.\d+)?)\s*out of 5 stars\D+(\d[\d,]*)\s+reviews?/i);
+  const inlineMatch = corpus.match(/(\d+(?:\.\d+)?)\s*read\s*(\d[\d,]*)\s*reviews?/i);
+  const fallbackRatingMatch = corpus.match(/\b(\d+(?:\.\d+)?)\b/);
+  const fallbackCountMatch = corpus.match(/\b(?:read\s*)?(\d[\d,]*)\s*reviews?\b/i);
+
+  const rating = Number.parseFloat(
+    cleanText(ariaMatch?.[1] || inlineMatch?.[1] || fallbackRatingMatch?.[1] || ""),
+  );
+  const reviewCount = Number.parseInt(
+    cleanText(ariaMatch?.[2] || inlineMatch?.[2] || fallbackCountMatch?.[1] || "").replace(/,/g, ""),
+    10,
+  );
+
+  if (!Number.isFinite(rating) || rating <= 0) return undefined;
+  if (!Number.isFinite(reviewCount) || reviewCount <= 0) return undefined;
+
+  return {
+    rating: Number(rating.toFixed(2)),
+    review_count: Math.floor(reviewCount),
+    scale: 5,
+    aggregation_scope: "product",
+    exact_item_review_count: Math.floor(reviewCount),
+  };
 }
 
 const QUARANTINED_PDP_SOURCE_KIND_RE =
@@ -5999,7 +6057,7 @@ function withBrowserishHtmlHeaders(context: FetchContext = {}): FetchContext {
 }
 
 export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals> {
-  const scraped = await page.evaluate(() => {
+  const scraped = (await page.evaluate(() => {
     const documentBase = document.baseURI || location.href;
     const title =
       document.querySelector("h1")?.textContent?.trim() ||
@@ -6768,6 +6826,28 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       )
       .filter(Boolean)
       .slice(0, 24);
+    const renderedReviewSummary = (() => {
+      const normalizeReviewText = (value: string) =>
+        normalizeSectionText(value)
+          .replace(/\s+/g, " ")
+          .replace(/\bSame page link\.?/gi, " ")
+          .trim();
+      const nodes = Array.from(document.querySelectorAll("[data-bv-show='rating_summary']")) as HTMLElement[];
+      for (const node of nodes.slice(0, 6)) {
+        const clone = node.cloneNode(true) as HTMLElement;
+        clone.querySelectorAll("style, script, noscript, meta, svg, path, polygon").forEach((child) => child.remove());
+        const text = normalizeReviewText(clone.innerText || clone.textContent || "");
+        const ariaLabels = Array.from(node.querySelectorAll("[aria-label]"))
+          .map((child) => normalizeReviewText((child as HTMLElement).getAttribute("aria-label") || ""))
+          .filter((label) => /(?:out of 5 stars|reviews?)/i.test(label));
+        if (!text && ariaLabels.length === 0) continue;
+        return {
+          text,
+          ...(ariaLabels.length > 0 ? { aria_labels: ariaLabels } : {}),
+        };
+      }
+      return undefined;
+    })();
     const detailsSections = (() => {
       const sections: ExtractedProductDetailSection[] = [];
       const seen = new Set<string>();
@@ -7335,11 +7415,15 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       faqItems,
       faqHtmlSnippets,
       okendoMetafieldJson,
+      renderedReviewSummary,
     };
-  });
+  })) as RawScrapedPageSignals;
+  const { renderedReviewSummary: rawRenderedReviewSummary, ...restScraped } = scraped;
+  const parsedRenderedReviewSummary = parseRenderedBazaarvoiceReviewSummary(rawRenderedReviewSummary);
   return {
-    ...scraped,
-    detailsSections: normalizeStructuredProseDetailSections(scraped.detailsSections),
+    ...restScraped,
+    detailsSections: normalizeStructuredProseDetailSections(restScraped.detailsSections),
+    ...(parsedRenderedReviewSummary ? { renderedReviewSummary: parsedRenderedReviewSummary } : {}),
   };
 }
 
@@ -7896,6 +7980,7 @@ export function buildProductFromPageSignals(params: {
       : {}),
     ...(productSizeEvidence.detailLabel ? { size_detail_label: productSizeEvidence.detailLabel } : {}),
     ...(contentImageUrls.length > 0 ? { content_image_urls: contentImageUrls } : {}),
+    ...(extracted.renderedReviewSummary ? { review_summary: extracted.renderedReviewSummary } : {}),
     variant_skus: dedupeStringList(variants.map((variant) => variant.sku)),
     variants,
     ...productPdpFields,
@@ -7912,6 +7997,8 @@ function scoreScrapedProductCompleteness(product: ExtractedProduct | null | unde
   if (cleanText(product.ingredients_raw)) score += 6;
   if (cleanText(product.active_ingredients_raw)) score += 4;
   score += Math.min(Array.isArray(product.faq_items) ? product.faq_items.length : 0, 4);
+  if (Number(product.review_summary?.review_count || 0) > 0 && Number(product.review_summary?.rating || 0) > 0) score += 5;
+  score += Math.min(Array.isArray(product.review_summary?.preview_items) ? product.review_summary!.preview_items!.length : 0, 3);
   score += Math.min(Array.isArray(product.image_urls) ? product.image_urls.length : 0, 8);
   score -= getMissingPdpFieldReasons(product).length * 6;
   return score;
@@ -7990,6 +8077,27 @@ async function scrapeProductPage(params: {
       }
     });
     await new Promise((resolve) => setTimeout(resolve, 300));
+  };
+
+  const waitForRenderedReviewSummary = async () => {
+    await page
+      .waitForFunction(
+        () => {
+          const roots = Array.from(document.querySelectorAll("[data-bv-show='rating_summary']")) as HTMLElement[];
+          return roots.some((node) => {
+            const clone = node.cloneNode(true) as HTMLElement;
+            clone.querySelectorAll("style, script, noscript, meta, svg, path, polygon").forEach((child) => child.remove());
+            const text = (clone.innerText || clone.textContent || "").replace(/\s+/g, " ").trim();
+            const ariaLabels = Array.from(node.querySelectorAll("[aria-label]"))
+              .map((child) => ((child as HTMLElement).getAttribute("aria-label") || "").replace(/\s+/g, " ").trim())
+              .filter(Boolean);
+            const corpus = [text, ...ariaLabels].join(" | ");
+            return /(?:\d+(?:\.\d+)?)\s*(?:out of 5 stars|read)\D+\d[\d,]*\s*reviews?/i.test(corpus);
+          });
+        },
+        { timeout: 5000, polling: 250 },
+      )
+      .catch(() => undefined);
   };
 
   const enablePrefetchRequestBlocking = async () => {
@@ -8080,6 +8188,7 @@ async function scrapeProductPage(params: {
     await ensureBrowserEvalHelpers();
 
     await expandRelevantPdpModules();
+    await waitForRenderedReviewSummary();
 
     const extracted = await enrichExtractedFaqItemsWithOkendoQuestions(
       {

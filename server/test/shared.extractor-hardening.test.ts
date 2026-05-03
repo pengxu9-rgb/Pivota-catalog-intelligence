@@ -34,6 +34,7 @@ import {
   extractVariantScopedIngredientListText,
   filterUsefulFaqItems,
   looksLikeFullIngredientListText,
+  parseRenderedBazaarvoiceReviewSummary,
   productHasMissingPdpFields,
 } from "../src/services/extractors/puppeteer";
 
@@ -742,6 +743,16 @@ test("filterUsefulFaqItems removes promo and pseudo-faq noise but keeps product 
       source_kind: "inline_html_faq",
     },
     {
+      question: "Are you sure you want to quit?",
+      answer: "Your booking request will be made, but your current selections will be lost.",
+      source_kind: "faq_section",
+    },
+    {
+      question: "How to Build a Skincare",
+      answer: "Regimen guide.",
+      source_kind: "faq_linear_text",
+    },
+    {
       question: "Can I use Always an Optimist 4-in-1 Mist as a setting spray?",
       answer: "You can. It helps extend makeup wear with a natural radiant finish.",
       source_kind: "inline_html_faq",
@@ -755,6 +766,34 @@ test("filterUsefulFaqItems removes promo and pseudo-faq noise but keeps product 
       source_kind: "inline_html_faq",
     },
   ]);
+});
+
+test("parseRenderedBazaarvoiceReviewSummary reads aggregate from Bazaarvoice aria label", () => {
+  const summary = parseRenderedBazaarvoiceReviewSummary({
+    aria_labels: ["4.3 out of 5 stars. 743 reviews"],
+  });
+
+  assert.deepEqual(summary, {
+    rating: 4.3,
+    review_count: 743,
+    scale: 5,
+    aggregation_scope: "product",
+    exact_item_review_count: 743,
+  });
+});
+
+test("parseRenderedBazaarvoiceReviewSummary reads aggregate from rendered summary text", () => {
+  const summary = parseRenderedBazaarvoiceReviewSummary({
+    text: "4.1 Read 422 Reviews. Write a review Ask a question",
+  });
+
+  assert.deepEqual(summary, {
+    rating: 4.1,
+    review_count: 422,
+    scale: 5,
+    aggregation_scope: "product",
+    exact_item_review_count: 422,
+  });
 });
 
 test("deriveProductPdpModuleBodies extracts Tom Ford-style details summary accordions", () => {

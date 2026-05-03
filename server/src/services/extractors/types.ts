@@ -207,6 +207,12 @@ export type ExtractedProduct = {
   image_url: string;
   image_urls: string[];
   content_image_urls?: string[];
+  size?: string;
+  volume?: string;
+  product_volume?: string;
+  net_content?: string;
+  net_size?: string;
+  size_detail_label?: string;
   variant_skus: string[];
   variants: ExtractedVariant[];
   description_raw?: string;

@@ -473,9 +473,9 @@ const PRODUCT_SIZE_OPTION_GLOBAL_RE = new RegExp(PRODUCT_SIZE_OPTION_RE.source, 
 function getProductSizeUnitPriority(value: string) {
   const normalized = cleanText(value).toLowerCase();
   if (!normalized) return 0;
-  if (/\b(?:ml|m l|g|kg|l|mm|cm)\b/.test(normalized)) return 4;
-  if (/\b(?:ea|ct|count|pcs?|pieces?|pads?|patches?)\b/.test(normalized)) return 3;
-  if (/\b(?:fl\.?\s*oz\.?|fluid\s*ounces?|oz|lb|lbs)\b/.test(normalized)) return 2;
+  if (/(?:\d|\b)(?:ml|m l|g|kg|l|mm|cm)\b/.test(normalized)) return 4;
+  if (/(?:\d|\b)(?:ea|ct|count|pcs?|pieces?|pads?|patches?)\b/.test(normalized)) return 3;
+  if (/(?:\d|\b)(?:fl\.?\s*oz\.?|fluid\s*ounces?|oz|lb|lbs)\b/.test(normalized)) return 2;
   return 1;
 }
 
@@ -508,24 +508,119 @@ function normalizeProductSizeOptionValue(value?: string) {
     .trim();
 }
 
-function extractProductSizeOptionValue(...values: Array<string | undefined>) {
+function formatProductSizeDisplayUnit(unit: string) {
+  const normalized = cleanText(unit)
+    .replace(/fluid\s*ounces?/gi, "fl oz")
+    .replace(/fl\.?\s*oz\.?/gi, "fl oz")
+    .replace(/m\s*l/gi, "mL")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return "";
+  if (/^ml$/i.test(normalized)) return "mL";
+  if (/^g$/i.test(normalized)) return "g";
+  if (/^kg$/i.test(normalized)) return "kg";
+  if (/^l$/i.test(normalized)) return "L";
+  if (/^mm$/i.test(normalized)) return "mm";
+  if (/^cm$/i.test(normalized)) return "cm";
+  if (/^oz$/i.test(normalized)) return "oz";
+  if (/^lb$/i.test(normalized)) return "lb";
+  if (/^lbs$/i.test(normalized)) return "lbs";
+  if (/^fl oz$/i.test(normalized)) return "fl oz";
+  if (/^(ea|ct|count|pcs?|pieces?|pads?|patches?)$/i.test(normalized)) return normalized.toLowerCase();
+  return normalized;
+}
+
+function formatProductSizeDisplayValue(raw: string) {
+  const normalized = cleanText(raw).replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  const match = normalized.match(
+    /\b(\d+(?:\.\d+)?)\s*(fl\.?\s*oz\.?|fluid\s*ounces?|m\s*l|ml|g|kg|oz|l|lb|lbs|mm|cm|ea|ct|count|pcs?|pieces?|pads?|patches?)\b(?:\s*(?:x|×)\s*\d+)?/i,
+  );
+  if (!match) return "";
+  const amount = cleanText(match[1]);
+  const unit = formatProductSizeDisplayUnit(match[2] || "");
+  if (!amount || !unit) return "";
+  return `${amount} ${unit}`.trim();
+}
+
+type ProductSizeEvidence = {
+  optionValue: string;
+  detailLabel?: string;
+  alternateOptionValue?: string;
+};
+
+function collectProductSizeEvidenceMatches(value?: string) {
+  if (!value) return [];
+  const rawText = decodeHtmlAttributeEntities(String(value).replace(/<[^>]+>/g, " "));
+  const normalized = cleanText(rawText);
+  if (!normalized) return [];
+  const matches = Array.from(normalized.matchAll(PRODUCT_SIZE_OPTION_GLOBAL_RE))
+    .map((match) => cleanText(match[0]))
+    .filter(Boolean);
+  return dedupeStringList(matches).map((match) => ({
+    optionValue: normalizeProductSizeOptionValue(match),
+    displayValue: formatProductSizeDisplayValue(match),
+  }));
+}
+
+function getProductSizeDisplayPriority(value: string) {
+  const normalized = cleanText(value).toLowerCase();
+  if (!normalized) return 99;
+  if (/\b(?:fl\.?\s*oz|oz|lb|lbs)\b/.test(normalized)) return 1;
+  if (/\b(?:ml|m l|g|kg|l|mm|cm)\b/.test(normalized)) return 2;
+  if (/\b(?:ea|ct|count|pcs?|pieces?|pads?|patches?)\b/.test(normalized)) return 3;
+  return 4;
+}
+
+function extractProductSizeEvidence(...values: Array<string | undefined>): ProductSizeEvidence {
+  const collected: Array<{ optionValue: string; displayValue: string }> = [];
+  const seenOptionValues = new Set<string>();
+  const pushMatches = (candidate?: string) => {
+    for (const match of collectProductSizeEvidenceMatches(candidate)) {
+      if (!match.optionValue || seenOptionValues.has(match.optionValue)) continue;
+      seenOptionValues.add(match.optionValue);
+      collected.push(match);
+    }
+  };
+
   for (const value of values) {
-    const normalized = normalizeProductSizeOptionValue(value);
-    if (normalized) return normalized;
+    pushMatches(value);
     if (!value) continue;
     try {
       const parsed = new URL(value);
-      const decodedPath = decodeURIComponent(parsed.pathname).replace(/[-_]+/g, " ");
-      const fromPath = normalizeProductSizeOptionValue(decodedPath);
-      if (fromPath) return fromPath;
-      const decodedSearch = decodeURIComponent(parsed.search).replace(/[-_]+/g, " ");
-      const fromSearch = normalizeProductSizeOptionValue(decodedSearch);
-      if (fromSearch) return fromSearch;
+      pushMatches(decodeURIComponent(parsed.pathname).replace(/[-_]+/g, " "));
+      pushMatches(decodeURIComponent(parsed.search).replace(/[-_]+/g, " "));
     } catch {
-      // Plain titles and URL-like fragments are handled by the direct regex above.
+      // Plain titles and non-URL fragments are handled above.
     }
   }
-  return "";
+
+  if (collected.length === 0) {
+    return { optionValue: "" };
+  }
+
+  const primary = collected.reduce((best, current) =>
+    getProductSizeUnitPriority(current.optionValue) > getProductSizeUnitPriority(best.optionValue) ? current : best,
+  );
+  const alternate =
+    collected.find((item) => item.optionValue !== primary.optionValue) || null;
+  const detailParts = dedupeStringList(
+    [primary, alternate]
+      .filter(Boolean)
+      .sort((left, right) => getProductSizeDisplayPriority(left!.displayValue) - getProductSizeDisplayPriority(right!.displayValue))
+      .map((item) => item?.displayValue || "")
+      .filter(Boolean),
+  );
+
+  return {
+    optionValue: primary.optionValue,
+    ...(detailParts.length > 0 ? { detailLabel: detailParts.join(" / ") } : {}),
+    ...(alternate?.optionValue ? { alternateOptionValue: alternate.optionValue } : {}),
+  };
+}
+
+function extractProductSizeOptionValue(...values: Array<string | undefined>) {
+  return extractProductSizeEvidence(...values).optionValue;
 }
 
 function isGenericOfferOptionValue(value: string | undefined, productTitle: string) {
@@ -1931,7 +2026,8 @@ function extractShopifyProductVolumeTextFromHtml(html: string | undefined) {
   const match =
     source.match(/<[^>]+class=["'][^"']*\bproduct__volume\b[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i) ||
     source.match(/<[^>]+data-product-volume(?:=["'][^"']*["'])?[^>]*>([\s\S]*?)<\/[^>]+>/i) ||
-    source.match(/<[^>]+class=["'][^"']*\bproduct-volume\b[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i);
+    source.match(/<[^>]+class=["'][^"']*\bproduct-volume\b[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i) ||
+    source.match(/\bNet\s*(?:Wt|Weight)\.?\s*[:\-]?\s*([^<\n]{0,120})/i);
   if (!match?.[1]) return "";
   return cleanText(decodeHtmlAttributeEntities(match[1].replace(/<[^>]+>/g, " ")));
 }
@@ -4718,20 +4814,20 @@ function buildShopifyResponse(params: {
       Boolean(titleSplit) &&
       (product.variants || []).length === 1 &&
       isGenericSingleShopifyVariant(product, product.variants[0]!);
-    const singleDefaultSizeOption =
+    const officialText = product.body_html || product.description || product.content;
+    const singleDefaultSizeEvidence =
       !treatAsPseudoVariant &&
       (product.variants || []).length === 1 &&
       isGenericSingleShopifyVariant(product, product.variants[0]!)
-        ? extractProductSizeOptionValue(product.title, product.handle, productUrl, ...productImageUrls)
-        : "";
+        ? extractProductSizeEvidence(product.title, product.handle, productUrl, officialText, ...productImageUrls)
+        : { optionValue: "" };
 
     const canonicalProductTitle = treatAsPseudoVariant ? titleSplit!.baseTitle : product.title;
     const optionName = treatAsPseudoVariant
       ? "Variant"
-      : singleDefaultSizeOption
+      : singleDefaultSizeEvidence.optionValue
         ? "Size"
       : product.options?.map((o) => o.name).filter((n): n is string => Boolean(n && n.trim())).join(" / ") || "Variant";
-    const officialText = product.body_html || product.description || product.content;
     const officialTextSource = product.body_html
       ? "shopify_body_html"
       : product.description
@@ -4776,8 +4872,8 @@ function buildShopifyResponse(params: {
     const extractedVariants: ExtractedVariant[] = finalizeExtractedVariants((product.variants || []).map((v) => {
       const optionValue = treatAsPseudoVariant
         ? titleSplit!.variantLabel
-        : singleDefaultSizeOption
-          ? singleDefaultSizeOption
+        : singleDefaultSizeEvidence.optionValue
+          ? singleDefaultSizeEvidence.optionValue
         : [v.option1, v.option2, v.option3].filter((x): x is string => Boolean(x && x.trim())).join(" / ") ||
           v.title?.trim() ||
           "Default";
@@ -4813,6 +4909,11 @@ function buildShopifyResponse(params: {
         url: productUrl,
         image_url: productImageUrls[0] || "",
         image_urls: productImageUrls,
+        ...(singleDefaultSizeEvidence.optionValue ? { volume: singleDefaultSizeEvidence.optionValue } : {}),
+        ...(singleDefaultSizeEvidence.alternateOptionValue
+          ? { product_volume: singleDefaultSizeEvidence.alternateOptionValue }
+          : {}),
+        ...(singleDefaultSizeEvidence.detailLabel ? { size_detail_label: singleDefaultSizeEvidence.detailLabel } : {}),
         variant_skus: [],
         variants: [],
         ...productPdpFields,
@@ -4832,6 +4933,15 @@ function buildShopifyResponse(params: {
     ]);
     existing.image_url = existing.image_urls[0] || existing.image_url || "";
     existing.variant_skus = dedupeStringList([...existing.variant_skus, ...extractedVariants.map((variant) => variant.sku)]);
+    if (singleDefaultSizeEvidence.optionValue && !existing.volume) {
+      existing.volume = singleDefaultSizeEvidence.optionValue;
+    }
+    if (singleDefaultSizeEvidence.alternateOptionValue && !existing.product_volume) {
+      existing.product_volume = singleDefaultSizeEvidence.alternateOptionValue;
+    }
+    if (singleDefaultSizeEvidence.detailLabel && !existing.size_detail_label) {
+      existing.size_detail_label = singleDefaultSizeEvidence.detailLabel;
+    }
     const mergedPdpFields = buildProductPdpFields({
       descriptionRaw: existing.description_raw || productPdpFields.description_raw,
       detailsSections:
@@ -5090,9 +5200,22 @@ function mergeShopifyDirectPdpEmbeddedProductJson(
       }),
     };
     mergedProduct.image_url = mergedProduct.image_urls[0] || product.image_url || "";
+    const htmlSizeEvidence =
+      mergedProduct.variants.length === 1 &&
+      isGenericOfferOptionValue(mergedProduct.variants[0]?.option_value, mergedProduct.title)
+        ? extractProductSizeEvidence(
+            htmlVolumeText,
+            html,
+            mergedProduct.description_raw,
+            ...(Array.isArray(mergedProduct.details_sections)
+              ? mergedProduct.details_sections.flatMap((section) => [section.heading, section.body])
+              : []),
+            mergedProduct.url,
+          )
+        : { optionValue: "" };
     const htmlVolumeOptionValue =
       mergedProduct.variants.length === 1 && isGenericOfferOptionValue(mergedProduct.variants[0]?.option_value, mergedProduct.title)
-        ? extractProductSizeOptionValue(htmlVolumeText)
+        ? htmlSizeEvidence.optionValue
         : "";
     if (htmlVolumeOptionValue && mergedProduct.variants[0]) {
       mergedProduct.variants[0] = {
@@ -5101,6 +5224,15 @@ function mergeShopifyDirectPdpEmbeddedProductJson(
         option_value: htmlVolumeOptionValue,
         hidden_from_selector: false,
       };
+    }
+    if (htmlSizeEvidence.optionValue && !mergedProduct.volume) {
+      mergedProduct.volume = htmlSizeEvidence.optionValue;
+    }
+    if (htmlSizeEvidence.alternateOptionValue && !mergedProduct.product_volume) {
+      mergedProduct.product_volume = htmlSizeEvidence.alternateOptionValue;
+    }
+    if (htmlSizeEvidence.detailLabel && !mergedProduct.size_detail_label) {
+      mergedProduct.size_detail_label = htmlSizeEvidence.detailLabel;
     }
 
     Object.assign(
@@ -7476,17 +7608,20 @@ export function buildProductFromPageSignals(params: {
       ],
     },
   });
-  const productSizeOptionValue = extractProductSizeOptionValue(
+  const productSizeEvidence = extractProductSizeEvidence(
     typeof primaryProductObj?.size === "string" ? primaryProductObj.size : undefined,
     typeof productGroupObj?.size === "string" ? productGroupObj.size : undefined,
     variantProducts.length === 1 && typeof variantProducts[0]?.size === "string"
       ? variantProducts[0].size
       : undefined,
     extracted.productVolumeText,
+    extracted.productDetailsText,
+    ...mergedDetailsSections.flatMap((section) => [section.heading, section.body]),
     productTitle,
     productUrl,
     ...productImageUrls,
   );
+  const productSizeOptionValue = productSizeEvidence.optionValue;
   const skuScopedProductImages = buildSkuScopedImageUrlMap(productImageUrls);
 
   let variants: ExtractedVariant[] = finalizeExtractedVariants(
@@ -7755,6 +7890,11 @@ export function buildProductFromPageSignals(params: {
     url: productUrl,
     image_url: finalProductImageUrl,
     image_urls: finalProductImageUrls,
+    ...(productSizeEvidence.optionValue ? { volume: productSizeEvidence.optionValue } : {}),
+    ...(productSizeEvidence.alternateOptionValue
+      ? { product_volume: productSizeEvidence.alternateOptionValue }
+      : {}),
+    ...(productSizeEvidence.detailLabel ? { size_detail_label: productSizeEvidence.detailLabel } : {}),
     ...(contentImageUrls.length > 0 ? { content_image_urls: contentImageUrls } : {}),
     variant_skus: dedupeStringList(variants.map((variant) => variant.sku)),
     variants,

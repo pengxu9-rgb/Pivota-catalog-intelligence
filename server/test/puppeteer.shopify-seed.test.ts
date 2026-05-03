@@ -589,6 +589,48 @@ test("buildProductFromPageSignals reads single default size evidence from produc
   assert.equal(product?.variants.length, 1);
   assert.equal(product?.variants[0]?.option_name, "Size");
   assert.equal(product?.variants[0]?.option_value, "20ml");
+  assert.equal(product?.volume, "20ml");
+  assert.equal(product?.product_volume, "0.70 fl oz");
+  assert.equal(product?.size_detail_label, "0.70 fl oz / 20 mL");
+});
+
+test("buildProductFromPageSignals reads single default size evidence from Net Wt detail text", () => {
+  const product = buildProductFromPageSignals({
+    extracted: {
+      title: "Always an Optimist Pore Diffusing Primer Mini",
+      canonical: "https://rarebeauty.com/products/always-an-optimist-pore-diffusing-primer-mini",
+      metaDescription: "",
+      priceTexts: ["$17"],
+      imageCandidates: ["https://cdn.example.com/primer-mini.jpg"],
+      scripts: [],
+      embeddedProductScripts: [],
+      domVariants: [],
+      productVolumeText: "",
+      productDetailsText: "Soft-focus primer. Net Wt. 0.50 fl. oz. | 15 mL",
+      detailsSections: [
+        {
+          heading: "Details",
+          body: "Soft-focus finish. Net Wt. 0.50 fl. oz. | 15 mL",
+          source_kind: "heading_sibling",
+        },
+      ],
+      faqItems: [],
+      faqHtmlSnippets: [],
+    },
+    pageLooksLikeProduct: true,
+    sourceUrl: "https://rarebeauty.com/products/always-an-optimist-pore-diffusing-primer-mini",
+    baseUrl: "https://rarebeauty.com",
+    verbose: false,
+    log: () => {},
+  });
+
+  assert.ok(product);
+  assert.equal(product?.variants.length, 1);
+  assert.equal(product?.variants[0]?.option_name, "Size");
+  assert.equal(product?.variants[0]?.option_value, "15ml");
+  assert.equal(product?.volume, "15ml");
+  assert.equal(product?.product_volume, "0.50 fl oz");
+  assert.equal(product?.size_detail_label, "0.50 fl oz / 15 mL");
 });
 
 test("buildProductFromPageSignals keeps exact-item variant gallery and surfaces section media separately", () => {
@@ -2489,6 +2531,108 @@ test("enrichDirectShopifyPdpResponse upgrades generic single variants from HTML 
       assert.equal(result.products[0]?.variants[0]?.option_name, "Size");
       assert.equal(result.products[0]?.variants[0]?.option_value, "20ml");
       assert.equal(result.products[0]?.variants[0]?.hidden_from_selector, false);
+      assert.equal(result.products[0]?.size_detail_label, "0.70 fl oz / 20 mL");
+    },
+  );
+});
+
+test("enrichDirectShopifyPdpResponse upgrades generic single variants from HTML Net Wt text before browser enrichment", async () => {
+  const logs: Array<{ type: string; msg: string }> = [];
+  const seedUrl = "https://rarebeauty.com/products/always-an-optimist-pore-diffusing-primer-mini";
+  const response = {
+    brand: "Rare Beauty",
+    domain: "https://rarebeauty.com",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Always an Optimist Pore Diffusing Primer Mini",
+        url: seedUrl,
+        image_url: "https://cdn.example.com/primer-mini.jpg",
+        image_urls: ["https://cdn.example.com/primer-mini.jpg"],
+        variant_skus: ["FGPAOP0002M4"],
+        variants: [
+          {
+            id: "39265890762887",
+            sku: "FGPAOP0002M4",
+            url: seedUrl,
+            option_name: "Title",
+            option_value: "Default Title",
+            price: "17.00",
+            currency: "USD",
+            stock: "In Stock",
+            description: "Soft-focus primer.",
+            image_url: "https://cdn.example.com/primer-mini.jpg",
+            image_urls: ["https://cdn.example.com/primer-mini.jpg"],
+            ad_copy: "",
+            hidden_from_selector: true,
+          },
+        ],
+        description_raw: "Soft-focus primer.",
+        details_sections: [
+          {
+            heading: "Finish",
+            body: "Matte",
+            source_kind: "embedded_product_json_tags",
+          },
+        ],
+        field_sources: {
+          description_raw: ["shopify_description"],
+          details_sections: ["embedded_product_json_tags"],
+          ingredients_raw: [],
+          active_ingredients_raw: [],
+          how_to_use_raw: [],
+          faq_items: [],
+        },
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD", min: 17, max: 17, avg: 17 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "rarebeauty.com",
+      resolved_base_url: "https://rarebeauty.com",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  await withMockFetch(
+    {
+      [seedUrl]: {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `<html><body><div>Net Wt. 0.50 fl. oz. | 15 mL</div></body></html>`,
+      },
+    },
+    async () => {
+      const result = await enrichDirectShopifyPdpResponse({
+        brand: "Rare Beauty",
+        baseUrl: "https://rarebeauty.com",
+        seedUrl,
+        response,
+        diagnostics: response.diagnostics,
+        log: (type, msg) => logs.push({ type, msg }),
+        browserRunner: async () => {
+          throw new Error("browser should not run");
+        },
+      });
+
+      assert.equal(result.products[0]?.variants[0]?.option_name, "Size");
+      assert.equal(result.products[0]?.variants[0]?.option_value, "15ml");
+      assert.equal(result.products[0]?.variants[0]?.hidden_from_selector, false);
+      assert.equal(result.products[0]?.volume, "15ml");
+      assert.equal(result.products[0]?.product_volume, "0.50 fl oz");
+      assert.equal(result.products[0]?.size_detail_label, "0.50 fl oz / 15 mL");
     },
   );
 });

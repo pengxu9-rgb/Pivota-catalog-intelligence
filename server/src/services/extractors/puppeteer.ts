@@ -1978,13 +1978,96 @@ export function extractShopifyBodyHtmlPdpFields(text: string | undefined) {
         "Suggested Usage",
         "Application",
       ],
-    ) || undefined;
+    ) ||
+    (() => {
+      const keyIngredients = firstDelimitedSection(
+        normalized,
+        ["Key Ingredients", "Ingredient Highlights", "Highlighted Ingredients"],
+      );
+      const cleaned = cleanText(keyIngredients);
+      const commaCount = (cleaned.match(/,/g) || []).length;
+      if (!cleaned || cleaned.length > 700 || (looksLikeFullIngredientListText(cleaned) && (commaCount >= 8 || cleaned.length > 350))) {
+        return "";
+      }
+      return cleaned;
+    })() ||
+    undefined;
 
   return {
     detailsSections: dedupeDetailSections(detailsSections),
     ingredientsRaw: cleanText(ingredientsRaw) || undefined,
     activeIngredientsRaw: cleanText(activeIngredientsRaw) || undefined,
     howToUseRaw: stripInlineFaqText(howToUseRaw) || undefined,
+  };
+}
+
+function extractFirstParagraphAfterMarker(html: string | undefined, marker: RegExp) {
+  const source = typeof html === "string" ? html : "";
+  const match = marker.exec(source);
+  if (!match || typeof match.index !== "number") return "";
+  const slice = source.slice(match.index, match.index + 6000);
+  const paragraph = slice.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+  return paragraph ? cleanText(paragraph[1]) : "";
+}
+
+function extractInlineHtmlTextAfterMarker(
+  html: string | undefined,
+  marker: RegExp,
+  stopRe = /<section\b|<script\b|document\.addEventListener|<\/section>|<\/body>/i,
+) {
+  const source = typeof html === "string" ? html : "";
+  const match = marker.exec(source);
+  if (!match || typeof match.index !== "number") return "";
+  const slice = source.slice(match.index + match[0].length, match.index + match[0].length + 3500);
+  const stop = slice.search(stopRe);
+  const raw = stop >= 0 ? slice.slice(0, stop) : slice;
+  return cleanText(raw);
+}
+
+export function extractShopifyDirectPdpHtmlPdpFields(html: string | undefined) {
+  const source = typeof html === "string" ? html : "";
+  if (!source.trim()) {
+    return {
+      detailsSections: [] as ExtractedProductDetailSection[],
+      ingredientsRaw: undefined,
+      activeIngredientsRaw: undefined,
+      howToUseRaw: undefined,
+    };
+  }
+
+  const normalized = cleanText(source);
+  const genericFields = extractShopifyBodyHtmlPdpFields(normalized);
+  const fullIngredientsCandidate =
+    extractFirstParagraphAfterMarker(source, /\bFULL INGREDIENTS\b/i) ||
+    extractInlineHtmlTextAfterMarker(
+      source,
+      /\bFULL INGREDIENTS\b/i,
+      /\b(?:HOW TO USE|KEY INGREDIENTS|PRODUCT BENEFITS|REVIEWS?|CUSTOMER REVIEWS?|FAQ)\b|<script\b|<\/section>|<\/body>/i,
+    ) ||
+    genericFields.ingredientsRaw ||
+    "";
+  const ingredientsRaw = stripIngredientPackageDisclaimer(extractLikelyFullIngredientListText(fullIngredientsCandidate));
+
+  const howToHtmlMatch = source.match(
+    /\bHOW TO USE\b[\s\S]{0,5000}?<div[^>]*class=["'][^"']*\bprhow-txt\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+  );
+  const howToCandidate =
+    (howToHtmlMatch ? cleanText(howToHtmlMatch[1]) : "") ||
+    genericFields.howToUseRaw ||
+    extractInlineHtmlTextAfterMarker(
+      source,
+      /\bHOW TO USE\b/i,
+      /\b(?:FULL INGREDIENTS|KEY INGREDIENTS|PRODUCT BENEFITS|REVIEWS?|CUSTOMER REVIEWS?|FAQ)\b|<script\b|<\/section>|<\/body>/i,
+    );
+  const howToUseRaw = looksLikeHowToUseInstructionText(howToCandidate)
+    ? stripProductRegulatoryTail(howToCandidate)
+    : "";
+
+  return {
+    detailsSections: genericFields.detailsSections,
+    ingredientsRaw: ingredientsRaw || undefined,
+    activeIngredientsRaw: genericFields.activeIngredientsRaw,
+    howToUseRaw: howToUseRaw || undefined,
   };
 }
 
@@ -4532,6 +4615,66 @@ export async function enrichDirectShopifyPdpResponse(params: {
         response = merged;
         if (afterSignal !== beforeSignal) {
           params.log("success", `Recovered Shopify PDP fields via embedded product-json: ${params.seedUrl}`);
+        }
+      }
+    }
+  }
+
+  const productBeforeOfficialHtmlMerge = response.products[0];
+  if (productBeforeOfficialHtmlMerge) {
+    const missingBefore = getMissingPdpFieldReasons(productBeforeOfficialHtmlMerge);
+    if (missingBefore.includes("ingredients") || missingBefore.includes("how_to_use")) {
+      const html = await fetchSeedPageHtml();
+      if (html) {
+        const htmlPdpFields = extractShopifyDirectPdpHtmlPdpFields(html);
+        if (htmlPdpFields.ingredientsRaw || htmlPdpFields.activeIngredientsRaw || htmlPdpFields.howToUseRaw) {
+          const mergedPdpFields = buildProductPdpFields({
+            descriptionRaw: productBeforeOfficialHtmlMerge.description_raw,
+            detailsSections: [
+              ...((Array.isArray(productBeforeOfficialHtmlMerge.details_sections)
+                ? productBeforeOfficialHtmlMerge.details_sections
+                : []) || []),
+              ...htmlPdpFields.detailsSections,
+            ],
+            ingredientsRaw: productBeforeOfficialHtmlMerge.ingredients_raw || htmlPdpFields.ingredientsRaw,
+            activeIngredientsRaw:
+              productBeforeOfficialHtmlMerge.active_ingredients_raw || htmlPdpFields.activeIngredientsRaw,
+            howToUseRaw: productBeforeOfficialHtmlMerge.how_to_use_raw || htmlPdpFields.howToUseRaw,
+            faqItems: productBeforeOfficialHtmlMerge.faq_items,
+            fieldSources: {
+              description_raw: productBeforeOfficialHtmlMerge.field_sources?.description_raw || [],
+              details_sections: [
+                ...(productBeforeOfficialHtmlMerge.field_sources?.details_sections || []),
+                ...(htmlPdpFields.detailsSections.length > 0 ? ["shopify_direct_pdp_html_labeled_sections"] : []),
+              ],
+              ingredients_raw: [
+                ...(productBeforeOfficialHtmlMerge.field_sources?.ingredients_raw || []),
+                ...(htmlPdpFields.ingredientsRaw ? ["shopify_direct_pdp_html_labeled_ingredients"] : []),
+              ],
+              active_ingredients_raw: [
+                ...(productBeforeOfficialHtmlMerge.field_sources?.active_ingredients_raw || []),
+                ...(htmlPdpFields.activeIngredientsRaw ? ["shopify_direct_pdp_html_labeled_active_ingredients"] : []),
+              ],
+              how_to_use_raw: [
+                ...(productBeforeOfficialHtmlMerge.field_sources?.how_to_use_raw || []),
+                ...(htmlPdpFields.howToUseRaw ? ["shopify_direct_pdp_html_labeled_how_to_use"] : []),
+              ],
+              faq_items: productBeforeOfficialHtmlMerge.field_sources?.faq_items || [],
+            },
+          });
+          const products = response.products.map((item, index) =>
+            index === 0
+              ? {
+                  ...item,
+                  ...mergedPdpFields,
+                }
+              : item,
+          );
+          response = {
+            ...response,
+            products,
+          };
+          params.log("success", `Recovered Shopify PDP official HTML fields: ${params.seedUrl}`);
         }
       }
     }

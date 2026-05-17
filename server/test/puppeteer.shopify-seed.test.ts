@@ -10,6 +10,8 @@ import {
   enrichDirectShopifyPdpResponse,
   extractBundleComponents,
   extractLikelyFullIngredientListText,
+  extractShopifyBodyHtmlPdpFields,
+  extractShopifyDirectPdpHtmlPdpFields,
   extractShopifyEmbeddedProductPayloadPdpFields,
   extractShopifyProductJsonAttributeScriptsFromHtml,
   getMissingPdpFieldReasons,
@@ -2711,6 +2713,143 @@ test("extractLikelyFullIngredientListText isolates full INCI from mixed accordio
   assert.equal(
     extractLikelyFullIngredientListText(text),
     "Aqua (Water), Propanediol, Tranexamic Acid, Glycerin, Butylene Glycol, Acai Fruit Extract, Phenoxyethanol, Xanthan Gum, Sodium Hydroxide",
+  );
+});
+
+test("extractShopifyBodyHtmlPdpFields treats Key Ingredients as active ingredient evidence", () => {
+  const fields = extractShopifyBodyHtmlPdpFields(`
+      What It Is:
+      A hydrating ampoule.
+
+      Key Ingredients:
+      Sodium Hyaluronate, Centella Asiatica Extract, Ceramide
+    `);
+
+  const extracted = extractShopifyDirectPdpHtmlPdpFields(`
+    <section>
+      <h2>Key Ingredients</h2>
+      <p>Sodium Hyaluronate, Centella Asiatica Extract, Ceramide</p>
+    </section>
+  `);
+
+  assert.equal(fields.activeIngredientsRaw, "Sodium Hyaluronate, Centella Asiatica Extract, Ceramide");
+  assert.equal(extracted.activeIngredientsRaw, "Sodium Hyaluronate, Centella Asiatica Extract, Ceramide");
+});
+
+test("enrichDirectShopifyPdpResponse recovers SKIN1004 official full INCI and how-to from direct PDP HTML", async () => {
+  const seedUrl = "https://www.skin1004.com/products/hyalu-teca-firming-cream-copy";
+  const logs: Array<{ type: string; msg: string }> = [];
+  const response = {
+    brand: "SKIN1004",
+    domain: "skin1004.com",
+    mode: "puppeteer" as const,
+    platform: "Shopify (Direct PDP)",
+    products: [
+      {
+        title: "Hyalu-Teca Firming Cream - Coming Soon",
+        url: seedUrl,
+        image_url: "https://cdn.example.com/firming.png",
+        image_urls: ["https://cdn.example.com/firming.png"],
+        variant_skus: ["HYALUTECA003"],
+        variants: [
+          {
+            id: "50051806527734",
+            sku: "HYALUTECA003",
+            url: seedUrl,
+            option_name: "Capacity",
+            option_value: "50ml",
+            price: "21.00",
+            currency: "USD" as const,
+            stock: "Out of Stock" as const,
+            description: "What It Is: A skin-firming cream.",
+            image_url: "https://cdn.example.com/firming.png",
+            image_urls: ["https://cdn.example.com/firming.png"],
+            ad_copy: "",
+          },
+        ],
+        description_raw: "What It Is: A skin-firming cream.\n\nKey Ingredients: Sodium Hyaluronate, Centella Asiatica Extract, Ceramide",
+        details_sections: [
+          {
+            heading: "Key Ingredients",
+            body: "Sodium Hyaluronate, Centella Asiatica Extract, Ceramide",
+            source_kind: "shopify_body_html_labeled_section",
+          },
+        ],
+        field_capture_status: {
+          description_raw: "present" as const,
+          details_sections: "present" as const,
+          ingredients_raw: "missing" as const,
+          active_ingredients_raw: "missing" as const,
+          how_to_use_raw: "missing" as const,
+          faq_items: "missing" as const,
+        },
+        field_sources: {
+          description_raw: ["shopify_description"],
+          details_sections: ["shopify_body_html_labeled_section"],
+          ingredients_raw: [],
+          active_ingredients_raw: [],
+          how_to_use_raw: [],
+          faq_items: [],
+        },
+      },
+    ],
+    variants: [],
+    pricing: { currency: "USD" as const, min: 21, max: 21, avg: 21 },
+    ad_copy: { by_variant_id: {} },
+    pagination: {
+      offset: 0,
+      limit: 1,
+      next_offset: null,
+      has_more: false,
+      discovered_urls: 1,
+    },
+    diagnostics: {
+      requested_domain: "skin1004.com",
+      resolved_base_url: "https://www.skin1004.com",
+      discovery_strategy: "shopify_json" as const,
+      failure_category: null,
+      block_provider: null,
+      http_trace: [],
+    },
+  };
+
+  await withMockFetch(
+    {
+      [seedUrl]: {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `
+          <html><body>
+            <h2>HOW TO USE</h2>
+            <div class="prhow-txt">
+              As the final step of skincare, apply an appropriate amount evenly over the skin, then gently pat to aid absorption.
+            </div>
+            <h2>FULL INGREDIENTS</h2>
+            <p>Water, Coco-Caprylate/Caprate, Butylene Glycol, Squalane, Niacinamide, Vinyl Dimethicone, Centella Asiatica Extract, Panthenol, Glycerin, Ceramide NP, Sodium Hyaluronate, Adenosine, Tocopherol</p>
+          </body></html>
+        `,
+      },
+    },
+    async () => {
+      const result = await enrichDirectShopifyPdpResponse({
+        brand: "SKIN1004",
+        baseUrl: "https://www.skin1004.com",
+        seedUrl,
+        response,
+        diagnostics: response.diagnostics,
+        log: (type, msg) => logs.push({ type, msg }),
+        browserRunner: async () => {
+          throw new Error("browser should not run");
+        },
+      });
+
+      const product = result.products[0];
+      assert.match(product?.ingredients_raw || "", /Coco-Caprylate\/Caprate/);
+      assert.match(product?.how_to_use_raw || "", /final step of skincare/i);
+      assert.equal(product?.field_quality_summary?.ingredients_raw.source_quality_status, "high");
+      assert.equal(product?.field_quality_summary?.how_to_use_raw.source_quality_status, "high");
+      assert.ok(logs.some((entry) => /official HTML fields/.test(entry.msg)));
+    },
   );
 });
 

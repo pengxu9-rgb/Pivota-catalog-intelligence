@@ -352,6 +352,138 @@ test("PuppeteerExtractor recovers direct Shopify PDP via browser when .js feed i
   );
 });
 
+test("PuppeteerExtractor recovers direct Shopify PDP from products.json exact handle when .js is missing", async () => {
+  const extractor = new PuppeteerExtractor();
+  const feedProduct = {
+    id: 808,
+    title: "Tinted Butter Balm Bundle",
+    handle: "tinted-butter-balm-bundle",
+    body_html: "<p>A curated set of tinted butter balms.</p><p>How To Use: Swipe onto lips.</p>",
+    variants: [
+      {
+        id: 8001,
+        sku: "KYLIE-TBB-BUNDLE",
+        title: "Default Title",
+        option1: "Default Title",
+        price: "18000",
+        available: true,
+        inventory_quantity: 6,
+      },
+    ],
+    options: [{ name: "Title" }],
+    images: [{ src: "https://cdn.example.com/tinted-butter-balm-bundle.jpg" }],
+  };
+
+  await withMockFetch(
+    {
+      "https://kyliecosmetics.com/products/tinted-butter-balm-bundle.js": {
+        status: 404,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ status: 404, message: "Not Found" }),
+      },
+      "https://kyliecosmetics.com/products.json?limit=250&page=1": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          products: [
+            {
+              ...feedProduct,
+              id: 807,
+              title: "Unrelated Lip Product",
+              handle: "unrelated-lip-product",
+            },
+            feedProduct,
+          ],
+        }),
+      },
+      "https://kyliecosmetics.com/products/tinted-butter-balm-bundle": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Kylie Cosmetics",
+        domain: "https://kyliecosmetics.com/products/tinted-butter-balm-bundle",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 1);
+      assert.equal(result.products[0]?.url, "https://kyliecosmetics.com/products/tinted-butter-balm-bundle");
+      assert.equal(result.products[0]?.variants[0]?.sku, "KYLIE-TBB-BUNDLE");
+      assert.equal(result.products[0]?.variants[0]?.price, "180.00");
+      assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
+      assert.ok(
+        result.logs.some((entry) => /Recovered Shopify direct PDP via exact products\.json handle/.test(entry.msg)),
+        "expected direct PDP to recover through exact products.json handle",
+      );
+    },
+  );
+});
+
+test("PuppeteerExtractor does not recover unrelated products.json rows for missing direct Shopify PDPs", async () => {
+  const extractor = new PuppeteerExtractor();
+
+  await withMockFetch(
+    {
+      "https://kyliecosmetics.com/products/tinted-butter-balm-bundle.js": {
+        status: 404,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ status: 404, message: "Not Found" }),
+      },
+      "https://kyliecosmetics.com/products.json?limit=250&page=1": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          products: [
+            {
+              id: 809,
+              title: "Unrelated Lip Product",
+              handle: "unrelated-lip-product",
+              body_html: "<p>Not the requested bundle.</p>",
+              variants: [
+                {
+                  id: 8091,
+                  sku: "KYLIE-OTHER",
+                  title: "Default Title",
+                  option1: "Default Title",
+                  price: "2200",
+                  available: true,
+                },
+              ],
+              options: [{ name: "Title" }],
+              images: [{ src: "https://cdn.example.com/unrelated.jpg" }],
+            },
+          ],
+        }),
+      },
+      "https://kyliecosmetics.com/products/tinted-butter-balm-bundle": {
+        status: 404,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: "<html><body><h1>404</h1></body></html>",
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Kylie Cosmetics",
+        domain: "https://kyliecosmetics.com/products/tinted-butter-balm-bundle",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 0);
+      assert.equal(result.diagnostics?.discovery_strategy, "shopify_json");
+      assert.equal(result.diagnostics?.failure_category, "no_product_urls");
+      assert.ok(
+        result.logs.some((entry) => /did not contain exact direct PDP handle/.test(entry.msg)),
+        "expected unrelated products.json rows to be rejected",
+      );
+    },
+  );
+});
+
 test("PuppeteerExtractor turns single default Shopify size evidence into a Size option", async () => {
   const extractor = new PuppeteerExtractor();
 

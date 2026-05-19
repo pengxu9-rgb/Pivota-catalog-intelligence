@@ -4315,6 +4315,34 @@ async function recoverShopifyDirectProductViaSearch(params: {
   return null;
 }
 
+async function recoverShopifyDirectProductViaExactFeedHandle(params: {
+  baseUrl: string;
+  directHandle: string;
+  context: FetchContext;
+  diagnostics: NonNullable<ExtractResponse["diagnostics"]>;
+  log: Logger;
+}): Promise<ShopifyProduct | null> {
+  const expectedHandle = cleanText(params.directHandle).toLowerCase();
+  if (!expectedHandle) return null;
+
+  const maxPages = clampIntShared(process.env.SHOPIFY_MAX_PAGES, 20, 1, 200);
+  params.log("info", `Searching Shopify products feed for exact direct PDP handle: ${expectedHandle}`);
+  for (let page = 1; page <= maxPages; page += 1) {
+    const url = `${params.baseUrl}/products.json?limit=250&page=${page}`;
+    const batch = await fetchJsonTracked<ShopifyProductsResponse>(url, params.context, params.diagnostics);
+    const products = batch.data?.products;
+    if (!Array.isArray(products) || products.length === 0) break;
+    const matched = products.find((product) => cleanText(product.handle).toLowerCase() === expectedHandle);
+    if (matched && typeof matched.id === "number") {
+      params.log("success", `Recovered Shopify direct PDP via exact products.json handle: ${expectedHandle}`);
+      return matched;
+    }
+    if (products.length < 250) break;
+  }
+  params.log("warn", `Shopify products feed did not contain exact direct PDP handle: ${expectedHandle}`);
+  return null;
+}
+
 async function tryExtractShopify(params: {
   brand: string;
   domain: string;
@@ -4374,6 +4402,32 @@ async function tryExtractShopify(params: {
       });
     }
     const directHandle = directHandles[0]!;
+    const feedRecoveredProduct = await recoverShopifyDirectProductViaExactFeedHandle({
+      baseUrl: params.baseUrl,
+      directHandle,
+      context: shopifyContext,
+      diagnostics: params.diagnostics,
+      log,
+    });
+    if (feedRecoveredProduct) {
+      setDiscoveryStrategy(params.diagnostics!, "shopify_json");
+      const currencyHint = await fetchShopifyCurrencyHint(currencyHintUrls, params.diagnostics!, shopifyContext);
+      const response = buildShopifyResponse({
+        ...params,
+        currencyHint,
+        products: [feedRecoveredProduct],
+        platformLabel: "Shopify (Direct PDP Feed Repair)",
+      });
+      return enrichDirectShopifyPdpResponse({
+        brand: params.brand,
+        baseUrl: params.baseUrl,
+        seedUrl: `${params.baseUrl}/products/${feedRecoveredProduct.handle}`,
+        response,
+        diagnostics: params.diagnostics,
+        log,
+        context: shopifyContext,
+      });
+    }
     const directSeedStatus = await classifyMissingShopifyDirectSeed({
       seedUrl: params.seedUrl,
       baseUrl: params.baseUrl,

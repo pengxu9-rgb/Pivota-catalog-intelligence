@@ -103,7 +103,9 @@ export function createApp() {
   app.use("/api/parser", parserRouter);
   app.use("/api/products", productsRouter);
 
-  app.get("/health", (_req, res) => res.json({ ok: true }));
+  const healthHandler = (_req: express.Request, res: express.Response) => res.json({ ok: true });
+  app.get("/health", healthHandler);
+  app.get("/healthz", healthHandler);
   app.use("/api", extractRouter);
 
   return app;

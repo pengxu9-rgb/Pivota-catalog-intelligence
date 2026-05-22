@@ -8328,6 +8328,33 @@ function scoreScrapedProductCompleteness(product: ExtractedProduct | null | unde
   return score;
 }
 
+export function isUsablePrefetchedProductAfterBotChallenge(product: ExtractedProduct | null | undefined, sourceUrl: string, baseUrl: string): boolean {
+  if (!product) return false;
+  const title = cleanText(product.title);
+  if (!title) return false;
+
+  const productUrl = cleanText(product.url || sourceUrl);
+  if (!isLikelyProductUrlShared(productUrl, baseUrl)) return false;
+
+  const imageUrls = dedupeStringList([
+    product.image_url,
+    ...(Array.isArray(product.image_urls) ? product.image_urls : []),
+    ...(Array.isArray(product.variants) ? product.variants.flatMap((variant) => [variant.image_url, ...(variant.image_urls || [])]) : []),
+  ]);
+  if (imageUrls.length === 0) return false;
+
+  const hasPositiveOffer = (product.variants || []).some((variant) => {
+    const price = parseComparablePrice(variant.price);
+    return price != null && price > 0;
+  });
+  if (!hasPositiveOffer) return false;
+
+  const hasProductContext =
+    cleanText(product.description_raw).length >= PDP_COMPLETENESS_MIN_OVERVIEW_CHARS ||
+    (Array.isArray(product.details_sections) && product.details_sections.some((section) => cleanText(section.body).length >= 20));
+  return hasProductContext;
+}
+
 async function scrapeProductPage(params: {
   browser: Browser;
   url: string;
@@ -8545,6 +8572,13 @@ async function scrapeProductPage(params: {
     return liveProduct;
   } catch (err) {
     if (err instanceof BotChallengeError) {
+      if (isUsablePrefetchedProductAfterBotChallenge(prefetchedProductCandidate, params.url, params.baseUrl)) {
+        params.log(
+          "warn",
+          `Browser PDP challenge detected after usable prefetched product extraction; preserving prefetched product: ${params.url}`,
+        );
+        return prefetchedProductCandidate;
+      }
       throw err;
     }
     const message = err instanceof Error ? err.message : String(err);

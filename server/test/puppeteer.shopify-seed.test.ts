@@ -17,6 +17,7 @@ import {
   getMissingPdpFieldReasons,
   isNonProductRedirectForRequestedPdp,
   isShopifyDirectPdpFallbackUsable,
+  isUsablePrefetchedProductAfterBotChallenge,
   mergeShopifyDirectPdpFallback,
   normalizeStructuredProseDetailSections,
   normalizeImageVisionFields,
@@ -2399,6 +2400,72 @@ test("productHasMissingPdpFields uses product type before requiring browser enri
       }),
     ).map((component) => component.name),
     ["SPF Moisturizer", "Foundation"],
+  );
+});
+
+test("isUsablePrefetchedProductAfterBotChallenge requires serving-grade identity, image, price, and context", () => {
+  const baseProduct = {
+    title: "Matte Revolution Lipstick",
+    url: "https://www.charlottetilbury.com/us/product/matte-revolution-walk-of-no-shame",
+    image_url: "https://images.example.com/matte-revolution.jpg",
+    image_urls: ["https://images.example.com/matte-revolution.jpg"],
+    variant_skus: ["CT-MR-WONS"],
+    variants: [
+      {
+        id: "ct-mr-wons",
+        sku: "CT-MR-WONS",
+        url: "https://www.charlottetilbury.com/us/product/matte-revolution-walk-of-no-shame",
+        option_name: "Shade",
+        option_value: "Walk of No Shame",
+        price: "35.00",
+        currency: "USD" as const,
+        stock: "In Stock" as const,
+        description: "A berry rose lipstick with a matte finish.",
+        image_url: "https://images.example.com/matte-revolution.jpg",
+        image_urls: ["https://images.example.com/matte-revolution.jpg"],
+        ad_copy: "",
+      },
+    ],
+    description_raw:
+      "A berry rose lipstick with a matte finish, rich color payoff, and a comfortable long-wear formula.",
+  };
+
+  assert.equal(
+    isUsablePrefetchedProductAfterBotChallenge(
+      baseProduct,
+      baseProduct.url,
+      "https://www.charlottetilbury.com",
+    ),
+    true,
+  );
+  assert.equal(
+    isUsablePrefetchedProductAfterBotChallenge(
+      {
+        ...baseProduct,
+        image_url: "",
+        image_urls: [],
+        variants: [{ ...baseProduct.variants[0]!, image_url: "", image_urls: [] }],
+      },
+      baseProduct.url,
+      "https://www.charlottetilbury.com",
+    ),
+    false,
+  );
+  assert.equal(
+    isUsablePrefetchedProductAfterBotChallenge(
+      { ...baseProduct, variants: [{ ...baseProduct.variants[0]!, price: "0.00" }] },
+      baseProduct.url,
+      "https://www.charlottetilbury.com",
+    ),
+    false,
+  );
+  assert.equal(
+    isUsablePrefetchedProductAfterBotChallenge(
+      { ...baseProduct, description_raw: "", details_sections: [] },
+      baseProduct.url,
+      "https://www.charlottetilbury.com",
+    ),
+    false,
   );
 });
 

@@ -8328,6 +8328,28 @@ function scoreScrapedProductCompleteness(product: ExtractedProduct | null | unde
   return score;
 }
 
+function hasCleanPositivePrefetchedOfferPrice(raw: unknown): boolean {
+  const value = cleanText(String(raw || ""));
+  if (!value) return false;
+  const matches = value.match(/(?:[$€£¥₩]\s*)?\d+(?:[.,]\d{1,2})?/g) || [];
+  if (matches.length !== 1) return false;
+  const parsed = Number.parseFloat(matches[0]!.replace(/[^0-9.]+/g, ""));
+  return Number.isFinite(parsed) && parsed > 0;
+}
+
+function isCleanPrefetchedImageUrl(rawUrl: string, baseUrl: string): boolean {
+  const value = cleanText(rawUrl);
+  if (!value) return false;
+  if (isLikelyProductUrlShared(value, baseUrl)) return false;
+  try {
+    const parsed = new URL(value, baseUrl);
+    if (!/^https?:$/i.test(parsed.protocol)) return false;
+    return /\.(?:png|jpe?g|webp|gif|avif)(?:$|[?#])/i.test(parsed.pathname + parsed.search);
+  } catch {
+    return false;
+  }
+}
+
 export function isUsablePrefetchedProductAfterBotChallenge(product: ExtractedProduct | null | undefined, sourceUrl: string, baseUrl: string): boolean {
   if (!product) return false;
   const title = cleanText(product.title);
@@ -8342,11 +8364,10 @@ export function isUsablePrefetchedProductAfterBotChallenge(product: ExtractedPro
     ...(Array.isArray(product.variants) ? product.variants.flatMap((variant) => [variant.image_url, ...(variant.image_urls || [])]) : []),
   ]);
   if (imageUrls.length === 0) return false;
+  if (imageUrls.length > 8) return false;
+  if (!imageUrls.every((imageUrl) => isCleanPrefetchedImageUrl(imageUrl, baseUrl))) return false;
 
-  const hasPositiveOffer = (product.variants || []).some((variant) => {
-    const price = parseComparablePrice(variant.price);
-    return price != null && price > 0;
-  });
+  const hasPositiveOffer = (product.variants || []).some((variant) => hasCleanPositivePrefetchedOfferPrice(variant.price));
   if (!hasPositiveOffer) return false;
 
   const hasProductContext =

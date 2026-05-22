@@ -2461,6 +2461,28 @@ test("isUsablePrefetchedProductAfterBotChallenge requires serving-grade identity
   );
   assert.equal(
     isUsablePrefetchedProductAfterBotChallenge(
+      { ...baseProduct, variants: [{ ...baseProduct.variants[0]!, price: "$37.00$29.60 ($105.71/10g)" }] },
+      baseProduct.url,
+      "https://www.charlottetilbury.com",
+    ),
+    false,
+  );
+  assert.equal(
+    isUsablePrefetchedProductAfterBotChallenge(
+      {
+        ...baseProduct,
+        image_urls: [
+          "https://images.example.com/matte-revolution.jpg",
+          "https://www.charlottetilbury.com/us/product/not-an-image",
+        ],
+      },
+      baseProduct.url,
+      "https://www.charlottetilbury.com",
+    ),
+    false,
+  );
+  assert.equal(
+    isUsablePrefetchedProductAfterBotChallenge(
       { ...baseProduct, description_raw: "", details_sections: [] },
       baseProduct.url,
       "https://www.charlottetilbury.com",

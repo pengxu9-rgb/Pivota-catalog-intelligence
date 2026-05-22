@@ -729,6 +729,46 @@ test("buildProductFromPageSignals reads single default size evidence from produc
   assert.equal(product?.size_detail_label, "0.70 fl oz / 20 mL");
 });
 
+test("buildProductFromPageSignals filters storefront chrome from generic PDP image candidates", () => {
+  const product = buildProductFromPageSignals({
+    extracted: {
+      title: "The Eye, Lash & Brow Collection",
+      canonical: "https://theordinary.com/en-us/the-eye-lash-and-brow-collection-300129.html",
+      metaDescription: "",
+      priceTexts: ["$39.90"],
+      imageCandidates: [
+        "https://theordinary.com/dw/image/v2/BFKJ_PRD/on/demandware.static/-/Sites-deciem-master/default/dw551be879/Images/products/The%20Ordinary/ord-eye-lash-brow-collection.png?sw=900&sh=900&sm=fit",
+        "https://theordinary.com/dw/image/v2/BFKJ_PRD/on/demandware.static/-/Sites-deciem-master/default/dw9fc21c82/Images/products/The%20Ordinary/swatch/ORD-Swatch-Mlt-Pptd-Eye+Mlt-Pptd-Lash.png?sw=900&sh=900&sm=fit",
+        "https://theordinary.com/dw/image/v2/BFKJ_PRD/on/demandware.static/-/Sites-deciem-master/default/dw2a0504db/Images/products/The%20Ordinary/lifestyle/eye-lash-brow.jpg?sw=900&sh=900&sm=fit",
+        "https://theordinary.com/en-us/iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAAXNSR0IB2cksfwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAANQTFRF+Pj4c64OKQAAAApJREFUeJxjYAAAAAIAAUivpHEAAAAASUVORK5CYII=",
+        "https://theordinary.com/on/demandware.static/Sites-deciem-us-Site/-/default/dw58d34d3d/images/brands-logo/theordinary_black.svg",
+        "https://theordinary.com/on/demandware.static/Sites-deciem-us-Site/-/default/dwa3bdc247/images/theordinary/navbar-email-signup-popup-img-TO.png",
+      ],
+      scripts: [],
+      embeddedProductScripts: [],
+      domVariants: [],
+      productVolumeText: "",
+      productDetailsText: "A collection of peptide formulas for the eye area, lashes, and brows.",
+      detailsSections: [],
+      faqItems: [],
+      faqHtmlSnippets: [],
+    },
+    pageLooksLikeProduct: true,
+    sourceUrl: "https://theordinary.com/en-us/the-eye-lash-and-brow-collection-300129.html",
+    baseUrl: "https://theordinary.com",
+    verbose: false,
+    log: () => {},
+  });
+
+  assert.ok(product);
+  assert.deepEqual(product?.image_urls, [
+    "https://theordinary.com/dw/image/v2/BFKJ_PRD/on/demandware.static/-/Sites-deciem-master/default/dw551be879/Images/products/The%20Ordinary/ord-eye-lash-brow-collection.png?sw=900&sh=900&sm=fit",
+    "https://theordinary.com/dw/image/v2/BFKJ_PRD/on/demandware.static/-/Sites-deciem-master/default/dw9fc21c82/Images/products/The%20Ordinary/swatch/ORD-Swatch-Mlt-Pptd-Eye+Mlt-Pptd-Lash.png?sw=900&sh=900&sm=fit",
+    "https://theordinary.com/dw/image/v2/BFKJ_PRD/on/demandware.static/-/Sites-deciem-master/default/dw2a0504db/Images/products/The%20Ordinary/lifestyle/eye-lash-brow.jpg?sw=900&sh=900&sm=fit",
+  ]);
+  assert.deepEqual(product?.variants[0]?.image_urls, product?.image_urls);
+});
+
 test("buildProductFromPageSignals reads single default size evidence from Net Wt detail text", () => {
   const product = buildProductFromPageSignals({
     extracted: {

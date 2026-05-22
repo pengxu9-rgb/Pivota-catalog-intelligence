@@ -7763,6 +7763,39 @@ function parseComparablePrice(raw: unknown) {
   return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
 }
 
+const PRODUCT_IMAGE_NOISE_RE =
+  /(placeholder|favicon|apple-touch-icon|brands?-logo|logo(?:[._/-]|$)|sprite(?:[._/-]|$)|tracking|teads\.tv|menubanner|library-sites|navbar|email-signup|popup)/i;
+
+function isCleanProductImageAssetUrl(rawUrl: string, baseUrl: string): boolean {
+  const value = cleanText(rawUrl);
+  if (!value) return false;
+  if (isLikelyProductUrlShared(value, baseUrl)) return false;
+  try {
+    const parsed = new URL(value, baseUrl);
+    if (!/^https?:$/i.test(parsed.protocol)) return false;
+    const pathAndSearch = parsed.pathname + parsed.search;
+    if (PRODUCT_IMAGE_NOISE_RE.test(pathAndSearch)) return false;
+    return /\.(?:png|jpe?g|webp|gif|avif)(?:$|[?#])/i.test(pathAndSearch);
+  } catch {
+    return false;
+  }
+}
+
+function filterCleanProductImageAssetUrls(baseUrl: string, urls: Array<string | undefined>, limit = 12) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const url of urls) {
+    const value = cleanText(url);
+    if (!value || !isCleanProductImageAssetUrl(value, baseUrl)) continue;
+    const absolute = new URL(value, baseUrl).toString();
+    if (seen.has(absolute)) continue;
+    seen.add(absolute);
+    out.push(absolute);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 export function buildProductFromPageSignals(params: {
   extracted: ScrapedPageSignals;
   pageLooksLikeProduct: boolean;
@@ -7846,7 +7879,7 @@ export function buildProductFromPageSignals(params: {
 
   const imageRaw = primaryProductObj?.image ?? productGroupObj?.image;
   const embeddedShopifyPayloadFields = extractShopifyEmbeddedProductPayloadPdpFields(extracted.embeddedProductScripts);
-  const productImageUrls = dedupeStringList([
+  const productImageUrls = filterCleanProductImageAssetUrls(params.baseUrl, [
     ...resolveStructuredImageUrls(params.baseUrl, [
       imageRaw,
       productGroupObj?.image,
@@ -8068,7 +8101,7 @@ export function buildProductFromPageSignals(params: {
           const stock = stockFromAvailability(variantOffer?.availability);
           const id = stableId(`${productUrl}|${sku}|${price}`);
           const variantImageRaw = variantProduct.image;
-          const variantSpecificImageUrls = dedupeStringList([
+          const variantSpecificImageUrls = filterCleanProductImageAssetUrls(params.baseUrl, [
             ...resolveStructuredImageUrls(params.baseUrl, [variantImageRaw, variantOffer?.image]),
             ...resolveStructuredImageUrls(params.baseUrl, [domMeta?.image_urls, domMeta?.image_url]),
           ]);
@@ -8079,7 +8112,7 @@ export function buildProductFromPageSignals(params: {
           const skuScopedVariantImages = dedupeStringList(
             variantImageTokens.flatMap((token) => skuScopedProductImages.get(token) || []),
           );
-          const variantImageUrls = dedupeStringList(
+          const variantImageUrls = filterCleanProductImageAssetUrls(params.baseUrl,
             variantSpecificImageUrls.length > 1
               ? variantSpecificImageUrls
               : variantSpecificImageUrls.length > 0 && skuScopedVariantImages.length > 0
@@ -8141,7 +8174,7 @@ export function buildProductFromPageSignals(params: {
             (typeof offer.name === "string" ? offer.name.trim() : "") ||
             (typeof offer.description === "string" ? offer.description.trim() : "");
           const offerImageRaw = offer.image;
-          const offerSpecificImageUrls = dedupeStringList([
+          const offerSpecificImageUrls = filterCleanProductImageAssetUrls(params.baseUrl, [
             ...resolveStructuredImageUrls(params.baseUrl, [offerImageRaw, domMeta?.image_urls, domMeta?.image_url]),
           ]);
           const offerImageTokens = dedupeStringList(
@@ -8151,11 +8184,11 @@ export function buildProductFromPageSignals(params: {
           const skuScopedOfferImages = dedupeStringList(
             offerImageTokens.flatMap((token) => skuScopedProductImages.get(token) || []),
           );
-          const offerFallbackImageUrls = dedupeStringList([
+          const offerFallbackImageUrls = filterCleanProductImageAssetUrls(params.baseUrl, [
             ...resolveStructuredImageUrls(params.baseUrl, [imageRaw, extracted.imageCandidates]),
             ...productImageUrls,
           ]);
-          const offerImageUrls = dedupeStringList(
+          const offerImageUrls = filterCleanProductImageAssetUrls(params.baseUrl,
             offerSpecificImageUrls.length > 1
               ? offerSpecificImageUrls
               : offerSpecificImageUrls.length > 0 && skuScopedOfferImages.length > 0
@@ -8271,8 +8304,8 @@ export function buildProductFromPageSignals(params: {
   const primaryVariantImageUrls = Array.isArray(variants[0]?.image_urls) ? variants[0].image_urls.filter(Boolean) : [];
   const finalProductImageUrls =
     primaryVariantImageUrls.length > 1
-      ? dedupeStringList(primaryVariantImageUrls)
-      : dedupeStringList([
+      ? filterCleanProductImageAssetUrls(params.baseUrl, primaryVariantImageUrls)
+      : filterCleanProductImageAssetUrls(params.baseUrl, [
           ...productImageUrls,
           ...variants.flatMap((variant) => variant.image_urls),
           ...variants.map((variant) => variant.image_url),
@@ -8337,19 +8370,6 @@ function hasCleanPositivePrefetchedOfferPrice(raw: unknown): boolean {
   return Number.isFinite(parsed) && parsed > 0;
 }
 
-function isCleanPrefetchedImageUrl(rawUrl: string, baseUrl: string): boolean {
-  const value = cleanText(rawUrl);
-  if (!value) return false;
-  if (isLikelyProductUrlShared(value, baseUrl)) return false;
-  try {
-    const parsed = new URL(value, baseUrl);
-    if (!/^https?:$/i.test(parsed.protocol)) return false;
-    return /\.(?:png|jpe?g|webp|gif|avif)(?:$|[?#])/i.test(parsed.pathname + parsed.search);
-  } catch {
-    return false;
-  }
-}
-
 export function isUsablePrefetchedProductAfterBotChallenge(product: ExtractedProduct | null | undefined, sourceUrl: string, baseUrl: string): boolean {
   if (!product) return false;
   const title = cleanText(product.title);
@@ -8365,7 +8385,7 @@ export function isUsablePrefetchedProductAfterBotChallenge(product: ExtractedPro
   ]);
   if (imageUrls.length === 0) return false;
   if (imageUrls.length > 8) return false;
-  if (!imageUrls.every((imageUrl) => isCleanPrefetchedImageUrl(imageUrl, baseUrl))) return false;
+  if (!imageUrls.every((imageUrl) => isCleanProductImageAssetUrl(imageUrl, baseUrl))) return false;
 
   const hasPositiveOffer = (product.variants || []).some((variant) => hasCleanPositivePrefetchedOfferPrice(variant.price));
   if (!hasPositiveOffer) return false;

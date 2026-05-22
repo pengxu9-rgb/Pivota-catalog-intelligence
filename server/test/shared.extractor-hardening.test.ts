@@ -29,6 +29,7 @@ import {
   fetchOkendoFaqItemsFromMetafieldJson,
   fetchOkendoReviewSummaryFromMetafieldJson,
   extractInlineFaqItemsFromHtml,
+  buildProductFromPageSignals,
   extractShopifyEmbeddedProductPayloadPdpFields,
   extractShopifyBodyHtmlPdpFields,
   extractVariantScopedIngredientListText,
@@ -83,6 +84,151 @@ async function withMockFetch(routes: Record<string, MockRoute>, fn: () => Promis
     globalThis.fetch = originalFetch;
   }
 }
+
+function makeScrapedPageSignals(overrides: Record<string, unknown> = {}) {
+  return {
+    title: "",
+    canonical: "",
+    metaDescription: "",
+    priceTexts: [],
+    imageCandidates: [],
+    scripts: [],
+    embeddedProductScripts: [],
+    domVariants: [],
+    productDetailsText: "",
+    detailsSections: [],
+    faqItems: [],
+    faqHtmlSnippets: [],
+    ...overrides,
+  } as any;
+}
+
+test("buildProductFromPageSignals extracts SFCC product-set components and aggregate price from JSON-LD ItemList", () => {
+  const product = buildProductFromPageSignals({
+    sourceUrl: "https://theordinary.com/en-us/the-smooth-skin-collection-200123.html",
+    baseUrl: "https://theordinary.com",
+    pageLooksLikeProduct: true,
+    verbose: false,
+    log: () => undefined,
+    extracted: makeScrapedPageSignals({
+      title: "The Smooth Skin Collection",
+      canonical: "https://theordinary.com/en-us/the-smooth-skin-collection-200123.html",
+      metaDescription: "A three-step skincare collection.",
+      priceTexts: ["25", "35", "25.50"],
+      scripts: [
+        JSON.stringify({
+          "@context": "https://schema.org",
+          "@type": "Product",
+          name: "The Smooth Skin Collection",
+          sku: "200123",
+          mpn: "200123",
+          image: [
+            "https://theordinary.com/on/demandware.static/-/Sites-theordinary-master-catalog/default/images/200123_1.jpg",
+            "https://theordinary.com/on/demandware.static/-/Sites-theordinary-master-catalog/default/images/200123_2.jpg",
+          ],
+          mainEntity: {
+            "@type": "ItemList",
+            itemListElement: [
+              {
+                "@type": "ListItem",
+                item: {
+                  "@type": "Product",
+                  name: "Squalane Cleanser",
+                  sku: "100398",
+                  offers: {
+                    "@type": "Offer",
+                    price: "10.50",
+                    priceCurrency: "USD",
+                    availability: "http://schema.org/InStock",
+                  },
+                },
+              },
+              {
+                "@type": "ListItem",
+                item: {
+                  "@type": "Product",
+                  name: "Glycolic Acid 7% Exfoliating Toner",
+                  sku: "100418",
+                  offers: {
+                    "@type": "Offer",
+                    price: "9.00",
+                    priceCurrency: "USD",
+                    availability: "http://schema.org/InStock",
+                  },
+                },
+              },
+              {
+                "@type": "ListItem",
+                item: {
+                  "@type": "Product",
+                  name: "Niacinamide 10% + Zinc 1%",
+                  sku: "100436",
+                  offers: {
+                    "@type": "Offer",
+                    price: "6.00",
+                    priceCurrency: "USD",
+                    availability: "http://schema.org/InStock",
+                  },
+                },
+              },
+            ],
+          },
+        }),
+      ],
+    }),
+  });
+
+  assert.ok(product);
+  assert.equal(product.title, "The Smooth Skin Collection");
+  assert.equal(product.product_kind, "bundle");
+  assert.equal(product.variants[0]?.price, "25.50");
+  assert.equal(product.variants[0]?.stock, "In Stock");
+  assert.deepEqual(
+    product.bundle_components?.map((component) => component.name),
+    ["Squalane Cleanser", "Glycolic Acid 7% Exfoliating Toner", "Niacinamide 10% + Zinc 1%"],
+  );
+  assert.ok(product.details_sections?.some((section) => section.heading === "Included Products"));
+  assert.equal(product.field_capture_status?.active_ingredients_raw, "missing");
+});
+
+test("buildProductFromPageSignals keeps top-level SFCC set offer availability when present", () => {
+  const product = buildProductFromPageSignals({
+    sourceUrl: "https://theordinary.com/en-us/the-mini-icons-skincare-set-100679.html",
+    baseUrl: "https://theordinary.com",
+    pageLooksLikeProduct: true,
+    verbose: false,
+    log: () => undefined,
+    extracted: makeScrapedPageSignals({
+      title: "The Mini Icons Set",
+      canonical: "https://theordinary.com/en-us/the-mini-icons-skincare-set-100679.html",
+      metaDescription: "A skincare set with mini essentials.",
+      scripts: [
+        JSON.stringify({
+          "@context": "https://schema.org",
+          "@type": "Product",
+          name: "The Mini Icons Set",
+          sku: "769915235685",
+          mpn: "769915235685",
+          image: [
+            "https://theordinary.com/on/demandware.static/-/Sites-theordinary-master-catalog/default/images/100679_1.jpg",
+          ],
+          offers: {
+            "@type": "Offer",
+            price: "19.90",
+            priceCurrency: "USD",
+            availability: "http://schema.org/OutOfStock",
+          },
+        }),
+      ],
+    }),
+  });
+
+  assert.ok(product);
+  assert.equal(product.product_kind, "bundle");
+  assert.equal(product.variants[0]?.price, "19.90");
+  assert.equal(product.variants[0]?.stock, "Out of Stock");
+  assert.equal(product.image_urls.length, 1);
+});
 
 test("buildProductPdpFields preserves explicit PDP module fields and sources", () => {
   const fields = buildProductPdpFields({

@@ -3021,6 +3021,7 @@ function inferPdpCompletenessRequirements(product: ExtractedProduct) {
 }
 
 export function classifyExtractedProductKind(product: ExtractedProduct): ExtractedProductKind {
+  if (Array.isArray(product.bundle_components) && product.bundle_components.length > 0) return "bundle";
   const requirements = inferPdpCompletenessRequirements(product);
   if (requirements.bundle) return "bundle";
   if (requirements.accessory) return "accessory";
@@ -3046,6 +3047,7 @@ function normalizeBundleComponentCandidate(raw: string): ExtractedBundleComponen
       .replace(/[.。]+$/g, ""),
   );
   if (!name || name.length < 3 || name.length > 100) return null;
+  if (/^(?:face|body|skin|hair|eye|eyes|lash|lashes|brow|brows|lip|lips)$/i.test(name)) return null;
   if (/^(?:full size|mini|deluxe|travel size)$/i.test(name)) return null;
 
   return {
@@ -3089,7 +3091,7 @@ function parseBundleComponentCandidatesFromTitle(title: string): ExtractedBundle
   return dedupeBy(candidates, (item) => item.name.toLowerCase()).slice(0, 12);
 }
 
-function parseBundleComponentCandidatesFromText(text: string): ExtractedBundleComponent[] {
+function parseBundleComponentCandidatesFromText(text: string, options: { requireIncludeVerb?: boolean } = {}): ExtractedBundleComponent[] {
   const normalized = cleanText(
     text
       .replace(/<br\s*\/?>/gi, "\n")
@@ -3099,6 +3101,7 @@ function parseBundleComponentCandidatesFromText(text: string): ExtractedBundleCo
   if (!normalized) return [];
 
   const includeMatch = normalized.match(BUNDLE_INCLUDE_TEXT_RE);
+  if (options.requireIncludeVerb && !includeMatch) return [];
   const componentText = includeMatch
     ? normalized.slice(includeMatch.index! + includeMatch[0].length).replace(/^[:\s-]+/, "")
     : normalized;
@@ -3114,6 +3117,19 @@ function parseBundleComponentCandidatesFromText(text: string): ExtractedBundleCo
 }
 
 export function extractBundleComponents(product: ExtractedProduct): ExtractedBundleComponent[] {
+  const explicitComponents = Array.isArray(product.bundle_components)
+    ? product.bundle_components
+        .map((component) => ({
+          ...component,
+          name: cleanText(component.name),
+          raw_text: cleanText(component.raw_text) || cleanText(component.name),
+        }))
+        .filter((component) => component.name)
+    : [];
+  if (explicitComponents.length > 0) {
+    return dedupeBy(explicitComponents, (item) => item.name.toLowerCase()).slice(0, 12);
+  }
+
   if (classifyExtractedProductKind(product) !== "bundle") return [];
 
   const sectionCandidates = (Array.isArray(product.details_sections) ? product.details_sections : [])
@@ -3131,7 +3147,7 @@ export function extractBundleComponents(product: ExtractedProduct): ExtractedBun
   const titleCandidates = parseBundleComponentCandidatesFromTitle(product.title);
   if (titleCandidates.length > 0) return titleCandidates;
 
-  const descriptionCandidates = parseBundleComponentCandidatesFromText(product.description_raw || "");
+  const descriptionCandidates = parseBundleComponentCandidatesFromText(product.description_raw || "", { requireIncludeVerb: true });
   if (descriptionCandidates.length > 0) {
     return descriptionCandidates.map((component) => ({
       ...component,
@@ -7763,6 +7779,98 @@ function parseComparablePrice(raw: unknown) {
   return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null;
 }
 
+type JsonLdProductSetEvidence = {
+  components: ExtractedBundleComponent[];
+  aggregatePrice: string | null;
+  stock: StockStatus | null;
+};
+
+function readJsonLdText(value: unknown): string {
+  return typeof value === "string" || typeof value === "number" ? cleanText(String(value)) : "";
+}
+
+function readJsonLdOfferPrice(offer: Record<string, unknown> | undefined): unknown {
+  if (!offer) return undefined;
+  return (
+    offer.price ??
+    (offer.priceSpecification as any)?.price ??
+    (offer.priceSpecification as any)?.priceSpecification?.price
+  );
+}
+
+function normalizeJsonLdItemListProductObjects(value: unknown): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  for (const candidate of normalizeJsonLdObjects(value)) {
+    if (isType(candidate, "Product")) {
+      out.push(candidate);
+      continue;
+    }
+
+    if (isType(candidate, "ListItem")) {
+      const itemProducts = normalizeJsonLdObjects(candidate.item).filter((item) => isType(item, "Product"));
+      out.push(...itemProducts);
+      continue;
+    }
+
+    if (isType(candidate, "ItemList")) {
+      out.push(...normalizeJsonLdItemListProductObjects(candidate.itemListElement));
+    }
+  }
+  return out;
+}
+
+function extractJsonLdProductSetEvidence(primaryProductObj: Record<string, unknown> | null): JsonLdProductSetEvidence {
+  if (!primaryProductObj) return { components: [], aggregatePrice: null, stock: null };
+
+  const componentProducts = normalizeJsonLdItemListProductObjects(primaryProductObj.mainEntity);
+  const components: ExtractedBundleComponent[] = [];
+  for (const component of componentProducts) {
+    const name = readJsonLdText(component.name);
+    if (!name) continue;
+    components.push({
+      name,
+      source_kind: "jsonld_main_entity_item_list",
+      raw_text: name,
+    });
+  }
+
+  const componentOffers = componentProducts
+    .map((component) => normalizeJsonLdOffers(component.offers)[0])
+    .filter((offer): offer is Record<string, unknown> => Boolean(offer));
+  const componentPrices = componentOffers
+    .map((offer) => parseComparablePrice(readJsonLdOfferPrice(offer)))
+    .filter((price): price is number => typeof price === "number" && Number.isFinite(price));
+  const aggregatePrice =
+    components.length > 0 && componentPrices.length === components.length
+      ? componentPrices.reduce((sum, price) => sum + price, 0).toFixed(2)
+      : null;
+
+  const stockStatuses = componentOffers.map((offer) => stockFromAvailability(offer.availability));
+  const stock =
+    stockStatuses.length === 0
+      ? null
+      : stockStatuses.some((status) => status === "Out of Stock")
+        ? "Out of Stock"
+        : stockStatuses.some((status) => status === "Low Stock")
+          ? "Low Stock"
+          : "In Stock";
+
+  return {
+    components: dedupeBy(components, (component) => component.name.toLowerCase()).slice(0, 12),
+    aggregatePrice,
+    stock,
+  };
+}
+
+function buildJsonLdComponentDetailSection(components: ExtractedBundleComponent[]): ExtractedProductDetailSection | null {
+  if (components.length === 0) return null;
+  return {
+    heading: "Included Products",
+    body: components.map((component) => component.name).join("\n"),
+    source_kind: "jsonld_main_entity_item_list",
+  };
+}
+
 export function buildProductFromPageSignals(params: {
   extracted: ScrapedPageSignals;
   pageLooksLikeProduct: boolean;
@@ -7856,6 +7964,7 @@ export function buildProductFromPageSignals(params: {
     ...variantProducts.flatMap((variantProduct) => resolveStructuredImageUrls(params.baseUrl, variantProduct.image)),
   ]);
   const imageUrl = productImageUrls[0] || "";
+  const productSetEvidence = extractJsonLdProductSetEvidence(primaryProductObj);
 
   const officialText = choosePreferredProductOverview({
     structured:
@@ -7906,11 +8015,13 @@ export function buildProductFromPageSignals(params: {
     }),
   );
   const combinedFaqItems = filterUsefulFaqItems([...(extracted.faqItems || []), ...inlineFaqItems]);
+  const jsonLdComponentSection = buildJsonLdComponentDetailSection(productSetEvidence.components);
 
   const mergedDetailsSections = dedupeDetailSections([
     ...cleanedExtractedDetailsSections,
     ...embeddedShopifyPayloadFields.detailsSections,
     ...officialTextPdpFields.detailsSections,
+    ...(jsonLdComponentSection ? [jsonLdComponentSection] : []),
   ]);
   const howToUseText =
     stripInlineFaqText(typeof extracted.howToUseText === "string" ? extracted.howToUseText.trim() : "") ||
@@ -7948,9 +8059,12 @@ export function buildProductFromPageSignals(params: {
     undefined;
   const derivedPdpBodies = deriveProductPdpModuleBodies({
     ingredientsMarkdownText,
-    activeIngredientsText,
+    activeIngredientsText: productSetEvidence.components.length > 0 ? undefined : activeIngredientsText,
     howToUseText,
-    detailsSections: mergedDetailsSections,
+    detailsSections:
+      productSetEvidence.components.length > 0
+        ? mergedDetailsSections.filter((section) => !/\b(?:active\s+ingredients?|ingredients?|inci)\b/i.test(section.heading))
+        : mergedDetailsSections,
   });
   const productPdpFields = buildProductPdpFields({
     descriptionRaw: officialText || extracted.productDetailsText || extracted.metaDescription,
@@ -8224,9 +8338,9 @@ export function buildProductFromPageSignals(params: {
             url: productUrl,
             option_name: productSizeOptionValue ? "Size" : "Offer",
             option_value: productSizeOptionValue || "Default",
-            price: normalizePrice(extracted.priceTexts[0]),
+            price: normalizePrice(productSetEvidence.aggregatePrice || extracted.priceTexts[0]),
             currency: "USD",
-            stock: "In Stock",
+            stock: productSetEvidence.stock || "In Stock",
             description: getMergedDescription({
               title: productTitle,
               overview: officialText,
@@ -8239,7 +8353,7 @@ export function buildProductFromPageSignals(params: {
             ad_copy: generateMockAdCopy(
               productTitle,
               productSizeOptionValue || "Default",
-              normalizePrice(extracted.priceTexts[0]),
+              normalizePrice(productSetEvidence.aggregatePrice || extracted.priceTexts[0]),
             ),
           },
         ],
@@ -8307,6 +8421,7 @@ export function buildProductFromPageSignals(params: {
     ...(extracted.renderedReviewSummary ? { review_summary: extracted.renderedReviewSummary } : {}),
     variant_skus: dedupeStringList(variants.map((variant) => variant.sku)),
     variants,
+    ...(productSetEvidence.components.length > 0 ? { bundle_components: productSetEvidence.components } : {}),
     ...productPdpFields,
   });
 }

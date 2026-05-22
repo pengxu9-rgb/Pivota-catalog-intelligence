@@ -7781,6 +7781,22 @@ function isCleanProductImageAssetUrl(rawUrl: string, baseUrl: string): boolean {
   }
 }
 
+function productImageDedupeKey(rawUrl: string, baseUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl, baseUrl);
+    for (const param of ["sw", "sh", "sm", "w", "h", "width", "height"]) {
+      parsed.searchParams.delete(param);
+    }
+    const search = Array.from(parsed.searchParams.entries())
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => `${key}=${value}`)
+      .join("&");
+    return `${parsed.origin}${parsed.pathname}${search ? `?${search}` : ""}`;
+  } catch {
+    return rawUrl;
+  }
+}
+
 function filterCleanProductImageAssetUrls(baseUrl: string, urls: Array<string | undefined>, limit = 12) {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -7788,8 +7804,9 @@ function filterCleanProductImageAssetUrls(baseUrl: string, urls: Array<string | 
     const value = cleanText(url);
     if (!value || !isCleanProductImageAssetUrl(value, baseUrl)) continue;
     const absolute = new URL(value, baseUrl).toString();
-    if (seen.has(absolute)) continue;
-    seen.add(absolute);
+    const dedupeKey = productImageDedupeKey(absolute, baseUrl);
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
     out.push(absolute);
     if (out.length >= limit) break;
   }

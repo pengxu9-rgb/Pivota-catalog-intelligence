@@ -8488,7 +8488,7 @@ export function isUsablePrefetchedProductAfterBotChallenge(product: ExtractedPro
     ...(Array.isArray(product.variants) ? product.variants.flatMap((variant) => [variant.image_url, ...(variant.image_urls || [])]) : []),
   ]);
   if (imageUrls.length === 0) return false;
-  if (imageUrls.length > 12) return false;
+  if (imageUrls.length > 24) return false;
   if (!imageUrls.every((imageUrl) => isCleanProductImageAssetUrl(imageUrl, baseUrl))) return false;
 
   const hasPositiveOffer = (product.variants || []).some((variant) => hasCleanPositivePrefetchedOfferPrice(variant.price));

@@ -2601,6 +2601,29 @@ test("isUsablePrefetchedProductAfterBotChallenge requires serving-grade identity
     ),
     true,
   );
+  const expandedGalleryUrls = Array.from(
+    { length: 13 },
+    (_, index) => `https://images.example.com/matte-revolution-${index + 1}.jpg`,
+  );
+  assert.equal(
+    isUsablePrefetchedProductAfterBotChallenge(
+      {
+        ...baseProduct,
+        image_url: expandedGalleryUrls[0]!,
+        image_urls: expandedGalleryUrls.slice(0, 12),
+        variants: [
+          {
+            ...baseProduct.variants[0]!,
+            image_url: expandedGalleryUrls[0]!,
+            image_urls: expandedGalleryUrls,
+          },
+        ],
+      },
+      baseProduct.url,
+      "https://www.charlottetilbury.com",
+    ),
+    true,
+  );
   assert.equal(
     isUsablePrefetchedProductAfterBotChallenge(
       {

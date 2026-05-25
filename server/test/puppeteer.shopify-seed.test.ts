@@ -729,6 +729,101 @@ test("buildProductFromPageSignals reads single default size evidence from produc
   assert.equal(product?.size_detail_label, "0.70 fl oz / 20 mL");
 });
 
+test("buildProductFromPageSignals falls back to DOM price text for a single JSON-LD offer without price", () => {
+  const sourceUrl = "https://khus-khus.com/products/c-drops-serum/";
+  const product = buildProductFromPageSignals({
+    extracted: {
+      title: "C DROPS serum",
+      canonical: sourceUrl,
+      metaDescription: "",
+      priceTexts: ["$32.00"],
+      imageCandidates: [],
+      scripts: [
+        JSON.stringify({
+          "@context": "https://schema.org",
+          "@type": "Product",
+          name: "C DROPS serum",
+          url: sourceUrl,
+          sku: "KKCDROPS-30",
+          image: "https://khus-khus.com/wp-content/uploads/2026/01/c-drops-serum.jpg",
+          description:
+            "A concentrated facial serum from the official product page, described with enough product context to preserve the prefetched PDP when browser rendering fails.",
+          offers: {
+            "@type": "Offer",
+            sku: "KKCDROPS-30",
+            url: sourceUrl,
+            availability: "https://schema.org/InStock",
+          },
+        }),
+      ],
+      embeddedProductScripts: [],
+      domVariants: [],
+      productVolumeText: "",
+      productDetailsText: "",
+      detailsSections: [],
+      faqItems: [],
+      faqHtmlSnippets: [],
+    },
+    pageLooksLikeProduct: true,
+    sourceUrl,
+    baseUrl: "https://khus-khus.com",
+    verbose: false,
+    log: () => {},
+  });
+
+  assert.ok(product);
+  assert.equal(product?.variants.length, 1);
+  assert.equal(product?.variants[0]?.price, "$32.00");
+  assert.equal(
+    isUsablePrefetchedProductAfterBotChallenge(product, sourceUrl, "https://khus-khus.com"),
+    true,
+  );
+});
+
+test("buildProductFromPageSignals filters WooCommerce review form detail noise", () => {
+  const sourceUrl = "https://www.apiceuticals.com/shop/propowax-antioxidant-shampoo/";
+  const product = buildProductFromPageSignals({
+    extracted: {
+      title: "PROPOWAX Antioxidant Shampoo",
+      canonical: sourceUrl,
+      metaDescription: "",
+      priceTexts: ["33"],
+      imageCandidates: ["https://www.apiceuticals.com/wp-content/uploads/2018/07/Shampoo_2-1.webp"],
+      scripts: [],
+      embeddedProductScripts: [],
+      domVariants: [],
+      productVolumeText: "",
+      productDetailsText:
+        "A propolis-inspired antioxidant shampoo from the official product page with enough product context for a prefetched WooCommerce PDP.",
+      detailsSections: [
+        {
+          heading: "Details",
+          body: "A propolis-inspired antioxidant shampoo for cleansing hair while supporting shine and softness.",
+          source_kind: "page_product_details",
+        },
+        {
+          heading: "Leave feedback about this Cancel reply",
+          body: "You must be logged in to post a review.",
+          source_kind: "heading_sibling",
+        },
+      ],
+      faqItems: [],
+      faqHtmlSnippets: [],
+    },
+    pageLooksLikeProduct: true,
+    sourceUrl,
+    baseUrl: "https://www.apiceuticals.com",
+    verbose: false,
+    log: () => {},
+  });
+
+  assert.ok(product);
+  assert.equal(
+    product?.details_sections.some((section) => /leave feedback/i.test(section.heading)),
+    false,
+  );
+});
+
 test("buildProductFromPageSignals filters storefront chrome from generic PDP image candidates", () => {
   const product = buildProductFromPageSignals({
     extracted: {
@@ -2476,6 +2571,33 @@ test("isUsablePrefetchedProductAfterBotChallenge requires serving-grade identity
       baseProduct,
       baseProduct.url,
       "https://www.charlottetilbury.com",
+    ),
+    true,
+  );
+  const wooShopProductUrl = "https://www.apiceuticals.com/shop/propowax-antioxidant-shampoo/";
+  const wooShopImageUrl = "https://www.apiceuticals.com/wp-content/uploads/2018/07/Shampoo_2-1.webp";
+  assert.equal(
+    isUsablePrefetchedProductAfterBotChallenge(
+      {
+        ...baseProduct,
+        title: "PROPOWAX Antioxidant Shampoo",
+        url: wooShopProductUrl,
+        image_url: wooShopImageUrl,
+        image_urls: [wooShopImageUrl],
+        variants: [
+          {
+            ...baseProduct.variants[0]!,
+            url: wooShopProductUrl,
+            price: "33.00",
+            image_url: wooShopImageUrl,
+            image_urls: [wooShopImageUrl],
+          },
+        ],
+        description_raw:
+          "A propolis-inspired antioxidant shampoo from the official product page with enough product context for a prefetched WooCommerce PDP.",
+      },
+      wooShopProductUrl,
+      "https://www.apiceuticals.com",
     ),
     true,
   );

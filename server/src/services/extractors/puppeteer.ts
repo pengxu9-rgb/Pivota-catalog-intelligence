@@ -718,7 +718,11 @@ function isPdpContentNoiseText(text?: string) {
 function isLowQualityDetailSectionText(heading?: string, body?: string) {
   const normalizedHeading = cleanText(heading).toLowerCase();
   const normalizedBody = cleanText(body).toLowerCase();
-  if (/^(?:tell us about yourself|write a review|submit your review|privacy settings|cookie settings)$/.test(normalizedHeading)) {
+  if (
+    /^(?:tell us about yourself|write a review|submit your review|leave feedback(?: about this)?(?: cancel reply)?|cancel reply|privacy settings|cookie settings)$/.test(
+      normalizedHeading,
+    )
+  ) {
     return true;
   }
   if (
@@ -6441,6 +6445,10 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         ".accordion-content",
         ".accordion-content-wrap",
         ".accordion-content-wrap-inner",
+        ".vc_tta-panel-body",
+        ".wpb_wrapper",
+        ".wpb_text_column",
+        ".woocommerce-product-details__short-description",
       ];
       for (const selector of candidates) {
         const node = root.querySelector(selector);
@@ -6478,6 +6486,20 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       const moreAbout = document.querySelector(".more-about-product-content");
       if (moreAbout instanceof HTMLElement) {
         const text = normalizeSectionText(moreAbout.innerText || moreAbout.textContent || "");
+        if (text) return text;
+      }
+
+      const wooShortDescription = Array.from(
+        document.querySelectorAll(
+          [
+            ".woocommerce-product-details__short-description",
+            ".summary .woocommerce-product-details__short-description",
+            ".entry-summary .woocommerce-product-details__short-description",
+          ].join(", "),
+        ),
+      ) as HTMLElement[];
+      for (const node of wooShortDescription.slice(0, 4)) {
+        const text = normalizeSectionText(node.innerText || node.textContent || "");
         if (text) return text;
       }
 
@@ -6792,7 +6814,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
     const howToUseAccordion = ((patterns: RegExp[]) => {
       const controls = Array.from(
         document.querySelectorAll(
-          "button, summary, .accordion__toggle, .accordion-title, .acc__btn, .module-accordion .item .trigger, .module-accordion .item .text",
+          "button, summary, .accordion__toggle, .accordion-title, .acc__btn, .module-accordion .item .trigger, .module-accordion .item .text, .vc_tta-panel-title a, .vc_tta-panel-heading a",
         ),
       ) as HTMLElement[];
       for (const control of controls.slice(0, 120)) {
@@ -6807,12 +6829,13 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
           control.closest("accordion-wrap") ||
           control.closest(".pv-extra-details__accordion") ||
           control.closest(".module-accordion .item") ||
+          control.closest(".vc_tta-panel") ||
           control.closest(".acc") ||
           control.parentElement;
         const content =
           target ||
           accordionItem?.querySelector?.(
-            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .details, .inner-text, .wysiwyg, .faq-answer, .faq__answer",
+            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .vc_tta-panel-body, .wpb_wrapper, .wpb_text_column, .details, .inner-text, .wysiwyg, .faq-answer, .faq__answer",
           ) ||
           control.nextElementSibling;
         const text = readSectionContainerText(content as Element | null) || readSectionContainerText(accordionItem);
@@ -6827,7 +6850,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
     const ingredientsAccordion = ((patterns: RegExp[]) => {
       const controls = Array.from(
         document.querySelectorAll(
-          "button, summary, .accordion__toggle, .accordion-title, .acc__btn, .module-accordion .item .trigger, .module-accordion .item .text",
+          "button, summary, .accordion__toggle, .accordion-title, .acc__btn, .module-accordion .item .trigger, .module-accordion .item .text, .vc_tta-panel-title a, .vc_tta-panel-heading a",
         ),
       ) as HTMLElement[];
       for (const control of controls.slice(0, 120)) {
@@ -6842,12 +6865,13 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
           control.closest("accordion-wrap") ||
           control.closest(".pv-extra-details__accordion") ||
           control.closest(".module-accordion .item") ||
+          control.closest(".vc_tta-panel") ||
           control.closest(".acc") ||
           control.parentElement;
         const content =
           target ||
           accordionItem?.querySelector?.(
-            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .details, .inner-text, .wysiwyg, .faq-answer, .faq__answer",
+            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .vc_tta-panel-body, .wpb_wrapper, .wpb_text_column, .details, .inner-text, .wysiwyg, .faq-answer, .faq__answer",
           ) ||
           control.nextElementSibling;
         const text = readSectionContainerText(content as Element | null) || readSectionContainerText(accordionItem);
@@ -6862,7 +6886,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
     const faqAccordion = ((patterns: RegExp[]) => {
       const controls = Array.from(
         document.querySelectorAll(
-          "button, summary, .accordion__toggle, .accordion-title, .acc__btn, .module-accordion .item .trigger, .module-accordion .item .text",
+          "button, summary, .accordion__toggle, .accordion-title, .acc__btn, .module-accordion .item .trigger, .module-accordion .item .text, .vc_tta-panel-title a, .vc_tta-panel-heading a",
         ),
       ) as HTMLElement[];
       for (const control of controls.slice(0, 120)) {
@@ -6877,12 +6901,13 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
           control.closest("accordion-wrap") ||
           control.closest(".pv-extra-details__accordion") ||
           control.closest(".module-accordion .item") ||
+          control.closest(".vc_tta-panel") ||
           control.closest(".acc") ||
           control.parentElement;
         const content =
           target ||
           accordionItem?.querySelector?.(
-            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .details, .inner-text, .wysiwyg, .faq-answer, .faq__answer",
+            ".accordion__content, .accordion__content-container, .accordion-content, .accordion-content-wrap, .accordion-content-wrap-inner, .vc_tta-panel-body, .wpb_wrapper, .wpb_text_column, .details, .inner-text, .wysiwyg, .faq-answer, .faq__answer",
           ) ||
           control.nextElementSibling;
         const text = readSectionContainerText(content as Element | null) || readSectionContainerText(accordionItem);
@@ -7161,13 +7186,42 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       const sections: ExtractedProductDetailSection[] = [];
       const seen = new Set<string>();
       const looksRelevantHeading = (heading: string) =>
-        /\b(overview|details?|benefits?|how to(?:\s+(?:use|apply))?|usage|suggested usage|application|tutorial|pro tip|eye look|everyday eye|ingredients?|active ingredients?|inci|about|what(?:'|’)s in it\??|faq|frequently asked questions?|q\s*&\s*a|questions?|clinical(?:\s+results?)?|consumer study results?|results?|hydration|hydrates?|sebum|oil[-\s]*moisture|moisture|absorbs?|pores?|texture|finish|layer)\b/i.test(
+        /\b(description|overview|details?|benefits?|how to(?:\s+(?:use|apply))?|usage|suggested usage|application|tutorial|pro tip|eye look|everyday eye|ingredients?|active ingredients?|inci|about|what(?:'|’)s in it\??|faq|frequently asked questions?|q\s*&\s*a|questions?|clinical(?:\s+results?)?|consumer study results?|results?|hydration|hydrates?|sebum|oil[-\s]*moisture|moisture|absorbs?|pores?|texture|finish|layer)\b/i.test(
           heading,
+        );
+      const isNoiseHeadingOrBody = (heading: string, body = "") =>
+        /^(?:privacy overview|privacy settings|cookie settings|manage consent|consent preferences?)$/i.test(
+          normalizeSectionText(heading),
+        ) ||
+        /^leave feedback(?: about this)?(?: cancel reply)?$/i.test(
+          normalizeSectionText(heading),
+        ) ||
+        /\b(?:accept all|privacy policy privacy settings|some tracking technologies|strictly necessary cookies?)\b/i.test(
+          normalizeSectionText(`${heading}\n${body}`),
         );
       const shouldSkipSectionNode = (node: Element | null | undefined) =>
         Boolean(
           node?.closest(
-            "header, nav, footer, .header__dropdown, .drawer__inner, .predictive-search, [class*='comparison'], [id*='comparison']",
+            [
+              "header",
+              "nav",
+              "footer",
+              ".header__dropdown",
+              ".drawer__inner",
+              ".predictive-search",
+              "[class*='comparison']",
+              "[id*='comparison']",
+              ".cky-consent-container",
+              ".cky-modal",
+              ".cli-modal",
+              ".cookie-notice",
+              ".privacy-preferences",
+              ".ot-sdk-container",
+              "[id*='onetrust']",
+              "[class*='onetrust']",
+              "[id*='cookie']",
+              "[class*='cookie']",
+            ].join(", "),
           ),
         );
       const sectionImageInvalidUrlRe =
@@ -7227,6 +7281,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         const heading = normalizeSectionText(headingRaw);
         const body = normalizeSectionText(bodyRaw);
         if (!heading || !body || !looksRelevantHeading(heading)) return;
+        if (isNoiseHeadingOrBody(heading, body)) return;
         const key = `${heading.toLowerCase()}|${body.toLowerCase()}|${sourceKind.toLowerCase()}`;
         if (seen.has(key)) return;
         seen.add(key);
@@ -7247,6 +7302,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         const heading = normalizeSectionText(headingRaw);
         const body = normalizeSectionText(bodyRaw);
         if (!heading || !body) return;
+        if (isNoiseHeadingOrBody(heading, body)) return;
         const key = `${heading.toLowerCase()}|${body.toLowerCase()}|${sourceKind.toLowerCase()}`;
         if (seen.has(key)) return;
         seen.add(key);
@@ -7335,6 +7391,14 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
             ".tab-panel",
             ".left-section-routine",
             ".routine-content",
+            ".woocommerce-product-details__short-description",
+            ".woocommerce-Tabs-panel",
+            ".woocommerce-tabs",
+            ".wc-tab",
+            ".wpb-content-wrapper",
+            ".vc_tta-container",
+            ".vc_tta-panels",
+            ".vc_tta-panel",
             "[id*='__new_custom_pdp']",
             "[id*='section_custom_content']",
             ".product__description",
@@ -7400,7 +7464,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
 
       const accordionButtons = Array.from(
         document.querySelectorAll(
-          "button.accordion-title, .accordion__toggle, .acc__btn, .module-accordion .item .trigger, .module-accordion .item .text",
+          "button.accordion-title, .accordion__toggle, .acc__btn, .module-accordion .item .trigger, .module-accordion .item .text, .vc_tta-panel-title a, .vc_tta-panel-heading a",
         ),
       ) as HTMLElement[];
       for (const button of accordionButtons.filter((node) => looksRelevantHeading(node.textContent || "")).slice(0, 24)) {
@@ -7421,11 +7485,12 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
             button.closest("accordion-wrap") ||
             button.closest(".pv-extra-details__accordion") ||
             button.closest(".module-accordion .item") ||
+            button.closest(".vc_tta-panel") ||
             button.closest(".acc") ||
             button.parentElement;
           const content =
             wrapper?.querySelector?.(
-              ".accordion-content-wrap-inner, .accordion-content-wrap, .acc__menu, .pv-extra-details__accordion-body, .details, .inner-text",
+              ".accordion-content-wrap-inner, .accordion-content-wrap, .acc__menu, .pv-extra-details__accordion-body, .vc_tta-panel-body, .wpb_wrapper, .wpb_text_column, .details, .inner-text",
             ) ||
             button.nextElementSibling;
           body = (content as HTMLElement | null)?.innerText || content?.textContent || "";
@@ -7435,6 +7500,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
           button.closest("accordion-wrap") ||
             button.closest(".pv-extra-details__accordion") ||
             button.closest(".module-accordion .item") ||
+            button.closest(".vc_tta-panel") ||
             button.closest(".acc") ||
             button.parentElement,
           button.nextElementSibling,
@@ -8184,7 +8250,9 @@ export function buildProductFromPageSignals(params: {
             offer.price ??
               (offer.priceSpecification as any)?.price ??
               (offer.priceSpecification as any)?.priceSpecification?.price ??
-              domMeta?.price,
+              domMeta?.price ??
+              extracted.priceTexts[idx] ??
+              extracted.priceTexts[0],
           );
           const stock = stockFromAvailability(offer.availability);
           const optionValueFromOffer =
@@ -8387,13 +8455,32 @@ function hasCleanPositivePrefetchedOfferPrice(raw: unknown): boolean {
   return Number.isFinite(parsed) && parsed > 0;
 }
 
+function isLikelyPrefetchedDirectPdpUrl(rawUrl: string, baseUrl: string): boolean {
+  if (isLikelyProductUrlShared(rawUrl, baseUrl)) return true;
+  try {
+    const parsed = new URL(rawUrl, baseUrl);
+    const base = new URL(baseUrl);
+    const normalizeHost = (host: string) => host.toLowerCase().replace(/^www\./, "");
+    if (normalizeHost(parsed.host) !== normalizeHost(base.host)) return false;
+    const segments = parsed.pathname.toLowerCase().split("/").filter(Boolean);
+    if (segments.length !== 2 || segments[0] !== "shop") return false;
+    const slug = segments[1] || "";
+    if (!/[a-z0-9]+-[a-z0-9-]+/.test(slug)) return false;
+    return /\b(?:serum|shampoo|conditioner|cream|cleanser|balm|mask|oil|toner|moisturizer|sunscreen|spf|treatment|lotion|soap|wash|gel|patch)\b/i.test(
+      slug.replace(/-/g, " "),
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function isUsablePrefetchedProductAfterBotChallenge(product: ExtractedProduct | null | undefined, sourceUrl: string, baseUrl: string): boolean {
   if (!product) return false;
   const title = cleanText(product.title);
   if (!title) return false;
 
   const productUrl = cleanText(product.url || sourceUrl);
-  if (!isLikelyProductUrlShared(productUrl, baseUrl)) return false;
+  if (!isLikelyPrefetchedDirectPdpUrl(productUrl, baseUrl)) return false;
 
   const imageUrls = dedupeStringList([
     product.image_url,
@@ -8401,7 +8488,7 @@ export function isUsablePrefetchedProductAfterBotChallenge(product: ExtractedPro
     ...(Array.isArray(product.variants) ? product.variants.flatMap((variant) => [variant.image_url, ...(variant.image_urls || [])]) : []),
   ]);
   if (imageUrls.length === 0) return false;
-  if (imageUrls.length > 8) return false;
+  if (imageUrls.length > 12) return false;
   if (!imageUrls.every((imageUrl) => isCleanProductImageAssetUrl(imageUrl, baseUrl))) return false;
 
   const hasPositiveOffer = (product.variants || []).some((variant) => hasCleanPositivePrefetchedOfferPrice(variant.price));
@@ -8461,7 +8548,7 @@ async function scrapeProductPage(params: {
 
       const controls = Array.from(
         document.querySelectorAll(
-          "button[aria-controls], [role='tab'][aria-controls], button.accordion-title, .accordion__toggle, .acc__btn",
+          "button[aria-controls], [role='tab'][aria-controls], button.accordion-title, .accordion__toggle, .acc__btn, .vc_tta-panel-title a, .vc_tta-panel-heading a",
         ),
       ) as HTMLElement[];
       for (const control of controls.filter((node) => relevantHeadingRe.test(node.textContent || "")).slice(0, 24)) {
@@ -8640,6 +8727,13 @@ async function scrapeProductPage(params: {
       throw err;
     }
     const message = err instanceof Error ? err.message : String(err);
+    if (isUsablePrefetchedProductAfterBotChallenge(prefetchedProductCandidate, params.url, params.baseUrl)) {
+      params.log(
+        "warn",
+        `Browser PDP scrape failed after usable prefetched product extraction; preserving prefetched product: ${params.url} (${message})`,
+      );
+      return prefetchedProductCandidate;
+    }
     params.log("warn", `Failed to scrape ${params.url}: ${message}`);
     return null;
   } finally {

@@ -10,6 +10,7 @@ import {
   enrichDirectShopifyPdpResponse,
   extractBundleComponents,
   extractLikelyFullIngredientListText,
+  extractMppPopupIngredientTextFromHtml,
   extractShopifyBodyHtmlPdpFields,
   extractShopifyDirectPdpHtmlPdpFields,
   extractShopifyEmbeddedProductPayloadPdpFields,
@@ -3121,6 +3122,31 @@ test("extractLikelyFullIngredientListText isolates full INCI from mixed accordio
     extractLikelyFullIngredientListText(text),
     "Aqua (Water), Propanediol, Tranexamic Acid, Glycerin, Butylene Glycol, Acai Fruit Extract, Phenoxyethanol, Xanthan Gum, Sodium Hydroxide",
   );
+});
+
+test("extractMppPopupIngredientTextFromHtml follows the INCI trigger id instead of unrelated MPP popups", () => {
+  const html = `
+    <a href="mpp-trigger-popup-1111">VIEW INGREDIENTS</a>
+    <div class="mpp-container-1111">
+      Vitis Vinifera (Grape) Seed Oil, Olea Europaea (Olive) Fruit Oil, Simmondsia Chinensis (Jojoba) Seed Oil, Rosa Canina Fruit Oil, Tocopherol, Fragrance.
+    </div>
+
+    <a href="#mpp-trigger-popup-7498">VIEW INCI LIST</a>
+    <div class="mpp-container-7498">
+      Aqua (Water), Ammonium Lauryl Sulfate, Disodium Laureth Sulfosuccinate, Cocamidopropyl Betaine,
+      Sodium Lauroyl Sarcosinate, Polysorbate-20, PEG-120 Methyl Glucose Dioleate, Parfum (Fragrance),
+      Glycerin, Honey/mel, Melissa Officinalis Flower Extract, Disodium EDTA, Glyceryl Oleate, Coco Glucoside,
+      Lactic acid, Starch hydroxypropyltrimonium chloride, Sodium Lactate, Sodium Benzoate, Potassium Sorbate,
+      Phenoxyethanol, Ethylhexylglycerin, Caramel, Hexyl Cinnamal.
+    </div>
+  `;
+
+  const result = extractMppPopupIngredientTextFromHtml(html, "Propowax Antioxidant Shampoo");
+
+  assert.ok(result);
+  assert.match(result, /^Aqua \(Water\), Ammonium Lauryl Sulfate/i);
+  assert.match(result, /Cocamidopropyl Betaine/i);
+  assert.doesNotMatch(result, /Vitis Vinifera/i);
 });
 
 test("extractShopifyBodyHtmlPdpFields treats Key Ingredients as active ingredient evidence", () => {

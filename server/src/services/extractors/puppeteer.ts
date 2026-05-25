@@ -2613,6 +2613,84 @@ export function extractLikelyFullIngredientListText(text: string | undefined) {
   return commaDenseFallback || undefined;
 }
 
+function htmlFragmentToPlainText(rawHtml: string) {
+  return cleanText(
+    decodeHtmlAttributeEntities(
+      rawHtml
+        .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<\/(?:p|div|li|h[1-6])>/gi, "\n")
+        .replace(/<[^>]+>/g, " "),
+    ),
+  );
+}
+
+function extractDenseIngredientSentence(text: string | undefined) {
+  const normalized = cleanText(text);
+  if (!normalized) return undefined;
+  const aquaMatch = normalized.match(
+    /\b(?:aqua\s*\(water\)|water\/aqua|aqua)\b[\s\S]{40,1200}?(?:\.|$)/i,
+  );
+  if (aquaMatch?.[0] && looksLikeFullIngredientListText(aquaMatch[0])) {
+    return cleanText(aquaMatch[0]);
+  }
+  return extractLikelyFullIngredientListText(normalized);
+}
+
+function scoreIngredientCandidateForTitle(text: string, productTitle: string) {
+  let score = Math.min((text.match(/,/g) || []).length, 20);
+  if (/\binci\b/i.test(text)) score += 8;
+  if (/\bingredients?\b/i.test(text)) score += 4;
+  const titleText = cleanText(productTitle);
+  if (/shampoo/i.test(titleText)) {
+    score += /\b(?:ammonium lauryl sulfate|disodium laureth sulfosuccinate|cocamidopropyl betaine|sodium lauroyl sarcosinate)\b/i.test(
+      text,
+    )
+      ? 40
+      : -20;
+  }
+  if (/conditioner/i.test(titleText)) {
+    score += /\b(?:cetearyl alcohol|behentrimonium|cetyl alcohol|amodimethicone|hydrolyzed)\b/i.test(text) ? 24 : 0;
+  }
+  return score;
+}
+
+export function extractMppPopupIngredientTextFromHtml(html: string | undefined, productTitle: string | undefined) {
+  const rawHtml = String(html || "");
+  if (!rawHtml || !/mpp-trigger-popup|mpp-container|mpp-popup/i.test(rawHtml)) return undefined;
+  const ids = new Set<string>();
+  for (const match of rawHtml.matchAll(
+    /<a\b(?=[^>]*href\s*=\s*["']?[^"'>\s]*mpp-trigger-popup-(\d{2,}))[^>]*>([\s\S]*?)<\/a>/gi,
+  )) {
+    const label = htmlFragmentToPlainText(match[2] || "");
+    if (/\b(?:inci|ingredients?)\b/i.test(label) && match[1]) ids.add(match[1]);
+  }
+  if (ids.size === 0) return undefined;
+
+  const candidates: Array<{ text: string; score: number }> = [];
+  for (const id of ids) {
+    const marker = new RegExp(`(?:mpp-container|mpp-popup|mpp-wrap)-${id}\\b`, "i").exec(rawHtml);
+    if (!marker) continue;
+    const afterMarker = rawHtml.slice(marker.index);
+    const nextOtherMarker = new RegExp(`(?:mpp-container|mpp-popup|mpp-wrap)-(?!${id}\\b)\\d{2,}\\b`, "i").exec(
+      afterMarker.slice(1),
+    );
+    const endIndex = nextOtherMarker
+      ? marker.index + 1 + nextOtherMarker.index
+      : Math.min(rawHtml.length, marker.index + 30000);
+    const segment = rawHtml.slice(marker.index, endIndex);
+    const text = htmlFragmentToPlainText(segment);
+    const ingredientText = extractDenseIngredientSentence(text);
+    if (!ingredientText) continue;
+    candidates.push({
+      text: ingredientText,
+      score: scoreIngredientCandidateForTitle(ingredientText, productTitle || ""),
+    });
+  }
+  return candidates.sort((left, right) => right.score - left.score || right.text.length - left.text.length)[0]?.text;
+}
+
 function normalizeVariantIngredientLabel(value: string | undefined) {
   return cleanText(decodeHtmlAttributeEntities(value || ""))
     .normalize("NFKD")
@@ -6948,17 +7026,50 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       readSectionContainerText(ingredientsContent) || ingredientsAccordion.text || customMetafieldFullIngredientsText || undefined;
     const ingredientsDisclaimerText =
       ingredientsContent?.querySelector(".product-details-accordions-ingredients-disclaimer")?.textContent?.trim() || undefined;
+    const ingredientPopupIds = (() => {
+      const ids = new Set<string>();
+      const triggers = Array.from(document.querySelectorAll("a[href*='mpp-trigger-popup']")) as HTMLElement[];
+      for (const trigger of triggers.slice(0, 24)) {
+        const label = normalizeSectionText(
+          trigger.getAttribute("title") ||
+            trigger.getAttribute("aria-label") ||
+            trigger.textContent ||
+            "",
+        );
+        if (!/\b(?:inci|ingredients?)\b/i.test(label)) continue;
+        const match = String(trigger.getAttribute("href") || "").match(/(\d{2,})/);
+        if (match?.[1]) ids.add(match[1]);
+      }
+      return Array.from(ids);
+    })();
     const ingredientFlyoutText = (() => {
-      const nodes = Array.from(
+      const readIngredientNodeText = (node: Element) => {
+        const attrRaw = node.getAttribute("data-original-ingredients") || "";
+        const attrText = attrRaw ? normalizeSectionText(decodeHtmlText(attrRaw)) : "";
+        const visibleText = normalizeSectionText((node as HTMLElement).innerText || node.textContent || "");
+        return normalizeSectionText([attrText, visibleText].filter(Boolean).join("\n\n"));
+      };
+      const targetedPopupNodes = ingredientPopupIds.flatMap((popupId) =>
+        Array.from(
+          document.querySelectorAll(
+            [
+              `#mpp-popup-${popupId}`,
+              `#mpp-container-${popupId}`,
+              `.mpp-popup-${popupId}`,
+              `.mpp-container-${popupId}`,
+              `.mpp-wrap-${popupId}`,
+            ].join(", "),
+          ),
+        ),
+      );
+      const standardIngredientNodes = Array.from(
         document.querySelectorAll(
           ".ingredients-flyout-content, [data-original-ingredients], .product-ingredients-modal__content, .product-ingredients-modal .modal__inner.product-ingredients, .modal.product-ingredients-modal",
         ),
-      ) as HTMLElement[];
-      for (const node of nodes.slice(0, 8)) {
-        const attrRaw = node.getAttribute("data-original-ingredients") || "";
-        const attrText = attrRaw ? normalizeSectionText(decodeHtmlText(attrRaw)) : "";
-        const visibleText = normalizeSectionText(node.innerText || node.textContent || "");
-        const combined = normalizeSectionText([attrText, visibleText].filter(Boolean).join("\n\n"));
+      );
+      const nodes = Array.from(new Set([...targetedPopupNodes, ...standardIngredientNodes])) as HTMLElement[];
+      for (const node of nodes.slice(0, 12)) {
+        const combined = readIngredientNodeText(node);
         if (!combined) continue;
         if (
           /\bactive ingredients?\b/i.test(combined) ||
@@ -8637,9 +8748,12 @@ async function scrapeProductPage(params: {
       await enablePrefetchRequestBlocking();
       await page.setContent(injectBaseHref(prefetched.body, params.url), { waitUntil: "domcontentloaded" });
       await ensureBrowserEvalHelpers();
+      const prefetchedBaseExtracted = await extractPageSignals(page);
+      const prefetchedMppIngredients = extractMppPopupIngredientTextFromHtml(prefetched.body, prefetchedBaseExtracted.title);
       const prefetchedExtracted = await enrichExtractedFaqItemsWithOkendoQuestions(
         {
-          ...(await extractPageSignals(page)),
+          ...prefetchedBaseExtracted,
+          ingredientsMarkdownText: prefetchedMppIngredients || prefetchedBaseExtracted.ingredientsMarkdownText,
           okendoMetafieldJson: extractOkendoMetafieldJsonFromHtml(prefetched.body),
         },
         params.url,
@@ -8686,9 +8800,12 @@ async function scrapeProductPage(params: {
     await expandRelevantPdpModules();
     await waitForRenderedReviewSummary();
 
+    const baseExtracted = await extractPageSignals(page);
+    const mppIngredients = extractMppPopupIngredientTextFromHtml(visit.content, baseExtracted.title);
     const extracted = await enrichExtractedFaqItemsWithOkendoQuestions(
       {
-        ...(await extractPageSignals(page)),
+        ...baseExtracted,
+        ingredientsMarkdownText: mppIngredients || baseExtracted.ingredientsMarkdownText,
         okendoMetafieldJson: extractOkendoMetafieldJsonFromHtml(visit.content),
       },
       params.url,

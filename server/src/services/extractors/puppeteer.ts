@@ -318,10 +318,12 @@ type ScrapedPageSignals = {
   faqItems: ExtractedProductFaqItem[];
   faqHtmlSnippets: string[];
   okendoMetafieldJson?: string;
+  reviewSummary?: ExtractedProductReviewSummary;
   renderedReviewSummary?: ExtractedProductReviewSummary;
 };
 
-type RawScrapedPageSignals = Omit<ScrapedPageSignals, "renderedReviewSummary"> & {
+type RawScrapedPageSignals = Omit<ScrapedPageSignals, "reviewSummary" | "renderedReviewSummary"> & {
+  reviewSummary?: ExtractedProductReviewSummary;
   renderedReviewSummary?: RenderedReviewSummarySignal;
 };
 
@@ -1596,6 +1598,14 @@ function mergeOkendoReviewSummary(
       : right.review_count != null
         ? { review_count: right.review_count }
         : {}),
+    ...(left.source ? { source: left.source } : right.source ? { source: right.source } : {}),
+    ...(left.source_kind ? { source_kind: left.source_kind } : right.source_kind ? { source_kind: right.source_kind } : {}),
+    ...(left.source_origin
+      ? { source_origin: left.source_origin }
+      : right.source_origin
+        ? { source_origin: right.source_origin }
+        : {}),
+    ...(left.source_url ? { source_url: left.source_url } : right.source_url ? { source_url: right.source_url } : {}),
     ...(left.aggregation_scope
       ? { aggregation_scope: left.aggregation_scope }
       : right.aggregation_scope
@@ -1742,6 +1752,218 @@ export async function fetchOkendoReviewSummaryFromMetafieldJson(raw: string | un
   } catch {
     return baseSummary || null;
   }
+}
+
+type YotpoReview = {
+  id?: string | number;
+  score?: string | number;
+  rating?: string | number;
+  content?: string;
+  body?: string;
+  title?: string;
+  verified_buyer?: boolean;
+  language?: string;
+  user?: {
+    display_name?: string;
+  };
+};
+
+type YotpoReviewsResponse = {
+  response?: {
+    bottomline?: {
+      total_review?: string | number;
+      average_score?: string | number;
+      star_distribution?: Record<string, string | number>;
+    };
+    reviews?: YotpoReview[];
+  };
+};
+
+function parseReviewNumber(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const normalized = String(value ?? "").replace(/,/g, "").trim();
+  if (!normalized) return 0;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function extractYotpoContextFromHtml(html: string | undefined) {
+  const raw = String(html || "");
+  const appKey = cleanText(
+    (raw.match(/\byotpoKey\s*:\s*["']([^"']+)["']/i) || [])[1] ||
+      (raw.match(/\byotpo-key=["']([^"']+)["']/i) || [])[1] ||
+      (raw.match(/"yotpoStoreId"\s*:\s*"([^"]+)"/i) || [])[1],
+  );
+  const productId = cleanText(
+    (raw.match(/\bresourceId["']?\s*:\s*["']?(\d{6,})["']?/i) || [])[1] ||
+      (raw.match(/shopify_[A-Z]{2}_(\d{6,})_\d{6,}/i) || [])[1] ||
+      (raw.match(/"product"\s*:\s*\{[\s\S]{0,500}?"id"\s*:\s*"?(\d{6,})"?/i) || [])[1],
+  );
+  if (!appKey || !productId) return null;
+  return { appKey, productId };
+}
+
+function hasUsefulReviewText(value: unknown) {
+  const text = cleanText(String(value || ""));
+  if (text.length < 25) return false;
+  if (/^(?:love it|great|good|amazing|perfect|nice)$/i.test(text)) return false;
+  if (/\b(?:shipping|delivery|package|customer service|discount|coupon)\b/i.test(text)) return false;
+  return true;
+}
+
+function normalizeYotpoPreviewItems(rows: YotpoReview[] | undefined) {
+  const items: NonNullable<ExtractedProductReviewSummary["preview_items"]> = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!cleanText(row?.language || "en").toLowerCase().startsWith("en")) continue;
+    if (!hasUsefulReviewText(row?.content || row?.body)) continue;
+    const reviewId = cleanText(String(row.id || ""));
+    const textSnippet = cleanText(row.content || row.body).slice(0, 360);
+    if (!reviewId || !textSnippet) continue;
+    const title = cleanText(row.title);
+    items.push({
+      review_id: `yotpo_${reviewId}`,
+      rating: Math.max(1, Math.min(5, Math.round(parseReviewNumber(row.score ?? row.rating) || 5))),
+      author_label: cleanText(row.user?.display_name) || "Verified buyer",
+      ...(title ? { title: title.slice(0, 120) } : {}),
+      text_snippet: textSnippet,
+      source: "merchant_public",
+      source_kind: "yotpo_reviews_api",
+      source_scope: "merchant_public",
+      public_visible: true,
+      verified_buyer: row.verified_buyer === true,
+      content_review_state: "approved",
+    });
+    if (items.length >= 6) break;
+  }
+  return items;
+}
+
+function distributionFromYotpoBottomline(
+  bottomline: NonNullable<YotpoReviewsResponse["response"]>["bottomline"],
+) {
+  const reviewCount = Math.round(parseReviewNumber(bottomline?.total_review));
+  const distribution = bottomline?.star_distribution || {};
+  if (!reviewCount || Object.keys(distribution).length === 0) {
+    return undefined as NonNullable<ExtractedProductReviewSummary["star_distribution"]> | undefined;
+  }
+  return Array.from({ length: 5 }, (_, index) => {
+    const stars = 5 - index;
+    const count = Math.max(0, Math.round(parseReviewNumber(distribution[String(stars)])));
+    return {
+      stars,
+      count,
+      percent: reviewCount > 0 ? count / reviewCount : 0,
+    };
+  });
+}
+
+export async function fetchYotpoReviewSummaryFromHtml(
+  html: string | undefined,
+  sourceUrl: string,
+): Promise<ExtractedProductReviewSummary | null> {
+  const context = extractYotpoContextFromHtml(html);
+  if (!context) return null;
+  const params = new URLSearchParams({ page: "1", per_page: "20" });
+  const reviewsUrl = `https://api.yotpo.com/v1/widget/${encodeURIComponent(context.appKey)}/products/${encodeURIComponent(
+    context.productId,
+  )}/reviews.json?${params.toString()}`;
+
+  try {
+    const response = await withTimeout(fetch(reviewsUrl), 15000, "yotpo_reviews_fetch");
+    if (!response.ok) return null;
+    const payload = (await response.json()) as YotpoReviewsResponse;
+    const bottomline = payload?.response?.bottomline;
+    const rating = parseReviewNumber(bottomline?.average_score);
+    const reviewCount = Math.round(parseReviewNumber(bottomline?.total_review));
+    if (!rating || !reviewCount) return null;
+    const previewItems = normalizeYotpoPreviewItems(payload?.response?.reviews);
+    const starDistribution = distributionFromYotpoBottomline(bottomline);
+    return {
+      rating,
+      scale: 5,
+      review_count: reviewCount,
+      exact_item_review_count: reviewCount,
+      aggregation_scope: "product",
+      source: "merchant_public",
+      source_kind: "yotpo_reviews_api",
+      source_origin: "official_yotpo_reviews_api",
+      source_url: reviewsUrl,
+      ...(starDistribution ? { star_distribution: starDistribution, rating_distribution: starDistribution } : {}),
+      ...(previewItems.length > 0 ? { preview_items: previewItems } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractJsonLdReviewSummaryFromHtml(
+  html: string | undefined,
+  sourceUrl: string,
+): ExtractedProductReviewSummary | null {
+  const candidates: ExtractedProductReviewSummary[] = [];
+  const decoded = decodeHtmlAttributeEntities(String(html || ""));
+  for (const match of decoded.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      const parsed = JSON.parse(match[1]) as unknown;
+      for (const obj of normalizeJsonLdObjects(parsed)) {
+        if (!isType(obj, "Product") && !isType(obj, "ProductGroup")) continue;
+        const aggregate =
+          obj.aggregateRating && typeof obj.aggregateRating === "object"
+            ? (obj.aggregateRating as Record<string, unknown>)
+            : null;
+        const rating = parseReviewNumber(aggregate?.ratingValue);
+        const reviewCount = Math.round(parseReviewNumber(aggregate?.reviewCount || aggregate?.ratingCount));
+        if (!rating || !reviewCount) continue;
+        candidates.push({
+          rating,
+          scale: parseReviewNumber(aggregate?.bestRating) || 5,
+          review_count: reviewCount,
+          exact_item_review_count: reviewCount,
+          aggregation_scope: "product",
+          source: "merchant_public",
+          source_kind: "jsonld_aggregate_rating",
+          source_origin: "official_json_ld",
+          source_url: sourceUrl,
+        });
+      }
+    } catch {
+      // Ignore malformed JSON-LD blocks.
+    }
+  }
+  candidates.sort((left, right) => Number(right.review_count || 0) - Number(left.review_count || 0));
+  return candidates[0] || null;
+}
+
+async function fetchSourceBackedReviewSummaryFromHtml(
+  html: string | undefined,
+  sourceUrl: string,
+  okendoMetafieldJson?: string,
+) {
+  const yotpoSummary = await fetchYotpoReviewSummaryFromHtml(html, sourceUrl);
+  if (yotpoSummary) return yotpoSummary;
+  const okendoSummary = await fetchOkendoReviewSummaryFromMetafieldJson(okendoMetafieldJson, sourceUrl);
+  if (okendoSummary) {
+    return {
+      ...okendoSummary,
+      source: okendoSummary.source || "merchant_public",
+      source_kind: okendoSummary.source_kind || "okendo_reviews_api",
+      source_origin: okendoSummary.source_origin || "official_okendo_reviews_api",
+    };
+  }
+  return extractJsonLdReviewSummaryFromHtml(html, sourceUrl);
+}
+
+async function enrichExtractedReviewSummaryFromHtml(
+  extracted: ScrapedPageSignals,
+  html: string | undefined,
+  sourceUrl: string,
+) {
+  const reviewSummary = await fetchSourceBackedReviewSummaryFromHtml(html, sourceUrl, extracted.okendoMetafieldJson);
+  if (!reviewSummary) return extracted;
+  return {
+    ...extracted,
+    reviewSummary: mergeOkendoReviewSummary(reviewSummary, extracted.reviewSummary),
+  };
 }
 
 async function enrichExtractedFaqItemsWithOkendoQuestions(extracted: ScrapedPageSignals, sourceUrl: string) {
@@ -4701,7 +4923,7 @@ export async function enrichDirectShopifyPdpResponse(params: {
       const okendoMetafieldJson = extractOkendoMetafieldJsonFromHtml(html);
       const faqItems = faqMissing ? await fetchOkendoFaqItemsFromMetafieldJson(okendoMetafieldJson, params.seedUrl) : [];
       const reviewSummary = reviewSummaryMissing
-        ? await fetchOkendoReviewSummaryFromMetafieldJson(okendoMetafieldJson, params.seedUrl)
+        ? await fetchSourceBackedReviewSummaryFromHtml(html, params.seedUrl, okendoMetafieldJson)
         : null;
       if (faqItems.length > 0) {
         response = mergeShopifyDirectPdpFaqFallback(response, faqItems);
@@ -4713,13 +4935,13 @@ export async function enrichDirectShopifyPdpResponse(params: {
         params.log(
           "success",
           previewCount > 0
-            ? `Recovered ${previewCount} Shopify PDP merchant review previews via Okendo reviews: ${params.seedUrl}`
-            : `Recovered Shopify PDP merchant review aggregate via Okendo reviews: ${params.seedUrl}`,
+            ? `Recovered ${previewCount} Shopify PDP merchant review previews: ${params.seedUrl}`
+            : `Recovered Shopify PDP merchant review aggregate: ${params.seedUrl}`,
         );
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error || "unknown_error");
-      params.log("warn", `Shopify direct PDP Okendo enrichment failed; continuing without FAQ/review recovery: ${msg}`);
+      params.log("warn", `Shopify direct PDP merchant review enrichment failed; continuing without FAQ/review recovery: ${msg}`);
     }
   }
 
@@ -8522,6 +8744,16 @@ export function buildProductFromPageSignals(params: {
     params.log("success", `> Extracted ${variants.length} offers/variants`);
   }
 
+  const reviewSummary = mergeOkendoReviewSummary(extracted.reviewSummary, extracted.renderedReviewSummary);
+  const fieldSources = {
+    ...productPdpFields.field_sources,
+    ...(reviewSummary?.source_origin
+      ? { review_summary: [reviewSummary.source_origin] }
+      : reviewSummary?.source_kind
+        ? { review_summary: [reviewSummary.source_kind] }
+        : {}),
+  };
+
   return withProductPdpProfile({
     title: productTitle,
     url: productUrl,
@@ -8533,10 +8765,11 @@ export function buildProductFromPageSignals(params: {
       : {}),
     ...(productSizeEvidence.detailLabel ? { size_detail_label: productSizeEvidence.detailLabel } : {}),
     ...(contentImageUrls.length > 0 ? { content_image_urls: contentImageUrls } : {}),
-    ...(extracted.renderedReviewSummary ? { review_summary: extracted.renderedReviewSummary } : {}),
     variant_skus: dedupeStringList(variants.map((variant) => variant.sku)),
     variants,
     ...productPdpFields,
+    ...(reviewSummary ? { review_summary: reviewSummary } : {}),
+    field_sources: fieldSources,
   });
 }
 
@@ -8750,12 +8983,17 @@ async function scrapeProductPage(params: {
       await ensureBrowserEvalHelpers();
       const prefetchedBaseExtracted = await extractPageSignals(page);
       const prefetchedMppIngredients = extractMppPopupIngredientTextFromHtml(prefetched.body, prefetchedBaseExtracted.title);
-      const prefetchedExtracted = await enrichExtractedFaqItemsWithOkendoQuestions(
+      const prefetchedWithFaq = await enrichExtractedFaqItemsWithOkendoQuestions(
         {
           ...prefetchedBaseExtracted,
           ingredientsMarkdownText: prefetchedMppIngredients || prefetchedBaseExtracted.ingredientsMarkdownText,
           okendoMetafieldJson: extractOkendoMetafieldJsonFromHtml(prefetched.body),
         },
+        params.url,
+      );
+      const prefetchedExtracted = await enrichExtractedReviewSummaryFromHtml(
+        prefetchedWithFaq,
+        prefetched.body,
         params.url,
       );
       await disablePrefetchRequestBlocking();
@@ -8802,12 +9040,17 @@ async function scrapeProductPage(params: {
 
     const baseExtracted = await extractPageSignals(page);
     const mppIngredients = extractMppPopupIngredientTextFromHtml(visit.content, baseExtracted.title);
-    const extracted = await enrichExtractedFaqItemsWithOkendoQuestions(
+    const liveWithFaq = await enrichExtractedFaqItemsWithOkendoQuestions(
       {
         ...baseExtracted,
         ingredientsMarkdownText: mppIngredients || baseExtracted.ingredientsMarkdownText,
         okendoMetafieldJson: extractOkendoMetafieldJsonFromHtml(visit.content),
       },
+      params.url,
+    );
+    const extracted = await enrichExtractedReviewSummaryFromHtml(
+      liveWithFaq,
+      visit.content,
       params.url,
     );
     const liveLooksLikeProduct =

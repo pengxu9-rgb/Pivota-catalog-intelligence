@@ -1911,6 +1911,9 @@ test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enr
         scale: 5,
         aggregation_scope: "product",
         exact_item_review_count: 2,
+        source: "merchant_public",
+        source_kind: "okendo_reviews_api",
+        source_origin: "official_okendo_reviews_api",
         preview_items: [
           {
             review_id: "review-1",
@@ -1940,7 +1943,7 @@ test("enrichDirectShopifyPdpResponse recovers FAQ via Okendo without browser enr
         ],
       });
       assert.doesNotMatch(logs.map((entry) => entry.msg).join("\n"), /Attempting browser enrichment/);
-      assert.match(logs.map((entry) => entry.msg).join("\n"), /merchant review previews via Okendo reviews/);
+      assert.match(logs.map((entry) => entry.msg).join("\n"), /merchant review previews/);
     },
   );
 });

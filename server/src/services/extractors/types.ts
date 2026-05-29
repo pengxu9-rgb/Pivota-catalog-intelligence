@@ -149,6 +149,10 @@ export type ExtractedProductReviewSummary = {
   rating?: number;
   review_count?: number;
   scale?: number;
+  source?: string;
+  source_kind?: string;
+  source_origin?: string;
+  source_url?: string;
   preview_items?: ExtractedReviewPreviewItem[];
   questions?: ExtractedReviewSummaryQuestion[];
   star_distribution?: ExtractedReviewDistributionRow[];

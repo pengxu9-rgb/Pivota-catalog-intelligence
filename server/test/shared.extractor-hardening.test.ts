@@ -28,6 +28,7 @@ import {
   extractOkendoMetafieldJsonFromHtml,
   fetchOkendoFaqItemsFromMetafieldJson,
   fetchOkendoReviewSummaryFromMetafieldJson,
+  fetchYotpoReviewSummaryFromHtml,
   extractInlineFaqItemsFromHtml,
   extractShopifyEmbeddedProductPayloadPdpFields,
   extractShopifyBodyHtmlPdpFields,
@@ -781,6 +782,67 @@ test("parseRenderedBazaarvoiceReviewSummary reads aggregate from Bazaarvoice ari
     aggregation_scope: "product",
     exact_item_review_count: 743,
   });
+});
+
+test("fetchYotpoReviewSummaryFromHtml returns source-backed merchant review summary and previews", async () => {
+  const html = `
+    <script>window.theme = { yotpoKey: "fenty_app_key" };</script>
+    <script>resourceId: "6686565204013"</script>
+    <script type="application/ld+json">
+      {"@type":"Product","aggregateRating":{"@type":"AggregateRating","ratingValue":"4.4","reviewCount":"1317"}}
+    </script>
+  `;
+
+  await withMockFetch(
+    {
+      "https://api.yotpo.com/v1/widget/fenty_app_key/products/6686565204013/reviews.json?page=1&per_page=20": {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          response: {
+            bottomline: {
+              total_review: 1318,
+              average_score: 4.397572,
+              star_distribution: {
+                1: 117,
+                2: 40,
+                3: 51,
+                4: 104,
+                5: 1006,
+              },
+            },
+            reviews: [
+              {
+                id: 841090761,
+                score: 5,
+                title: "Love the colour",
+                content: "I've repurchased this many times because the colour, scent, and longevity is great.",
+                verified_buyer: true,
+                language: "en",
+                user: { display_name: "Maura L." },
+              },
+            ],
+          },
+        }),
+      },
+    },
+    async () => {
+      const summary = await fetchYotpoReviewSummaryFromHtml(
+        html,
+        "https://fentybeauty.com/products/gloss-bomb-heat-universal-lip-luminizer-plumper-fenty-glow-heat",
+      );
+      assert.equal(summary?.source_origin, "official_yotpo_reviews_api");
+      assert.equal(summary?.review_count, 1318);
+      assert.equal(summary?.preview_items?.length, 1);
+      assert.deepEqual(summary?.star_distribution?.[0], {
+        stars: 5,
+        count: 1006,
+        percent: 1006 / 1318,
+      });
+      assert.equal(summary?.preview_items?.[0]?.review_id, "yotpo_841090761");
+      assert.equal(summary?.preview_items?.[0]?.verified_buyer, true);
+    },
+  );
 });
 
 test("parseRenderedBazaarvoiceReviewSummary reads aggregate from rendered summary text", () => {

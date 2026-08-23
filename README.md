@@ -37,7 +37,20 @@ npm run dev
 
 ## Deploy
 
-Backend (Railway):
+Backend (GCP Cloud Run):
+- Service name: `catalog-intelligence` (region: `us-west1`).
+- Build from `server/`; the checked-in Dockerfile includes the Chromium runtime
+  libraries required by Puppeteer.
+- Runtime env: `EXTRACTION_MODE=puppeteer`, `REMOTE_BROWSER_ENABLED=0`,
+  `CORS_ORIGIN=<approved frontend origins>`, and the bounded Puppeteer settings
+  below. Keep Cloud Run unauthenticated only while the browser client consumes
+  this API directly; do not place secrets in the service environment unless an
+  extractor feature requires them.
+- Before changing the frontend API base URL, run the production smoke audit
+  against `/healthz` and an approved single-PDP extraction. Retain Railway as
+  the rollback endpoint until the GCP endpoint passes those checks.
+
+Backend (legacy Railway; rollback only during migration):
 - Root directory: `server`
 - Build command: `npm run build`
 - Start command: `npm start`

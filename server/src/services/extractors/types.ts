@@ -60,6 +60,9 @@ export type StockEvidenceSource =
   | "merchant_catalog"
   | "structured_offer_availability"
   | "unknown";
+
+// Public orderability is deliberately distinct from inventory quantity.
+export type PublicOrderabilityStatus = "available_to_order" | "unavailable_to_order" | "unknown";
 export type ExtractedFieldSourceOrigin =
   | "shopify_json"
   | "jsonld"
@@ -234,6 +237,10 @@ export type ExtractedProduct = {
   how_to_use_raw?: string;
   faq_items?: ExtractedProductFaqItem[];
   review_summary?: ExtractedProductReviewSummary;
+  public_orderability?: {
+    status: PublicOrderabilityStatus;
+    evidence_source: "cafe24_product_status";
+  };
   product_kind?: ExtractedProductKind;
   bundle_components?: ExtractedBundleComponent[];
   field_capture_status?: ExtractedProductFieldCaptureStatus;

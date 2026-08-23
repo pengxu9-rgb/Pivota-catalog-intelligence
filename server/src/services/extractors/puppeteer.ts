@@ -8125,8 +8125,13 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
 
     const publicOrderability = (() => {
       const inline = Array.from(document.scripts).map((script) => script.textContent || "").join("\n");
-      const soldOut = /(?:var\s+)?is_soldout_icon\s*=\s*['\"]([TF])['\"]/i.exec(inline)?.[1];
-      const useSoldOut = /(?:var\s+)?use_soldout\s*[:=]\s*['\"]([TF])['\"]/i.exec(inline)?.[1];
+      // Cafe24 serializes product-status metadata inside an escaped JSON string
+      // (for example, `\\\"use_soldout\\\":\\\"F\\\"`). Normalize only escaped
+      // quote delimiters before inspecting it, so the signal stays distinct from
+      // stock quantities and does not turn a missing value into an inventory claim.
+      const cafe24Inline = inline.replace(/\\/g, "");
+      const soldOut = /(?:var\s+)?is_soldout_icon\s*=\s*['\"]([TF])['\"]/i.exec(cafe24Inline)?.[1];
+      const useSoldOut = /(?:var\s+)?use_soldout\s*[:=]\s*['\"]([TF])['\"]/i.exec(cafe24Inline)?.[1];
       if (soldOut === "T") return { status: "unavailable_to_order" as const, evidenceSource: "cafe24_product_status" as const };
       if (soldOut === "F" && useSoldOut === "F") return { status: "available_to_order" as const, evidenceSource: "cafe24_product_status" as const };
       return undefined;

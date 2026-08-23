@@ -52,7 +52,14 @@ export type ExtractRequestBody = {
 export type ExtractInput = ExtractRequestBody;
 
 export type CurrencyCode = "USD" | "EUR" | "SGD" | "JPY" | "CNY" | "KRW";
-export type StockStatus = "In Stock" | "Low Stock" | "Out of Stock";
+// "Unknown" is an explicit evidence state. Public PDP markup that omits
+// availability must never be promoted to purchasable inventory.
+export type StockStatus = "In Stock" | "Low Stock" | "Out of Stock" | "Unknown";
+
+export type StockEvidenceSource =
+  | "merchant_catalog"
+  | "structured_offer_availability"
+  | "unknown";
 export type ExtractedFieldSourceOrigin =
   | "shopify_json"
   | "jsonld"
@@ -73,6 +80,7 @@ export type ExtractedVariant = {
   price: string;
   currency: CurrencyCode;
   stock: StockStatus;
+  stock_evidence_source?: StockEvidenceSource;
   description: string;
   image_url: string;
   image_urls: string[];

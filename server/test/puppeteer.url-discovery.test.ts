@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   extractProductUrlsFromHtml,
+  filterCleanProductImageAssetUrls,
   isLikelyProductUrl,
   isStaticAssetUrl,
   resolveStructuredImageUrl,
@@ -208,4 +209,13 @@ test("resolveStructuredImageUrls recovers malformed Cafe24 absolute CDN URLs", (
     "https://cafe24img.poxo.com/jolsejolse/web/product/extra/example.jpg",
     "https://cafe24img.poxo.com/jolsejolse/web/product/extra/runtime-normalized.jpg",
   ]);
+});
+
+test("filterCleanProductImageAssetUrls blocks nested merchant/CDN image paths at publication", () => {
+  assert.deepEqual(
+    filterCleanProductImageAssetUrls("https://jolse.com", [
+      "https://jolse.com/https://cafe24img.poxo.com/jolsejolse/web/product/extra/final-gate.jpg",
+    ]),
+    ["https://cafe24img.poxo.com/jolsejolse/web/product/extra/final-gate.jpg"],
+  );
 });

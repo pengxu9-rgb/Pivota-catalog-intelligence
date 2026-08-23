@@ -200,10 +200,12 @@ test("resolveStructuredImageUrls recovers malformed Cafe24 absolute CDN URLs", (
   const urls = resolveStructuredImageUrls("https://jolse.com", [
     "/https://cafe24img.poxo.com/jolsejolse/web/product/big/example.png",
     "//cafe24img.poxo.com/jolsejolse/web/product/extra/example.jpg",
+    "https://jolse.com/https://cafe24img.poxo.com/jolsejolse/web/product/extra/runtime-normalized.jpg",
   ]);
 
   assert.deepEqual(urls, [
     "https://cafe24img.poxo.com/jolsejolse/web/product/big/example.png",
     "https://cafe24img.poxo.com/jolsejolse/web/product/extra/example.jpg",
+    "https://cafe24img.poxo.com/jolsejolse/web/product/extra/runtime-normalized.jpg",
   ]);
 });

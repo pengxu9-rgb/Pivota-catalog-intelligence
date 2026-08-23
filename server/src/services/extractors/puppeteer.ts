@@ -5508,6 +5508,7 @@ function buildShopifyResponse(params: {
         price,
         currency,
         stock,
+        stock_evidence_source: "merchant_catalog",
         description,
         image_url: imageUrl,
         image_urls: imageUrls,
@@ -6178,9 +6179,11 @@ function resolveShopifyVariantImageUrl(baseUrl: string, product: ShopifyProduct,
 function toStockStatus(available?: boolean, inventoryQuantity?: number | null): StockStatus {
   if (available === false) return "Out of Stock";
   const qty = typeof inventoryQuantity === "number" ? inventoryQuantity : undefined;
+  if (qty !== undefined && qty <= 0) return "Out of Stock";
   const lowStockThreshold = clampInt(process.env.LOW_STOCK_THRESHOLD, 10, 1, 9999);
   if (qty !== undefined && qty > 0 && qty <= lowStockThreshold) return "Low Stock";
-  return "In Stock";
+  if (available === true) return "In Stock";
+  return "Unknown";
 }
 
 async function fetchJson<T>(url: string): Promise<T | null> {
@@ -6623,11 +6626,11 @@ function normalizePrice(raw: unknown) {
   return "0.00";
 }
 
-function stockFromAvailability(raw: unknown): StockStatus {
+export function stockFromAvailability(raw: unknown): StockStatus {
   const v = typeof raw === "string" ? raw : "";
   if (/OutOfStock/i.test(v)) return "Out of Stock";
   if (/InStock/i.test(v)) return "In Stock";
-  return "In Stock";
+  return "Unknown";
 }
 
 function injectBaseHref(html: string, pageUrl: string): string {
@@ -8569,6 +8572,7 @@ export function buildProductFromPageSignals(params: {
             price,
             currency: "USD",
             stock,
+            stock_evidence_source: variantOffer?.availability ? "structured_offer_availability" : "unknown",
             description: getMergedDescription({
               title: productTitle,
               overview:
@@ -8681,6 +8685,7 @@ export function buildProductFromPageSignals(params: {
             price,
             currency: "USD",
             stock,
+            stock_evidence_source: offer.availability ? "structured_offer_availability" : "unknown",
             description,
             image_url: offerImageUrl,
             image_urls: offerImageUrls,
@@ -8696,7 +8701,8 @@ export function buildProductFromPageSignals(params: {
             option_value: productSizeOptionValue || "Default",
             price: normalizePrice(extracted.priceTexts[0]),
             currency: "USD",
-            stock: "In Stock",
+            stock: "Unknown",
+            stock_evidence_source: "unknown",
             description: getMergedDescription({
               title: productTitle,
               overview: officialText,

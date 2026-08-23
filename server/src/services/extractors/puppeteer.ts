@@ -308,6 +308,7 @@ type ScrapedPageSignals = {
   scripts: string[];
   embeddedProductScripts: string[];
   domVariants: DomVariantMeta[];
+  publicOrderability?: { status: "available_to_order" | "unavailable_to_order" | "unknown"; evidenceSource: "cafe24_product_status" };
   productVolumeText?: string;
   productDetailsText: string;
   howToUseText?: string;
@@ -8122,6 +8123,20 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
     const activeIngredientsText =
       detailsSections.find((section) => /\bactive ingredients?\b/i.test(section.heading))?.body || undefined;
 
+    const publicOrderability = (() => {
+      const inline = Array.from(document.scripts).map((script) => script.textContent || "").join("\n");
+      // Cafe24 serializes product-status metadata inside an escaped JSON string
+      // (for example, `\\\"use_soldout\\\":\\\"F\\\"`). Normalize only escaped
+      // quote delimiters before inspecting it, so the signal stays distinct from
+      // stock quantities and does not turn a missing value into an inventory claim.
+      const cafe24Inline = inline.replace(/\\/g, "");
+      const soldOut = /(?:var\s+)?is_soldout_icon\s*=\s*['\"]([TF])['\"]/i.exec(cafe24Inline)?.[1];
+      const useSoldOut = /(?:var\s+)?use_soldout\s*[:=]\s*['\"]([TF])['\"]/i.exec(cafe24Inline)?.[1];
+      if (soldOut === "T") return { status: "unavailable_to_order" as const, evidenceSource: "cafe24_product_status" as const };
+      if (soldOut === "F" && useSoldOut === "F") return { status: "available_to_order" as const, evidenceSource: "cafe24_product_status" as const };
+      return undefined;
+    })();
+
     return {
       title,
       canonical,
@@ -8131,6 +8146,7 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
       scripts,
       embeddedProductScripts,
       domVariants,
+      ...(publicOrderability ? { publicOrderability } : {}),
       productVolumeText,
       productDetailsText,
       howToUseText,
@@ -8794,6 +8810,14 @@ export function buildProductFromPageSignals(params: {
     variants,
     ...productPdpFields,
     ...(reviewSummary ? { review_summary: reviewSummary } : {}),
+    ...(extracted.publicOrderability
+      ? {
+          public_orderability: {
+            status: extracted.publicOrderability.status,
+            evidence_source: extracted.publicOrderability.evidenceSource,
+          },
+        }
+      : {}),
     field_sources: fieldSources,
   });
 }

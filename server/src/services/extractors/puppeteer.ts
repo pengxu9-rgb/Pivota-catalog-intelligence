@@ -1367,7 +1367,11 @@ function normalizeImageUrlCandidate(baseUrl: string, raw: string) {
   const firstSrcsetEntry = trimmed.split(",")[0]?.trim().split(/\s+/)[0] || "";
   if (!firstSrcsetEntry) return "";
 
-  const absolute = toAbsoluteUrl(baseUrl, firstSrcsetEntry);
+  // Some Cafe24 storefronts serialize absolute CDN URLs as `/https://...`.
+  // Treat that as a malformed absolute URL, rather than resolving it as a
+  // same-origin path such as `https://merchant.example/https://cdn.example/...`.
+  const candidate = firstSrcsetEntry.replace(/^\/+((?:https?:)?\/\/)/i, "$1");
+  const absolute = toAbsoluteUrl(baseUrl, candidate);
   if (!/^https?:\/\//i.test(absolute)) return "";
   if (INVALID_IMAGE_URL_RE.test(absolute)) return "";
   return absolute;

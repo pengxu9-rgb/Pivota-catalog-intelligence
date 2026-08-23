@@ -152,3 +152,15 @@ test("resolveStructuredImageUrls preserves gallery order and filters invalid ass
     "https://www.guerlain.com/dw/image/v2/BDCZ_PRD/on/demandware.static/-/Sites-GSA_master_catalog/default/dw97b9f8d5/01-ProductsViewer/P062033/P062033_E02_hi-res.jpg?sw=655&sh=655&sfrm=jpg",
   ]);
 });
+
+test("resolveStructuredImageUrls recovers malformed Cafe24 absolute CDN URLs", () => {
+  const urls = resolveStructuredImageUrls("https://jolse.com", [
+    "/https://cafe24img.poxo.com/jolsejolse/web/product/big/example.png",
+    "//cafe24img.poxo.com/jolsejolse/web/product/extra/example.jpg",
+  ]);
+
+  assert.deepEqual(urls, [
+    "https://cafe24img.poxo.com/jolsejolse/web/product/big/example.png",
+    "https://cafe24img.poxo.com/jolsejolse/web/product/extra/example.jpg",
+  ]);
+});

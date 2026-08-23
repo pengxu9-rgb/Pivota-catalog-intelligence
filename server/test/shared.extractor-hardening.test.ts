@@ -124,6 +124,7 @@ test("buildProductPdpFields preserves explicit PDP module fields and sources", (
   assert.equal(fields.field_capture_status?.ingredients_raw, "present");
   assert.equal(fields.field_capture_status?.how_to_use_raw, "present");
   assert.equal(fields.field_capture_status?.faq_items, "present");
+  assert.equal(fields.field_quality_summary?.description_raw?.source_origin, "jsonld");
   assert.equal(fields.details_sections?.length, 2);
   assert.deepEqual(fields.field_sources?.ingredients_raw, ["page_ingredients_section"]);
   assert.deepEqual(fields.faq_items, [

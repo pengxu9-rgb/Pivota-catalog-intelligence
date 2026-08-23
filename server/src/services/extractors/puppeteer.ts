@@ -1089,8 +1089,8 @@ export function isKnownCrossProductResolutionMismatch(params: {
 const QUARANTINED_PDP_SOURCE_KIND_RE =
   /^(?:product_image_vision|simulation|browser_fallback(?::.*|$)|.*(?:mock|synthetic).*)$/i;
 const SHOPIFY_PDP_SOURCE_KIND_RE =
-  /^(?:shopify_|embedded_shopify|embedded_product_json|shopify_body_html|structured_overview)/i;
-const JSONLD_PDP_SOURCE_KIND_RE = /^jsonld/i;
+  /^(?:shopify_|embedded_shopify|embedded_product_json|shopify_body_html)/i;
+const JSONLD_PDP_SOURCE_KIND_RE = /^(?:jsonld|structured_overview)/i;
 const LINEAR_NARRATIVE_PDP_SOURCE_KIND_RE = /^(?:drjart_linear_(?:details|story))$/i;
 const RETAIL_PDP_SOURCE_KIND_RE =
   /^(?:page_|accordion_|details_|faq_|merchant_faq|inline_html_faq|okendo_|modal_content|pdp_content_heading|custom_metafield_|embedded_custom_metafield_)/i;
@@ -6915,7 +6915,11 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
 
         for (const candidate of candidates) {
           try {
-            const absolute = new URL(candidate, documentBase).toString();
+            // Cafe24 can serialize an absolute CDN URL as `/https://...`.
+            // Normalize before resolving, otherwise it becomes a broken
+            // same-origin image path.
+            const normalizedCandidate = candidate.replace(/^\/+((?:https?:)?\/\/)/i, "$1");
+            const absolute = new URL(normalizedCandidate, documentBase).toString();
             if (!/^https?:\/\//i.test(absolute)) continue;
             if (invalidUrlRe.test(absolute)) continue;
             if (seen.has(absolute)) continue;
@@ -7577,7 +7581,8 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         const pushMediaUrl = (raw: string | null | undefined) => {
           for (const candidate of normalizeSectionImageCandidates(raw)) {
             try {
-              const absolute = new URL(candidate, documentBase).toString();
+              const normalizedCandidate = candidate.replace(/^\/+((?:https?:)?\/\/)/i, "$1");
+              const absolute = new URL(normalizedCandidate, documentBase).toString();
               if (!/^https?:\/\//i.test(absolute)) continue;
               if (sectionImageInvalidUrlRe.test(absolute)) continue;
               if (seenMedia.has(absolute)) continue;

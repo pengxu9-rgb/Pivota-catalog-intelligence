@@ -6546,7 +6546,9 @@ function normalizeImageUrlCandidate(baseUrl: string, raw: string) {
   // Some Cafe24 storefronts serialize absolute CDN URLs as `/https://...`.
   // Treat that as a malformed absolute URL, rather than resolving it as a
   // same-origin path such as `https://merchant.example/https://cdn.example/...`.
-  const candidate = firstSrcsetEntry.replace(/^\/+((?:https?:)?\/\/)/i, "$1");
+  const candidate = firstSrcsetEntry
+    .replace(/^\/+((?:https?:)?\/\/)/i, "$1")
+    .replace(/^https?:\/\/[^/]+\/(https?:\/\/)/i, "$1");
   const absolute = toAbsoluteUrl(baseUrl, candidate);
   if (!/^https?:\/\//i.test(absolute)) return "";
   if (INVALID_IMAGE_URL_RE.test(absolute)) return "";
@@ -6918,7 +6920,9 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
             // Cafe24 can serialize an absolute CDN URL as `/https://...`.
             // Normalize before resolving, otherwise it becomes a broken
             // same-origin image path.
-            const normalizedCandidate = candidate.replace(/^\/+((?:https?:)?\/\/)/i, "$1");
+            const normalizedCandidate = candidate
+              .replace(/^\/+((?:https?:)?\/\/)/i, "$1")
+              .replace(/^https?:\/\/[^/]+\/(https?:\/\/)/i, "$1");
             const absolute = new URL(normalizedCandidate, documentBase).toString();
             if (!/^https?:\/\//i.test(absolute)) continue;
             if (invalidUrlRe.test(absolute)) continue;
@@ -7581,7 +7585,9 @@ export async function extractPageSignals(page: Page): Promise<ScrapedPageSignals
         const pushMediaUrl = (raw: string | null | undefined) => {
           for (const candidate of normalizeSectionImageCandidates(raw)) {
             try {
-              const normalizedCandidate = candidate.replace(/^\/+((?:https?:)?\/\/)/i, "$1");
+              const normalizedCandidate = candidate
+                .replace(/^\/+((?:https?:)?\/\/)/i, "$1")
+                .replace(/^https?:\/\/[^/]+\/(https?:\/\/)/i, "$1");
               const absolute = new URL(normalizedCandidate, documentBase).toString();
               if (!/^https?:\/\//i.test(absolute)) continue;
               if (sectionImageInvalidUrlRe.test(absolute)) continue;

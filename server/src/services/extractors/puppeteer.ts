@@ -8211,11 +8211,15 @@ function productImageDedupeKey(rawUrl: string, baseUrl: string): string {
   }
 }
 
-function filterCleanProductImageAssetUrls(baseUrl: string, urls: Array<string | undefined>, limit = 12) {
+export function filterCleanProductImageAssetUrls(baseUrl: string, urls: Array<string | undefined>, limit = 12) {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const url of urls) {
-    const value = cleanText(url);
+    // Normalize once more at the publishing boundary because image URLs can
+    // also arrive via variant/gallery merge paths after DOM extraction.
+    const value = cleanText(url)
+      .replace(/^\/+((?:https?:)?\/\/)/i, "$1")
+      .replace(/^https?:\/\/[^/]+\/(https?:\/\/)/i, "$1");
     if (!value || !isCleanProductImageAssetUrl(value, baseUrl)) continue;
     const absolute = new URL(value, baseUrl).toString();
     const dedupeKey = productImageDedupeKey(absolute, baseUrl);

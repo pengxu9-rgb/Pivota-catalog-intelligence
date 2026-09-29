@@ -48,6 +48,7 @@ import {
   type LoggerFn,
 } from "./shared";
 import { getMarketProfile } from "./marketProfiles";
+import { extractShopifyThemeBrandSections, hasBrandDescriptiveSection } from "./themeSections";
 
 const DEFAULT_BATCH_LIMIT = 10;
 const DEFAULT_MAX_TOTAL_PRODUCTS = 500;
@@ -920,7 +921,8 @@ function getDetailSectionSourcePriority(sourceKind: string | undefined) {
   }
   if (
     normalized === "page_section_stack_prose" ||
-    normalized === "page_image_with_text_prose"
+    normalized === "page_image_with_text_prose" ||
+    normalized === "page_theme_section"
   ) {
     return 4;
   }
@@ -4874,7 +4876,7 @@ function buildDirectRecoveredShopifyBrowserResponse(params: {
   });
 }
 
-export async function enrichDirectShopifyPdpResponse(params: {
+type EnrichDirectShopifyPdpParams = {
   brand: string;
   baseUrl: string;
   seedUrl?: string;
@@ -4884,33 +4886,93 @@ export async function enrichDirectShopifyPdpResponse(params: {
   context?: FetchContext;
   browserRunner?: typeof runBrowserTaskWithFallback<ExtractedProduct | null>;
   imageVisionClient?: ShopifyImageVisionClient;
-}): Promise<Omit<ExtractResponse, "generated_at" | "logs">> {
+};
+
+type SeedPageHtmlCache = { fetched: boolean; html?: string };
+
+/** The seed PDP's HTML, fetched at most once per enrichment (the cache is shared by every step). */
+async function fetchSeedPageHtmlOnce(params: EnrichDirectShopifyPdpParams, cache: SeedPageHtmlCache) {
+  if (cache.fetched) return cache.html;
+  cache.fetched = true;
+  try {
+    const pageOutcome = await fetchTextTracked(params.seedUrl!, withBrowserishHtmlHeaders(params.context || {}), params.diagnostics);
+    if (isNonProductRedirectForRequestedPdp(params.seedUrl!, pageOutcome.finalUrl, params.baseUrl)) {
+      params.log(
+        "warn",
+        `Discarding Shopify direct PDP HTML after non-product redirect: ${params.seedUrl} -> ${pageOutcome.finalUrl}`,
+      );
+      cache.html = undefined;
+      return cache.html;
+    }
+    cache.html = pageOutcome.body || undefined;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error || "unknown_error");
+    params.log("warn", `Shopify direct PDP HTML fetch failed; continuing without embedded PDP recovery: ${msg}`);
+  }
+  return cache.html;
+}
+
+export async function enrichDirectShopifyPdpResponse(
+  params: EnrichDirectShopifyPdpParams,
+): Promise<Omit<ExtractResponse, "generated_at" | "logs">> {
+  const pageHtmlCache: SeedPageHtmlCache = { fetched: false };
+  const enriched = await enrichDirectShopifyPdpResponseCore(params, pageHtmlCache);
+  // LAST, on the final response: a product with no sections at all is what escalates to the browser
+  // pass (getShopifyDirectPdpThinReasons), and that pass recovers how-to and ingredients -- adding
+  // theme sections first would suppress it.
+  return mergeShopifyThemeBrandSections({ ...params, response: enriched }, pageHtmlCache);
+}
+
+/**
+ * The brand's descriptive theme sections (themeSections.extractShopifyThemeBrandSections) merged
+ * into a single-product response that has no descriptive section of its own yet. Measured
+ * 2026-09-29: Supergoop's "Why we made it", Merit's "WHAT IT IS" cards, MUFE's "Why you will love
+ * it", and the Description / Details / Benefits accordions of Jurlique, Soko Glam, Anua and Celimax
+ * sit in the page HTML and in no collector's output.
+ */
+async function mergeShopifyThemeBrandSections(
+  params: EnrichDirectShopifyPdpParams,
+  pageHtmlCache: SeedPageHtmlCache,
+): Promise<Omit<ExtractResponse, "generated_at" | "logs">> {
+  const response = params.response;
+  const product = response.products[0];
+  if (!params.seedUrl || !product || response.products.length !== 1) return response;
+  const existing = Array.isArray(product.details_sections) ? product.details_sections : [];
+  if (hasBrandDescriptiveSection(existing)) return response;
+  const themeSections = extractShopifyThemeBrandSections(await fetchSeedPageHtmlOnce(params, pageHtmlCache));
+  if (themeSections.length === 0) return response;
+  const mergedPdpFields = buildProductPdpFields({
+    descriptionRaw: product.description_raw,
+    detailsSections: [...existing, ...themeSections],
+    ingredientsRaw: product.ingredients_raw,
+    activeIngredientsRaw: product.active_ingredients_raw,
+    howToUseRaw: product.how_to_use_raw,
+    faqItems: product.faq_items,
+    fieldSources: {
+      description_raw: product.field_sources?.description_raw || [],
+      details_sections: product.field_sources?.details_sections || [],
+      ingredients_raw: product.field_sources?.ingredients_raw || [],
+      active_ingredients_raw: product.field_sources?.active_ingredients_raw || [],
+      how_to_use_raw: product.field_sources?.how_to_use_raw || [],
+      faq_items: product.field_sources?.faq_items || [],
+    },
+  });
+  params.log("success", `Recovered ${themeSections.length} Shopify theme brand sections: ${params.seedUrl}`);
+  return {
+    ...response,
+    products: response.products.map((item, index) => (index === 0 ? { ...item, ...mergedPdpFields } : item)),
+  };
+}
+
+async function enrichDirectShopifyPdpResponseCore(
+  params: EnrichDirectShopifyPdpParams,
+  pageHtmlCache: SeedPageHtmlCache,
+): Promise<Omit<ExtractResponse, "generated_at" | "logs">> {
   const product = params.response.products[0];
   if (!params.seedUrl || !product || params.response.products.length !== 1) return params.response;
   let response = params.response;
-  let pageHtml: string | undefined;
-  let pageHtmlFetched = false;
 
-  const fetchSeedPageHtml = async () => {
-    if (pageHtmlFetched) return pageHtml;
-    pageHtmlFetched = true;
-    try {
-      const pageOutcome = await fetchTextTracked(params.seedUrl!, withBrowserishHtmlHeaders(params.context || {}), params.diagnostics);
-      if (isNonProductRedirectForRequestedPdp(params.seedUrl!, pageOutcome.finalUrl, params.baseUrl)) {
-        params.log(
-          "warn",
-          `Discarding Shopify direct PDP HTML after non-product redirect: ${params.seedUrl} -> ${pageOutcome.finalUrl}`,
-        );
-        pageHtml = undefined;
-        return pageHtml;
-      }
-      pageHtml = pageOutcome.body || undefined;
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error || "unknown_error");
-      params.log("warn", `Shopify direct PDP HTML fetch failed; continuing without embedded PDP recovery: ${msg}`);
-    }
-    return pageHtml;
-  };
+  const fetchSeedPageHtml = () => fetchSeedPageHtmlOnce(params, pageHtmlCache);
 
   const faqMissing = !Array.isArray(product.faq_items) || product.faq_items.length === 0;
   const reviewSummaryPreviewMissing =

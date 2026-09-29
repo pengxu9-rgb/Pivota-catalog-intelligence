@@ -455,9 +455,17 @@ function generateMockAdCopy(title: string, variantValue: string, price: string) 
   return "";
 }
 
+// Markup whose CONTENT is never copy: HTML comments and script/style/template/noscript blocks.
+// The tag regex in cleanText only removes tags that open with a letter, so `<!-- ... -->` survived
+// whole, and a <style> block lost its tags but kept its rules. Shopify body_html carries both:
+// an Outlook/Excel paste leaves `<!--td {border: 1px solid #cccccc;}br {mso-data-placement:same-cell;}-->`
+// at the top of the description, which then served verbatim on the PDP.
+const NON_TEXT_MARKUP_RE = /<!--[\s\S]*?-->|<(script|style|template|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+
 function cleanText(text?: string) {
   if (!text) return "";
   const withNewlines = text
+    .replace(NON_TEXT_MARKUP_RE, " ")
     .replace(/[\u00a0\u202f\u2007]/g, " ")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\s*(?:h[1-6]|li|ul|ol|hr)\b[^>]*>/gi, "\n")

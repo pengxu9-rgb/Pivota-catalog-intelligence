@@ -4453,3 +4453,71 @@ test("choosePreferredProductOverview prefers expanded product details over short
     "The Acne Set offers a targeted skincare regimen featuring Salicylic Acid 2% Solution for treating acne.\n\nThis set includes...\n\nGlucoside Foaming Cleanser removes dirt and environmental impurities.\nSalicylic Acid 2% Solution exfoliates and helps clear pores.",
   );
 });
+
+// Measured on prod 2026-09-29: 99 served PDP descriptions carried a raw HTML comment copied out of
+// Shopify body_html (55 of them the Outlook/Excel paste artifact below, 48 on fentybeauty.com). The
+// comment survived cleanText because its tag regex only removed tags that open with a letter.
+const OUTLOOK_PASTE_BODY_HTML =
+  "<!--\nbr {mso-data-placement:same-cell;}\n-->\n" +
+  "<!--td {border: 1px solid #cccccc;}br {mso-data-placement:same-cell;}-->" +
+  "<p>Flawless complexion made easy.</p><p>A blurring tint stick for smooth, radiant skin.</p><!---->";
+
+test("PuppeteerExtractor drops HTML comments from Shopify body_html descriptions", async () => {
+  const extractor = new PuppeteerExtractor();
+
+  await withMockFetch(
+    {
+      "https://fentybeauty.com/products/eaze-drop-blur-smooth-tint-stick.js": {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          id: 301,
+          title: "Eaze Drop Blur + Smooth Tint Stick",
+          handle: "eaze-drop-blur-smooth-tint-stick",
+          body_html: OUTLOOK_PASTE_BODY_HTML,
+          variants: [
+            { id: 3001, sku: "FB-EAZE-1", title: "1", option1: "1", price: "3200", available: true },
+            { id: 3002, sku: "FB-EAZE-2", title: "2", option1: "2", price: "3200", available: true },
+          ],
+          options: [{ name: "Shade" }],
+          images: [{ src: "https://cdn.example.com/eaze-drop.jpg" }],
+        }),
+      },
+      "https://fentybeauty.com/products/eaze-drop-blur-smooth-tint-stick": {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: '<html><head><meta property="og:price:currency" content="USD"></head><body></body></html>',
+      },
+    },
+    async () => {
+      const result = await extractor.extract({
+        brand: "Fenty Beauty",
+        domain: "https://fentybeauty.com/products/eaze-drop-blur-smooth-tint-stick",
+        market: "US",
+        limit: 1,
+      });
+
+      assert.equal(result.products.length, 1);
+      const product = result.products[0]!;
+      const expected = "Flawless complexion made easy.\nA blurring tint stick for smooth, radiant skin.";
+      assert.equal(product.variants.length, 2);
+      for (const variant of product.variants) {
+        assert.equal(variant.description, expected);
+      }
+      assert.equal(product.description_raw, expected);
+    },
+  );
+});
+
+test("buildProductPdpFields drops comments and style blocks but keeps bracketed copy", () => {
+  const fields = buildProductPdpFields({
+    descriptionRaw:
+      "<style>.so-tab { position: relative; width: 100%; }</style>" +
+      "<!-- x-tinymce/html --><p>Gently removes impurities.</p>" +
+      "<script type=\"text/javascript\">window.x = 1;</script>" +
+      "<p><Duration of Fragrance> 4-6 hours. Love it <3</p>",
+    fieldSources: { description_raw: ["shopify_body_html"] },
+  });
+
+  assert.equal(fields.description_raw, "Gently removes impurities.\n<Duration of Fragrance> 4-6 hours. Love it <3");
+});
